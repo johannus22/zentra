@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use tempfile::TempDir;
 use zentra_cli::config::{GlobalConfig, ProviderProfile, ProjectConfig};
+use zentra_cli::wizard::provider_defaults;
 
 #[test]
 fn global_config_roundtrip() {
@@ -108,4 +109,35 @@ fn init_creates_gitignore_if_missing() {
     assert!(dir.path().join(".gitignore").exists());
     let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
     assert!(content.contains(".zentra/"));
+}
+
+#[test]
+fn provider_defaults_openai_prefills_url_and_models() {
+    let d = provider_defaults("openai");
+    assert_eq!(d.base_url, "https://api.openai.com/v1");
+    assert!(d.models.contains(&"gpt-4o".to_string()));
+    assert!(!d.keyless);
+    assert_eq!(d.kind, "openai_compat");
+}
+
+#[test]
+fn provider_defaults_anthropic_prefills_url() {
+    let d = provider_defaults("anthropic");
+    assert_eq!(d.base_url, "https://api.anthropic.com");
+    assert!(d.models.contains(&"claude-opus-4-7".to_string()));
+    assert_eq!(d.kind, "anthropic");
+}
+
+#[test]
+fn provider_defaults_ollama_is_keyless() {
+    let d = provider_defaults("ollama");
+    assert_eq!(d.base_url, "http://localhost:11434/v1");
+    assert!(d.keyless);
+}
+
+#[test]
+fn provider_defaults_litellm_has_empty_base_url() {
+    let d = provider_defaults("litellm");
+    assert!(d.base_url.is_empty());
+    assert!(!d.keyless);
 }
