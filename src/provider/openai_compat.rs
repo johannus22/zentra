@@ -22,7 +22,7 @@ impl LLMProvider for OpenAICompatProvider {
         let body = serde_json::json!({
             "model": self.model,
             "messages": req.messages,
-            "tools": if req.tools.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&req.tools).unwrap() },
+            "tools": if req.tools.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&req.tools).context("Failed to serialize tools")? },
             "max_tokens": req.max_tokens,
         });
 
@@ -40,13 +40,19 @@ impl LLMProvider for OpenAICompatProvider {
         }
 
         let json: serde_json::Value = resp.json().await?;
-        let content = json["choices"][0]["message"]["content"]
-            .as_str().unwrap_or("").to_string();
-        let tool_calls = parse_tool_calls(&json["choices"][0]["message"]["tool_calls"]);
+        let message = json["choices"]
+            .as_array()
+            .and_then(|c| c.first())
+            .ok_or_else(|| anyhow::anyhow!("API response missing choices array"))?
+            .get("message")
+            .ok_or_else(|| anyhow::anyhow!("API response missing message in choice"))?;
+        let content = message["content"].as_str().unwrap_or("").to_string();
+        let tool_calls = parse_tool_calls(&message["tool_calls"]);
+        let usage_json = &json["usage"];
         let usage = TokenUsage {
-            input_tokens: json["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as u32,
-            output_tokens: json["usage"]["completion_tokens"].as_u64().unwrap_or(0) as u32,
-            total_tokens: json["usage"]["total_tokens"].as_u64().unwrap_or(0) as u32,
+            input_tokens: usage_json["prompt_tokens"].as_u64().unwrap_or(0) as u32,
+            output_tokens: usage_json["completion_tokens"].as_u64().unwrap_or(0) as u32,
+            total_tokens: usage_json["total_tokens"].as_u64().unwrap_or(0) as u32,
         };
         Ok(CompletionResponse { content, tool_calls, usage })
     }
