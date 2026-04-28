@@ -31,3 +31,16 @@ fn global_config_missing_file_returns_empty() {
     assert!(config.profiles.is_empty());
     assert!(config.default_profile.is_none());
 }
+
+#[test]
+fn keychain_service_name_is_scoped_per_profile() {
+    assert_eq!(zentra_cli::config::keychain::service_name("openai"), "zentra/openai");
+    assert_eq!(zentra_cli::config::keychain::service_name("work-litellm"), "zentra/work-litellm");
+}
+
+#[test]
+fn masked_display_never_shows_key_chars() {
+    let masked = zentra_cli::config::keychain::masked_display();
+    assert!(!masked.contains("sk-"));
+    assert!(masked.len() > 4);
+}
