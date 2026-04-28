@@ -2,6 +2,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use wiremock::matchers::{header, method, path};
 use zentra_cli::provider::{CompletionRequest, LLMProvider, Message};
 use zentra_cli::provider::openai_compat::OpenAICompatProvider;
+use zentra_cli::provider::anthropic::AnthropicProvider;
 
 #[tokio::test]
 async fn openai_compat_calls_correct_endpoint_with_auth() {
@@ -48,4 +49,33 @@ async fn openai_compat_returns_error_on_4xx() {
 
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("401"));
+}
+
+#[tokio::test]
+async fn anthropic_uses_native_headers_and_endpoint() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/messages"))
+        .and(header("x-api-key", "test-key"))
+        .and(header("anthropic-version", "2023-06-01"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "content": [{"type": "text", "text": "pong"}],
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicProvider::new(
+        server.uri(), "claude-opus-4-7".to_string(), "test-key".to_string(),
+    );
+    let resp = provider.complete(CompletionRequest {
+        messages: vec![Message { role: "user".to_string(), content: "ping".to_string() }],
+        tools: vec![],
+        max_tokens: Some(10),
+    }).await.unwrap();
+
+    assert_eq!(resp.content, "pong");
+    assert_eq!(resp.usage.input_tokens, 10);
+    assert_eq!(resp.usage.output_tokens, 5);
+    assert_eq!(resp.usage.total_tokens, 15);
 }
