@@ -49,12 +49,12 @@ pub async fn show() -> Result<()> {
 pub async fn remove(name: &str) -> Result<()> {
     let mut global = GlobalConfig::load()?;
     anyhow::ensure!(global.profiles.contains_key(name), "Profile '{}' not found", name);
-    keychain::delete_key(name)?;
     global.profiles.remove(name);
     if global.default_profile.as_deref() == Some(name) {
         global.default_profile = global.profiles.keys().next().cloned();
     }
     global.save()?;
+    keychain::delete_key(name)?;
     println!("✓ Profile '{}' removed", name);
     Ok(())
 }

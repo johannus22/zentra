@@ -155,12 +155,12 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     if global.default_profile.is_none() {
         global.default_profile = Some(name.clone());
     }
-    global.save()?;
 
-    if let Some(key) = api_key {
-        keychain::set_key(&name, &key)?;
+    if let Some(ref key) = api_key {
+        keychain::set_key(&name, key)?;
         println!("✓ API key saved to OS keychain (never written to disk)");
     }
+    global.save()?;
 
     if verified { println!("✓ Profile '{}' saved", name); }
     if global.default_profile.as_deref() == Some(&name) {
