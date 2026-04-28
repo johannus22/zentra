@@ -1,0 +1,51 @@
+use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::matchers::{header, method, path};
+use zentra_cli::provider::{CompletionRequest, LLMProvider, Message};
+use zentra_cli::provider::openai_compat::OpenAICompatProvider;
+
+#[tokio::test]
+async fn openai_compat_calls_correct_endpoint_with_auth() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(header("authorization", "Bearer test-key"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "pong"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = OpenAICompatProvider::new(
+        server.uri(), "gpt-4o".to_string(), "test-key".to_string(),
+    );
+    let resp = provider.complete(CompletionRequest {
+        messages: vec![Message { role: "user".to_string(), content: "ping".to_string() }],
+        tools: vec![],
+        max_tokens: Some(10),
+    }).await.unwrap();
+
+    assert_eq!(resp.content, "pong");
+    assert_eq!(resp.usage.total_tokens, 15);
+}
+
+#[tokio::test]
+async fn openai_compat_returns_error_on_4xx() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
+        .mount(&server)
+        .await;
+
+    let provider = OpenAICompatProvider::new(
+        server.uri(), "gpt-4o".to_string(), "bad-key".to_string(),
+    );
+    let result = provider.complete(CompletionRequest {
+        messages: vec![Message { role: "user".to_string(), content: "hi".to_string() }],
+        tools: vec![],
+        max_tokens: None,
+    }).await;
+
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("401"));
+}
