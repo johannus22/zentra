@@ -141,3 +141,12 @@ fn provider_defaults_litellm_has_empty_base_url() {
     assert!(d.base_url.is_empty());
     assert!(!d.keyless);
 }
+
+#[test]
+fn global_config_load_from_missing_path_is_empty() {
+    let config = GlobalConfig::load_from(
+        &std::path::PathBuf::from("/tmp/zentra-test-no-such-file-12345/config.toml")
+    ).unwrap();
+    assert!(config.profiles.is_empty());
+    assert!(config.default_profile.is_none());
+}
