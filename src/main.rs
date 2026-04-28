@@ -9,7 +9,8 @@ async fn main() -> anyhow::Result<()> {
             print_banner();
             println!("Welcome to Zentra — AI-powered Application Security");
             println!("No configuration found. Let's get you set up.\n");
-            eprint!("Press Enter to start setup, or Ctrl+C to exit: ");
+            print!("Press Enter to start setup, or Ctrl+C to exit: ");
+            std::io::Write::flush(&mut std::io::stdout())?;
             let mut buf = String::new();
             std::io::stdin().read_line(&mut buf)?;
             wizard::run_setup(None).await?;
