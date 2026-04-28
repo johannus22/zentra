@@ -38,19 +38,23 @@ pub async fn show() -> Result<()> {
     println!("  model        : {}", profile.model);
     println!("  base_url     : {}", profile.base_url);
     println!("  kind         : {}", profile.kind);
-    println!("  api_key      : {}", keychain::masked_display());
+    let key_display = match keychain::get_key(name)? {
+        Some(_) => keychain::masked_display().to_string(),
+        None => "not set".to_string(),
+    };
+    println!("  api_key      : {}", key_display);
     Ok(())
 }
 
 pub async fn remove(name: &str) -> Result<()> {
     let mut global = GlobalConfig::load()?;
     anyhow::ensure!(global.profiles.contains_key(name), "Profile '{}' not found", name);
+    keychain::delete_key(name)?;
     global.profiles.remove(name);
     if global.default_profile.as_deref() == Some(name) {
         global.default_profile = global.profiles.keys().next().cloned();
     }
     global.save()?;
-    keychain::delete_key(name)?;
     println!("✓ Profile '{}' removed", name);
     Ok(())
 }

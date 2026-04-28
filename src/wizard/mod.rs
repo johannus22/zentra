@@ -94,6 +94,11 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
         print!("API Key (hidden): ");
         io::stdout().flush()?;
         let key = rpassword::read_password()?;
+        if key.is_empty() {
+            println!("\n✗ API key cannot be empty for this provider.");
+            println!("Aborted.");
+            return Ok(());
+        }
         Some(key)
     };
 
@@ -132,6 +137,16 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
 
     let name = profile_name.unwrap_or_else(|| provider_key.to_string());
     let mut global = GlobalConfig::load()?;
+    if global.profiles.contains_key(&name) {
+        print!("Profile '{}' already exists. Overwrite? [y/N]: ", name);
+        io::stdout().flush()?;
+        let mut yn = String::new();
+        io::stdin().read_line(&mut yn)?;
+        if !yn.trim().eq_ignore_ascii_case("y") {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
     global.profiles.insert(name.clone(), ProviderProfile {
         kind: defaults.kind.clone(),
         base_url,
