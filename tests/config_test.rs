@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use tempfile::TempDir;
-use zentra_cli::config::{GlobalConfig, ProviderProfile};
+use zentra_cli::config::{GlobalConfig, ProviderProfile, ProjectConfig};
 
 #[test]
 fn global_config_roundtrip() {
@@ -43,4 +43,69 @@ fn masked_display_never_shows_key_chars() {
     let masked = zentra_cli::config::keychain::masked_display();
     assert!(!masked.contains("sk-"));
     assert!(masked.len() > 4);
+}
+
+#[test]
+fn project_config_roundtrip() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join(".zentra").join("config.json");
+    let config = ProjectConfig::new("rust", vec!["dist/".to_string()]);
+    config.save_to(&path).unwrap();
+    let loaded = ProjectConfig::load_from(&path).unwrap();
+    assert_eq!(loaded.stack, "rust");
+    assert_eq!(loaded.exclusions, vec!["dist/"]);
+}
+
+#[test]
+fn detect_stack_rust() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("Cargo.toml"), "[package]").unwrap();
+    assert_eq!(ProjectConfig::detect_stack(dir.path()), "rust");
+}
+
+#[test]
+fn detect_stack_node() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("package.json"), "{}").unwrap();
+    assert_eq!(ProjectConfig::detect_stack(dir.path()), "node");
+}
+
+#[test]
+fn looks_like_codebase_true_for_src_dir() {
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    assert!(ProjectConfig::looks_like_codebase(dir.path()));
+}
+
+#[test]
+fn looks_like_codebase_false_for_empty_dir() {
+    let dir = TempDir::new().unwrap();
+    assert!(!ProjectConfig::looks_like_codebase(dir.path()));
+}
+
+#[test]
+fn init_adds_zentra_to_gitignore() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "node_modules/\n").unwrap();
+    zentra_cli::commands::init::update_gitignore_at(dir.path()).unwrap();
+    let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert!(content.contains(".zentra/"));
+}
+
+#[test]
+fn init_does_not_duplicate_zentra_entry() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join(".gitignore"), ".zentra/\n").unwrap();
+    zentra_cli::commands::init::update_gitignore_at(dir.path()).unwrap();
+    let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert_eq!(content.matches(".zentra/").count(), 1);
+}
+
+#[test]
+fn init_creates_gitignore_if_missing() {
+    let dir = TempDir::new().unwrap();
+    zentra_cli::commands::init::update_gitignore_at(dir.path()).unwrap();
+    assert!(dir.path().join(".gitignore").exists());
+    let content = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert!(content.contains(".zentra/"));
 }

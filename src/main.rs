@@ -10,7 +10,7 @@ async fn main() -> anyhow::Result<()> {
     let cli = cli::Cli::parse();
     match cli.command {
         None => unreachable!(),
-        Some(cli::Commands::Init) => todo!("Plan 1 Task 5"),
+        Some(cli::Commands::Init) => zentra_cli::commands::init::run().await?,
         Some(cli::Commands::Config { .. }) => todo!("Plan 1 Task 8"),
         Some(cli::Commands::Scan { .. }) => todo!("Plan 2"),
         Some(cli::Commands::Update) => todo!("Plan 4"),
