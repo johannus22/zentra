@@ -55,6 +55,14 @@ impl LLMProvider for AnthropicProvider {
         })
     }
 
-    fn context_window(&self) -> u32 { 200_000 }
+    fn context_window(&self) -> u32 {
+        let m = self.model.as_str();
+        // Claude 4.x and Sonnet 4.6+ have 1M token windows
+        if m.contains("opus-4") || m.contains("sonnet-4-6") || m.contains("claude-4") {
+            1_000_000
+        } else {
+            200_000
+        }
+    }
     fn model_name(&self) -> &str { &self.model }
 }
