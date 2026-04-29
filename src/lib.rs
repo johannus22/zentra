@@ -7,3 +7,4 @@ pub mod scanners;
 pub mod state;
 pub mod tools;
 pub mod wizard;
+pub mod tui;
