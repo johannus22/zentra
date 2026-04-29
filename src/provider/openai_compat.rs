@@ -13,19 +13,9 @@ impl OpenAICompatProvider {
     pub fn new(base_url: String, model: String, api_key: String) -> Self {
         Self { base_url, model, api_key, client: reqwest::Client::new() }
     }
-}
 
-#[async_trait]
-impl LLMProvider for OpenAICompatProvider {
-    async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse> {
+    async fn post_chat(&self, body: serde_json::Value) -> Result<serde_json::Value> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let body = serde_json::json!({
-            "model": self.model,
-            "messages": req.messages,
-            "tools": if req.tools.is_empty() { serde_json::Value::Null } else { serde_json::to_value(&req.tools).context("Failed to serialize tools")? },
-            "max_tokens": req.max_tokens,
-        });
-
         let resp = self.client.post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
@@ -39,7 +29,24 @@ impl LLMProvider for OpenAICompatProvider {
             return Err(anyhow::anyhow!("Provider returned {}: {}", status, text));
         }
 
-        let json: serde_json::Value = resp.json().await?;
+        Ok(resp.json().await?)
+    }
+}
+
+#[async_trait]
+impl LLMProvider for OpenAICompatProvider {
+    async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse> {
+        let mut body = serde_json::json!({
+            "model": self.model,
+            "messages": req.messages,
+            "max_tokens": req.max_tokens,
+        });
+
+        if !req.tools.is_empty() {
+            body["tools"] = serde_json::to_value(&req.tools).context("Failed to serialize tools")?;
+        }
+
+        let json = self.post_chat(body).await?;
         parse_openai_response(&json)
     }
 
@@ -50,8 +57,6 @@ impl LLMProvider for OpenAICompatProvider {
         tools: &[ToolDefinition],
         max_tokens: u32,
     ) -> Result<CompletionResponse> {
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-
         let mut wire_messages: Vec<serde_json::Value> = vec![
             serde_json::json!({"role": "system", "content": system}),
         ];
@@ -73,7 +78,11 @@ impl LLMProvider for OpenAICompatProvider {
                                 }
                             })
                         }).collect();
-                        serde_json::json!({"role": "assistant", "content": null, "tool_calls": tc})
+                        serde_json::json!({
+                            "role": "assistant",
+                            "content": if content.is_empty() { serde_json::Value::Null } else { serde_json::json!(content) },
+                            "tool_calls": tc
+                        })
                     }
                 }
                 AgentMessage::ToolResult { id, name, content } => {
@@ -110,20 +119,7 @@ impl LLMProvider for OpenAICompatProvider {
             body["tool_choice"] = serde_json::json!("auto");
         }
 
-        let resp = self.client.post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send().await
-            .context("HTTP request failed")?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("Provider returned {}: {}", status, text));
-        }
-
-        let json: serde_json::Value = resp.json().await?;
+        let json = self.post_chat(body).await?;
         parse_openai_response(&json)
     }
 

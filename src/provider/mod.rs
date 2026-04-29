@@ -11,7 +11,7 @@ pub struct Message {
     pub content: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
