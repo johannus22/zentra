@@ -30,7 +30,12 @@ impl ScannerAgent {
 
     pub async fn run(self) -> Result<()> {
         let system = scanners::system_prompt(self.scanner_type);
-        let tools = self.tool_registry.definitions();
+        let all_tools = self.tool_registry.definitions();
+        let allowed = scanners::allowed_tools(self.scanner_type);
+        let tools: Vec<_> = all_tools
+            .into_iter()
+            .filter(|t| allowed.contains(&t.name.as_str()))
+            .collect();
         let mut messages: Vec<AgentMessage> = vec![
             AgentMessage::User(
                 "Begin your security scan. Start by listing the project files.".to_string()
@@ -40,7 +45,16 @@ impl ScannerAgent {
         self.tx.send(ScanEvent::ScannerStarted(self.scanner_type)).await.ok();
 
         for _iter in 0..MAX_ITERATIONS {
-            let resp = self.provider.complete_with_tools(system, &messages, &tools, 4096).await?;
+            let resp = match self.provider.complete_with_tools(system, &messages, &tools, 4096).await {
+                Ok(r) => r,
+                Err(e) => {
+                    self.tx.send(ScanEvent::Error {
+                        scanner: self.scanner_type,
+                        message: e.to_string(),
+                    }).await.ok();
+                    return Err(e);
+                }
+            };
 
             if resp.tool_calls.is_empty() {
                 // Agent signalled it's done (no more tool calls)
