@@ -1,4 +1,36 @@
 pub mod orchestrator;
 pub mod scanner;
 
-pub use scanner::ScannerType;
+use crate::state::Finding;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ScannerType {
+    ThreatModel,
+    Sast,
+    SupplyChain,
+    ApiScan,
+    IacScan,
+    Report,
+}
+
+impl ScannerType {
+    pub fn name(&self) -> &'static str {
+        match self {
+            ScannerType::ThreatModel => "threat_model",
+            ScannerType::Sast => "sast",
+            ScannerType::SupplyChain => "supply_chain",
+            ScannerType::ApiScan => "api_scan",
+            ScannerType::IacScan => "iac_scan",
+            ScannerType::Report => "report",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum ScanEvent {
+    ScannerStarted(ScannerType),
+    ScannerCompleted(ScannerType),
+    FindingAdded(Finding),
+    ToolCall { scanner: ScannerType, tool: String, arg: String },
+    Error { scanner: ScannerType, message: String },
+}

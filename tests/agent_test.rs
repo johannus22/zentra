@@ -191,6 +191,67 @@ fn run_audit_rejects_unknown_tool() {
     assert!(result.contains("Unknown audit tool"));
 }
 
+use zentra_cli::agent::{ScanEvent, ScannerType};
+
+#[tokio::test]
+async fn tool_registry_dispatches_read_file() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("hello.txt"), "hello world").unwrap();
+
+    let registry = zentra_cli::tools::ToolRegistry::new();
+    let writer = StateWriter::new(dir.path()).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+
+    let result = registry.dispatch(
+        "read_file",
+        &serde_json::json!({"path": dir.path().join("hello.txt").to_str().unwrap()}),
+        &writer,
+        &tx,
+        ScannerType::Sast,
+    ).await;
+
+    assert!(result.contains("hello world"), "got: {}", result);
+}
+
+#[tokio::test]
+async fn tool_registry_dispatches_write_finding() {
+    let dir = TempDir::new().unwrap();
+    let registry = zentra_cli::tools::ToolRegistry::new();
+    let writer = StateWriter::new(dir.path()).unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+
+    let result = registry.dispatch(
+        "write_finding",
+        &serde_json::json!({
+            "severity": "high",
+            "title": "Test Finding",
+            "description": "A test finding",
+            "location": "src/main.rs:1",
+            "recommendation": "Fix it"
+        }),
+        &writer,
+        &tx,
+        ScannerType::Sast,
+    ).await;
+
+    assert!(result.contains("recorded"), "got: {}", result);
+    // Event should have been sent
+    let event = rx.try_recv().unwrap();
+    assert!(matches!(event, ScanEvent::FindingAdded(_)));
+}
+
+#[test]
+fn tool_registry_definitions_contains_all_tools() {
+    let registry = zentra_cli::tools::ToolRegistry::new();
+    let defs = registry.definitions();
+    let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
+
+    for expected in &["read_file", "list_files", "grep_code", "write_finding",
+                       "run_audit", "git_log", "git_diff", "git_blame", "git_status"] {
+        assert!(names.contains(expected), "missing tool: {}", expected);
+    }
+}
+
 /// Serialize tests that mutate the process-global current directory so they
 /// don't race when cargo runs tests in parallel.
 static CWD_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
