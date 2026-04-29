@@ -25,7 +25,7 @@ pub struct CompletionRequest {
     pub max_tokens: Option<u32>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ToolCall {
     pub id: String,
     pub name: String,
@@ -46,9 +46,33 @@ pub struct CompletionResponse {
     pub usage: TokenUsage,
 }
 
+/// Agent conversation turn used by the ReAct loop.
+/// Each provider serializes these into its native wire format.
+#[derive(Debug, Clone)]
+pub enum AgentMessage {
+    /// Initial user instruction to the agent.
+    User(String),
+    /// Assistant reply, optionally with tool call requests.
+    Assistant { content: String, tool_calls: Vec<ToolCall> },
+    /// Tool execution result to feed back to the assistant.
+    ToolResult { id: String, name: String, content: String },
+}
+
 #[async_trait]
 pub trait LLMProvider: Send + Sync {
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse>;
+
+    /// Agent-mode completion with full tool call support.
+    /// `system` is sent as the system prompt.
+    /// `messages` are the conversation turns including prior tool calls/results.
+    async fn complete_with_tools(
+        &self,
+        system: &str,
+        messages: &[AgentMessage],
+        tools: &[ToolDefinition],
+        max_tokens: u32,
+    ) -> Result<CompletionResponse>;
+
     fn context_window(&self) -> u32;
     fn model_name(&self) -> &str;
 }

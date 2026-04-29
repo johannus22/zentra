@@ -1,6 +1,6 @@
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use wiremock::matchers::{header, method, path};
-use zentra_cli::provider::{CompletionRequest, LLMProvider, Message};
+use zentra_cli::provider::{AgentMessage, CompletionRequest, LLMProvider, Message, ToolDefinition};
 use zentra_cli::provider::openai_compat::OpenAICompatProvider;
 use zentra_cli::provider::anthropic::AnthropicProvider;
 
@@ -78,4 +78,85 @@ async fn anthropic_uses_native_headers_and_endpoint() {
     assert_eq!(resp.usage.input_tokens, 10);
     assert_eq!(resp.usage.output_tokens, 5);
     assert_eq!(resp.usage.total_tokens, 15);
+}
+
+#[tokio::test]
+async fn openai_compat_complete_with_tools_sends_tool_call_request() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": "{\"path\": \"src/main.rs\"}"
+                        }
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = OpenAICompatProvider::new(
+        server.uri(), "gpt-4o".to_string(), "test-key".to_string(),
+    );
+    let tools = vec![ToolDefinition {
+        name: "read_file".to_string(),
+        description: "Read a file".to_string(),
+        parameters: serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}),
+    }];
+    let resp = provider.complete_with_tools(
+        "You are a security scanner.",
+        &[AgentMessage::User("List files.".to_string())],
+        &tools,
+        256,
+    ).await.unwrap();
+
+    assert_eq!(resp.tool_calls.len(), 1);
+    assert_eq!(resp.tool_calls[0].name, "read_file");
+    assert_eq!(resp.tool_calls[0].arguments["path"], "src/main.rs");
+}
+
+#[tokio::test]
+async fn anthropic_complete_with_tools_parses_tool_use_block() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "content": [
+                {"type": "text", "text": "I'll read that file."},
+                {"type": "tool_use", "id": "call_1", "name": "read_file", "input": {"path": "src/main.rs"}}
+            ],
+            "usage": {"input_tokens": 20, "output_tokens": 10}
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicProvider::new(
+        server.uri(), "claude-opus-4-7".to_string(), "test-key".to_string(),
+    );
+    let tools = vec![ToolDefinition {
+        name: "read_file".to_string(),
+        description: "Read a file".to_string(),
+        parameters: serde_json::json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}),
+    }];
+    let resp = provider.complete_with_tools(
+        "You are a security scanner.",
+        &[AgentMessage::User("List files.".to_string())],
+        &tools,
+        256,
+    ).await.unwrap();
+
+    assert_eq!(resp.content, "I'll read that file.");
+    assert_eq!(resp.tool_calls.len(), 1);
+    assert_eq!(resp.tool_calls[0].name, "read_file");
+    assert_eq!(resp.tool_calls[0].id, "call_1");
 }
