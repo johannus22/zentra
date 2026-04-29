@@ -462,3 +462,37 @@ async fn orchestrator_runs_selected_scanners_in_order() {
     assert!(started.contains(&ScannerType::Report));
     assert_eq!(completed.len(), 3);
 }
+
+#[tokio::test]
+async fn scanner_agent_emits_tokens_used_event() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "Done."}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let provider = Arc::new(OpenAICompatProvider::new(
+        server.uri(), "gpt-4o".to_string(), "key".to_string(),
+    ));
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let writer = Arc::new(StateWriter::new(dir.path()).unwrap());
+    let (tx, mut rx) = mpsc::channel(16);
+
+    ScannerAgent::new(ScannerType::Sast, provider, registry, writer, tx)
+        .run()
+        .await
+        .unwrap();
+
+    let mut found_tokens = false;
+    while let Ok(event) = rx.try_recv() {
+        if matches!(event, ScanEvent::TokensUsed { .. }) {
+            found_tokens = true;
+        }
+    }
+    assert!(found_tokens, "should have emitted TokensUsed event");
+}

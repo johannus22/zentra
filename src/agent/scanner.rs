@@ -57,6 +57,11 @@ impl ScannerAgent {
                 }
             };
 
+            self.tx.send(ScanEvent::TokensUsed {
+                input: resp.usage.input_tokens,
+                output: resp.usage.output_tokens,
+            }).await.ok();
+
             if resp.tool_calls.is_empty() {
                 // Agent signalled it's done (no more tool calls)
                 break;
