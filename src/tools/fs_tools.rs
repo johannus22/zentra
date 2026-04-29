@@ -7,10 +7,10 @@ const MAX_FILE_BYTES: u64 = 100_000;
 const MAX_GREP_RESULTS: usize = 100;
 
 pub fn read_file(path: &str) -> String {
-    if Path::new(path).components().any(|c| c == Component::ParentDir) {
-        return "Error: path traversal not allowed".to_string();
-    }
     let p = Path::new(path);
+    if p.is_absolute() || p.components().any(|c| c == Component::ParentDir) {
+        return "Error: path must be relative (no absolute paths or '..' components)".to_string();
+    }
     match p.metadata() {
         Err(e) => format!("Error: {}", e),
         Ok(m) if m.is_dir() => format!("Error: '{}' is a directory, not a file", path),

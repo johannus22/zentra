@@ -114,11 +114,15 @@ fn read_findings_raw_returns_written_findings() {
 
 #[test]
 fn read_file_returns_content() {
+    let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().unwrap();
-    let file = dir.path().join("test.txt");
-    std::fs::write(&file, "hello world").unwrap();
+    std::fs::write(dir.path().join("test.txt"), "hello world").unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
 
-    let content = read_file(file.to_str().unwrap());
+    let content = read_file("test.txt");
+
+    std::env::set_current_dir(original).unwrap();
     assert_eq!(content, "hello world");
 }
 
@@ -131,7 +135,7 @@ fn read_file_returns_error_message_for_missing_file() {
 #[test]
 fn read_file_blocks_path_traversal() {
     let content = read_file("../../etc/passwd");
-    assert!(content.contains("path traversal not allowed"));
+    assert!(content.contains("path must be relative"), "got: {}", content);
 }
 
 #[test]
@@ -204,8 +208,11 @@ use zentra_cli::agent::orchestrator::OrchestratorAgent;
 
 #[tokio::test]
 async fn tool_registry_dispatches_read_file() {
+    let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("hello.txt"), "hello world").unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
 
     let registry = zentra_cli::tools::ToolRegistry::new();
     let writer = StateWriter::new(dir.path()).unwrap();
@@ -213,12 +220,13 @@ async fn tool_registry_dispatches_read_file() {
 
     let result = registry.dispatch(
         "read_file",
-        &serde_json::json!({"path": dir.path().join("hello.txt").to_str().unwrap()}),
+        &serde_json::json!({"path": "hello.txt"}),
         &writer,
         &tx,
         ScannerType::Sast,
     ).await;
 
+    std::env::set_current_dir(original).unwrap();
     assert!(result.contains("hello world"), "got: {}", result);
 }
 

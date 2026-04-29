@@ -52,6 +52,7 @@ impl ScannerAgent {
                         scanner: self.scanner_type,
                         message: e.to_string(),
                     }).await.ok();
+                    self.tx.send(ScanEvent::ScannerCompleted(self.scanner_type)).await.ok();
                     return Err(e);
                 }
             };
