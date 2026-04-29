@@ -64,6 +64,40 @@ fn state_writer_writes_report() {
     writer.write_report("# Executive Summary\n\nAll clear.").unwrap();
 
     let reports_dir = dir.path().join(".zentra").join("reports");
-    let entries: Vec<_> = std::fs::read_dir(&reports_dir).unwrap().collect();
+    let entries: Vec<_> = std::fs::read_dir(&reports_dir).unwrap()
+        .filter_map(|e| e.ok())
+        .collect();
     assert_eq!(entries.len(), 1, "should have one report file");
+
+    let filename = entries[0].file_name();
+    let name = filename.to_string_lossy();
+    assert!(name.ends_with("-report.md"), "filename should end with -report.md, got: {}", name);
+
+    let content = std::fs::read_to_string(entries[0].path()).unwrap();
+    assert!(content.contains("Executive Summary"), "report should contain written content");
+}
+
+#[test]
+fn read_findings_raw_returns_empty_when_no_findings() {
+    let dir = TempDir::new().unwrap();
+    let writer = StateWriter::new(dir.path()).unwrap();
+    let result = writer.read_findings_raw().unwrap();
+    assert!(result.is_empty(), "should return empty string when no findings written");
+}
+
+#[test]
+fn read_findings_raw_returns_written_findings() {
+    let dir = TempDir::new().unwrap();
+    let writer = StateWriter::new(dir.path()).unwrap();
+    writer.write_finding(&Finding {
+        scanner: "sast".to_string(),
+        severity: Severity::Low,
+        title: "Test".to_string(),
+        description: "desc".to_string(),
+        location: None,
+        recommendation: "fix".to_string(),
+    }).unwrap();
+
+    let content = writer.read_findings_raw().unwrap();
+    assert!(content.contains("Test"), "should contain the written finding title");
 }

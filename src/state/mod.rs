@@ -49,9 +49,10 @@ impl StateWriter {
 
     pub fn read_findings_raw(&self) -> Result<String> {
         let path = self.zentra_dir.join("detailed-findings.md");
-        if !path.exists() {
-            return Ok(String::new());
+        match std::fs::read_to_string(&path) {
+            Ok(s) => Ok(s),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+            Err(e) => Err(e.into()),
         }
-        Ok(fs::read_to_string(path)?)
     }
 }
