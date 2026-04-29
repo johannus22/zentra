@@ -34,9 +34,8 @@ async fn main() -> anyhow::Result<()> {
             cli::ConfigAction::Show => commands::config::show().await?,
             cli::ConfigAction::Remove { name } => commands::config::remove(&name).await?,
         },
-        Some(cli::Commands::Scan { .. }) => {
-            eprintln!("zentra scan — available in Plan 2 (agent core)");
-            std::process::exit(1);
+        Some(cli::Commands::Scan { provider, only }) => {
+            commands::scan::run(provider, only).await?
         }
         Some(cli::Commands::Update) => {
             eprintln!("zentra update — available in Plan 4 (install + CI)");

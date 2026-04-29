@@ -200,6 +200,7 @@ fn run_audit_rejects_unknown_tool() {
 }
 
 use zentra_cli::agent::{ScanEvent, ScannerType};
+use zentra_cli::agent::orchestrator::OrchestratorAgent;
 
 #[tokio::test]
 async fn tool_registry_dispatches_read_file() {
@@ -407,4 +408,49 @@ fn git_status_returns_string_outside_git_repo() {
 
     std::env::set_current_dir(&original).unwrap();
     assert!(!result.is_empty());
+}
+
+#[tokio::test]
+async fn orchestrator_runs_selected_scanners_in_order() {
+    let server = MockServer::start().await;
+
+    // All calls return immediately with no tool calls
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
+        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string())
+    );
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let writer = Arc::new(zentra_cli::state::StateWriter::new(dir.path()).unwrap());
+    let (tx, mut rx) = mpsc::channel(32);
+
+    let orchestrator = OrchestratorAgent::new(
+        provider, registry, writer, tx,
+    );
+
+    orchestrator.run(&[ScannerType::ThreatModel, ScannerType::Sast, ScannerType::Report]).await.unwrap();
+
+    // Collect all events
+    let mut started = vec![];
+    let mut completed = vec![];
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            ScanEvent::ScannerStarted(s) => started.push(s),
+            ScanEvent::ScannerCompleted(s) => completed.push(s),
+            _ => {}
+        }
+    }
+
+    assert!(started.contains(&ScannerType::ThreatModel));
+    assert!(started.contains(&ScannerType::Sast));
+    assert!(started.contains(&ScannerType::Report));
+    assert_eq!(completed.len(), 3);
 }
