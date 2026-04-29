@@ -2,6 +2,7 @@
 use zentra_cli::{agent, state, tools};
 use zentra_cli::tools::fs_tools::{grep_code, list_files, read_file};
 use zentra_cli::tools::git_tools::{git_log, git_status};
+use zentra_cli::scanners;
 
 #[test]
 fn modules_exist() {
@@ -250,6 +251,29 @@ fn tool_registry_definitions_contains_all_tools() {
                        "run_audit", "git_log", "git_diff", "git_blame", "git_status"] {
         assert!(names.contains(expected), "missing tool: {}", expected);
     }
+}
+
+#[test]
+fn all_scanner_prompts_are_non_empty() {
+    use zentra_cli::agent::ScannerType;
+    for scanner in &[
+        ScannerType::ThreatModel,
+        ScannerType::Sast,
+        ScannerType::SupplyChain,
+        ScannerType::ApiScan,
+        ScannerType::IacScan,
+        ScannerType::Report,
+    ] {
+        let prompt = scanners::system_prompt(*scanner);
+        assert!(!prompt.is_empty(), "{:?} has empty system prompt", scanner);
+        assert!(prompt.len() > 100, "{:?} prompt too short ({})", scanner, prompt.len());
+    }
+}
+
+#[test]
+fn report_prompt_is_non_empty() {
+    let prompt = scanners::system_prompt(zentra_cli::agent::ScannerType::Report);
+    assert!(prompt.contains("report") || prompt.contains("Report") || prompt.contains("summary"));
 }
 
 /// Serialize tests that mutate the process-global current directory so they
