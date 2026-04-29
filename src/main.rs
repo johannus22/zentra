@@ -1,23 +1,32 @@
 use clap::Parser;
-use zentra_cli::{cli, commands, config::GlobalConfig, wizard};
+use zentra_cli::{
+    cli, commands,
+    config::{GlobalConfig, ProjectConfig},
+    tui::menu::{run_menu, MenuAction},
+    wizard,
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // No-arg mode: interactive menu (full TUI in Plan 3)
     if std::env::args().len() == 1 {
-        if !GlobalConfig::is_configured() {
-            print_banner();
-            println!("Welcome to Zentra — AI-powered Application Security");
-            println!("No configuration found. Let's get you set up.\n");
-            print!("Press Enter to start setup, or Ctrl+C to exit: ");
-            std::io::Write::flush(&mut std::io::stdout())?;
-            let mut buf = String::new();
-            std::io::stdin().read_line(&mut buf)?;
-            wizard::run_setup(None).await?;
-        } else {
-            print_banner();
-            println!("Interactive menu — available in Plan 3.");
-            println!("Run 'zentra --help' for all commands.\n");
+        let provider_configured = GlobalConfig::is_configured();
+        let project_configured = ProjectConfig::load_from(&ProjectConfig::default_path()).is_ok();
+
+        loop {
+            match run_menu(provider_configured, project_configured).await? {
+                MenuAction::RunScan(scanners) => {
+                    commands::scan::run_with_scanners(scanners).await?;
+                    break;
+                }
+                MenuAction::ViewLastResults => {
+                    zentra_cli::tui::results::run_results().await?;
+                }
+                MenuAction::Config => {
+                    wizard::run_setup(None).await?;
+                    break;
+                }
+                MenuAction::Exit => break,
+            }
         }
         return Ok(());
     }
@@ -43,12 +52,4 @@ async fn main() -> anyhow::Result<()> {
         }
     }
     Ok(())
-}
-
-fn print_banner() {
-    println!(" ____        _");
-    println!("|_  /___ _ _| |_ _ _ __ _");
-    println!(" / // -_) ' \\  _| '_/ _` |");
-    println!("/___\\___|_||_\\__|_| \\__,_|");
-    println!();
 }
