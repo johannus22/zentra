@@ -1,6 +1,7 @@
 use zentra_cli::agent::{ScanEvent, ScannerType};
 use zentra_cli::state::{Finding, Severity};
 use zentra_cli::tui::{ScanStatus, UiScanner, UiState};
+use zentra_cli::tui::menu::{MenuAction, MenuState, MenuScreen};
 
 #[test]
 fn ui_state_scanner_starts_as_queued() {
@@ -119,4 +120,58 @@ fn ui_state_token_pct_caps_at_100() {
     let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 1_000);
     state.apply_event(ScanEvent::TokensUsed { input: 2_000, output: 0 });
     assert_eq!(state.token_pct(), 100);
+}
+
+#[test]
+fn menu_state_starts_at_first_item() {
+    let state = MenuState::new(true, true);
+    assert_eq!(state.selected_idx, 0);
+    assert_eq!(state.screen, MenuScreen::Main);
+}
+
+#[test]
+fn menu_state_navigate_wraps() {
+    let mut state = MenuState::new(true, true);
+    // 5 items: RunFull(0), SelectScanners(1), ViewResults(2), Config(3), Exit(4)
+    state.next();
+    assert_eq!(state.selected_idx, 1);
+    state.next(); state.next(); state.next();
+    assert_eq!(state.selected_idx, 4);
+    state.next(); // should clamp at last
+    assert_eq!(state.selected_idx, 4);
+    state.prev();
+    assert_eq!(state.selected_idx, 3);
+}
+
+#[test]
+fn menu_state_disabled_items_when_unconfigured() {
+    let state = MenuState::new(false, false); // no provider, no project
+    assert!(!state.is_item_enabled(0)); // RunFull
+    assert!(!state.is_item_enabled(1)); // SelectScanners
+    assert!(state.is_item_enabled(2));  // ViewResults
+    assert!(state.is_item_enabled(3));  // Config
+    assert!(state.is_item_enabled(4));  // Exit
+}
+
+#[test]
+fn menu_state_scanner_selector_toggle() {
+    let mut state = MenuState::new(true, true);
+    state.screen = MenuScreen::ScannerSelector;
+    assert!(state.scanner_selected[0]);
+    state.toggle_scanner(); // toggle ThreatModel off
+    assert!(!state.scanner_selected[0]);
+    state.toggle_scanner(); // toggle back on
+    assert!(state.scanner_selected[0]);
+}
+
+#[test]
+fn menu_state_scanner_selector_selected_types() {
+    let mut state = MenuState::new(true, true);
+    state.screen = MenuScreen::ScannerSelector;
+    state.scanner_idx = 1; // SAST
+    state.toggle_scanner(); // disable SAST
+    let types = state.selected_scanner_types();
+    assert!(!types.contains(&ScannerType::Sast));
+    assert!(types.contains(&ScannerType::ThreatModel));
+    assert!(types.contains(&ScannerType::Report)); // always included
 }
