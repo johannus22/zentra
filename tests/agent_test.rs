@@ -1,5 +1,6 @@
 // tests/agent_test.rs
 use zentra_cli::{agent, state, tools};
+use zentra_cli::tools::fs_tools::{grep_code, list_files, read_file};
 
 #[test]
 fn modules_exist() {
@@ -100,4 +101,67 @@ fn read_findings_raw_returns_written_findings() {
 
     let content = writer.read_findings_raw().unwrap();
     assert!(content.contains("Test"), "should contain the written finding title");
+}
+
+#[test]
+fn read_file_returns_content() {
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("test.txt");
+    std::fs::write(&file, "hello world").unwrap();
+
+    let content = read_file(file.to_str().unwrap());
+    assert_eq!(content, "hello world");
+}
+
+#[test]
+fn read_file_returns_error_message_for_missing_file() {
+    let content = read_file("/nonexistent/path/to/file.txt");
+    assert!(content.starts_with("Error:"), "should return error message, got: {}", content);
+}
+
+#[test]
+fn read_file_blocks_path_traversal() {
+    let content = read_file("../../etc/passwd");
+    assert!(content.contains("path traversal not allowed"));
+}
+
+#[test]
+fn list_files_finds_files_in_dir() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("a.rs"), "").unwrap();
+    std::fs::write(dir.path().join("b.rs"), "").unwrap();
+
+    let result = list_files(dir.path().to_str().unwrap(), None);
+    assert!(result.contains("a.rs"), "should list a.rs");
+    assert!(result.contains("b.rs"), "should list b.rs");
+}
+
+#[test]
+fn list_files_filters_by_pattern() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("main.rs"), "").unwrap();
+    std::fs::write(dir.path().join("config.toml"), "").unwrap();
+
+    let result = list_files(dir.path().to_str().unwrap(), Some(".rs"));
+    assert!(result.contains("main.rs"), "should include .rs files");
+    assert!(!result.contains("config.toml"), "should exclude .toml files");
+}
+
+#[test]
+fn grep_code_finds_pattern() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("main.rs"), "fn main() {\n    let secret = \"abc\";\n}\n").unwrap();
+
+    let result = grep_code("secret", Some(dir.path().to_str().unwrap()));
+    assert!(result.contains("secret"), "should find 'secret'");
+    assert!(result.contains("main.rs"), "should reference the file");
+}
+
+#[test]
+fn grep_code_returns_no_matches_message() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("a.rs"), "fn main() {}").unwrap();
+
+    let result = grep_code("VERY_UNLIKELY_PATTERN_XYZ123", Some(dir.path().to_str().unwrap()));
+    assert!(result.contains("No matches"), "should say no matches");
 }
