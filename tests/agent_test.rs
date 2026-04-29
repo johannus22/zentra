@@ -1,6 +1,7 @@
 // tests/agent_test.rs
 use zentra_cli::{agent, state, tools};
 use zentra_cli::tools::fs_tools::{grep_code, list_files, read_file};
+use zentra_cli::tools::git_tools::{git_log, git_status};
 
 #[test]
 fn modules_exist() {
@@ -164,4 +165,40 @@ fn grep_code_returns_no_matches_message() {
 
     let result = grep_code("VERY_UNLIKELY_PATTERN_XYZ123", Some(dir.path().to_str().unwrap()));
     assert!(result.contains("No matches"), "should say no matches");
+}
+
+/// Serialize tests that mutate the process-global current directory so they
+/// don't race when cargo runs tests in parallel.
+static CWD_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+fn cwd_lock() -> &'static std::sync::Mutex<()> {
+    CWD_LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+#[test]
+fn git_log_returns_string_outside_git_repo() {
+    // Run from a temp dir with no .git — should not panic, just return graceful message
+    let _guard = cwd_lock().lock().unwrap();
+    let dir = TempDir::new().unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let result = git_log(5);
+
+    std::env::set_current_dir(&original).unwrap();
+    // Either returns commits or a graceful "not a git repo" message — must not panic
+    assert!(!result.is_empty());
+}
+
+#[test]
+fn git_status_returns_string_outside_git_repo() {
+    let _guard = cwd_lock().lock().unwrap();
+    let dir = TempDir::new().unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let result = git_status();
+
+    std::env::set_current_dir(&original).unwrap();
+    assert!(!result.is_empty());
 }
