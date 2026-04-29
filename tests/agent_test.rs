@@ -167,6 +167,30 @@ fn grep_code_returns_no_matches_message() {
     assert!(result.contains("No matches"), "should say no matches");
 }
 
+use zentra_cli::tools::audit::run_audit;
+
+#[test]
+fn run_audit_returns_string_when_tool_not_installed() {
+    // Run in a temp dir where audit tools are unlikely to be configured
+    // The function must not panic — it returns a graceful message
+    let _guard = cwd_lock().lock().unwrap();
+    let dir = TempDir::new().unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let result = run_audit("npm");
+
+    std::env::set_current_dir(original).unwrap();
+    // Either actual audit JSON or a "not found / no lockfile" message
+    assert!(!result.is_empty());
+}
+
+#[test]
+fn run_audit_rejects_unknown_tool() {
+    let result = run_audit("unknown_tool_xyz");
+    assert!(result.contains("Unknown audit tool"));
+}
+
 /// Serialize tests that mutate the process-global current directory so they
 /// don't race when cargo runs tests in parallel.
 static CWD_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
