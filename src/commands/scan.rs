@@ -3,13 +3,22 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use crate::agent::{orchestrator::OrchestratorAgent, ScanEvent, ScannerType};
+use crate::agent::{orchestrator::OrchestratorAgent, ScannerType};
 use crate::config::{keychain, GlobalConfig, ProjectConfig};
 use crate::provider::{anthropic::AnthropicProvider, openai_compat::OpenAICompatProvider, LLMProvider};
 use crate::state::StateWriter;
 use crate::tools::ToolRegistry;
+use crate::tui;
 
 pub async fn run(provider_override: Option<String>, only: Option<String>) -> Result<()> {
+    run_internal(provider_override, resolve_scanners(only.as_deref())).await
+}
+
+pub async fn run_with_scanners(scanners: Vec<ScannerType>) -> Result<()> {
+    run_internal(None, scanners).await
+}
+
+async fn run_internal(provider_override: Option<String>, scanners: Vec<ScannerType>) -> Result<()> {
     let global = GlobalConfig::load()?;
     let profile_name = provider_override
         .or_else(|| global.default_profile.clone())
@@ -33,10 +42,10 @@ pub async fn run(provider_override: Option<String>, only: Option<String>) -> Res
 
     let provider: Arc<dyn LLMProvider> = match profile.kind.as_str() {
         "anthropic" => Arc::new(AnthropicProvider::new(
-            profile.base_url, profile.model, api_key,
+            profile.base_url.clone(), profile.model.clone(), api_key,
         )),
         _ => Arc::new(OpenAICompatProvider::new(
-            profile.base_url, profile.model, api_key,
+            profile.base_url.clone(), profile.model.clone(), api_key,
         )),
     };
 
@@ -49,40 +58,22 @@ pub async fn run(provider_override: Option<String>, only: Option<String>) -> Res
     );
     let tool_registry = Arc::new(ToolRegistry::new());
 
-    let scanners = resolve_scanners(only.as_deref());
+    let context_window = provider.context_window();
+    let model_info = format!("{} · {}", profile.model, profile_name);
 
-    let (tx, mut rx) = mpsc::channel(128);
+    let (tx, rx) = mpsc::channel(128);
+    let scanners_for_agent = scanners.clone();
 
-    // Print events to console (TUI replaces this in Plan 3)
-    let print_task = tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            match event {
-                ScanEvent::ScannerStarted(s) => println!("  \u{27F3} {:?} starting...", s),
-                ScanEvent::ScannerCompleted(s) => println!("  \u{2713} {:?} complete", s),
-                ScanEvent::FindingAdded(f) => {
-                    println!("  [{:?}] {} \u{2014} {}", f.severity, f.title,
-                        f.location.as_deref().unwrap_or(""));
-                }
-                ScanEvent::ToolCall { tool, arg, .. } => {
-                    if !arg.is_empty() {
-                        println!("    \u{2192} {}({})", tool, arg);
-                    } else {
-                        println!("    \u{2192} {}", tool);
-                    }
-                }
-                ScanEvent::Error { scanner, message } => {
-                    eprintln!("  \u{2717} {:?}: {}", scanner, message);
-                }
-                ScanEvent::TokensUsed { .. } => {}
-            }
-        }
+    let scan_task = tokio::spawn(async move {
+        OrchestratorAgent::new(provider, tool_registry, state_writer, tx)
+            .run(&scanners_for_agent)
+            .await
     });
 
-    let orchestrator = OrchestratorAgent::new(provider, tool_registry, state_writer, tx);
-    orchestrator.run(&scanners).await?;
+    tui::scan_ui::run_scan_ui(rx, scanners, model_info, context_window).await?;
 
-    print_task.await.ok();
-    println!("\n\u{2713} Scan complete. Findings in .zentra/");
+    scan_task.await??;
+    println!("\n✓ Scan complete. Findings in .zentra/");
     Ok(())
 }
 
