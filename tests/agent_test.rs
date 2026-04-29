@@ -1,5 +1,5 @@
 // tests/agent_test.rs
-use zentra_cli::{agent, scanners, state, tools};
+use zentra_cli::{agent, state, tools};
 
 #[test]
 fn modules_exist() {
