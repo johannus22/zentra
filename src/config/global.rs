@@ -15,6 +15,8 @@ pub struct ProviderProfile {
     pub kind: String,      // "openai_compat" | "anthropic"
     pub base_url: String,
     pub model: String,
+    #[serde(default)]
+    pub keyless: bool,     // true for providers that don't require an API key (e.g. ollama)
 }
 
 impl GlobalConfig {

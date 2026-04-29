@@ -151,6 +151,7 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
         kind: defaults.kind.clone(),
         base_url,
         model,
+        keyless: defaults.keyless,
     });
     if global.default_profile.is_none() {
         global.default_profile = Some(name.clone());

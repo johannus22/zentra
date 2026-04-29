@@ -21,7 +21,15 @@ pub async fn run(provider_override: Option<String>, only: Option<String>) -> Res
         .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found", profile_name))?
         .clone();
 
-    let api_key = keychain::get_key(&profile_name)?.unwrap_or_default();
+    let api_key = if profile.keyless {
+        keychain::get_key(&profile_name)?.unwrap_or_default()
+    } else {
+        keychain::get_key(&profile_name)?
+            .ok_or_else(|| anyhow::anyhow!(
+                "No API key found for profile '{}'. Run 'zentra config setup' to configure it.",
+                profile_name
+            ))?
+    };
 
     let provider: Arc<dyn LLMProvider> = match profile.kind.as_str() {
         "anthropic" => Arc::new(AnthropicProvider::new(
