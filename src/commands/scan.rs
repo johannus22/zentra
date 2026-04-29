@@ -73,6 +73,7 @@ pub async fn run(provider_override: Option<String>, only: Option<String>) -> Res
                 ScanEvent::Error { scanner, message } => {
                     eprintln!("  \u{2717} {:?}: {}", scanner, message);
                 }
+                ScanEvent::TokensUsed { .. } => {}
             }
         }
     });

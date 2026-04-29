@@ -33,4 +33,5 @@ pub enum ScanEvent {
     FindingAdded(Finding),
     ToolCall { scanner: ScannerType, tool: String, arg: String },
     Error { scanner: ScannerType, message: String },
+    TokensUsed { input: u32, output: u32 },
 }
