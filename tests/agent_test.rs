@@ -173,7 +173,7 @@ use zentra_cli::tools::audit::run_audit;
 fn run_audit_returns_string_when_tool_not_installed() {
     // Run in a temp dir where audit tools are unlikely to be configured
     // The function must not panic — it returns a graceful message
-    let _guard = cwd_lock().lock().unwrap();
+    let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().unwrap();
     let original = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
@@ -202,7 +202,7 @@ fn cwd_lock() -> &'static std::sync::Mutex<()> {
 #[test]
 fn git_log_returns_string_outside_git_repo() {
     // Run from a temp dir with no .git — should not panic, just return graceful message
-    let _guard = cwd_lock().lock().unwrap();
+    let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().unwrap();
     let original = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
@@ -216,7 +216,7 @@ fn git_log_returns_string_outside_git_repo() {
 
 #[test]
 fn git_status_returns_string_outside_git_repo() {
-    let _guard = cwd_lock().lock().unwrap();
+    let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().unwrap();
     let original = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();

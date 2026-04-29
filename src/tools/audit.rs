@@ -28,8 +28,17 @@ fn run_cargo_audit() -> String {
     match Command::new("cargo").args(["audit", "--json"]).output() {
         Err(_) => "cargo-audit not installed — run 'cargo install cargo-audit'".to_string(),
         Ok(out) => {
-            let output = String::from_utf8_lossy(&out.stdout).to_string();
-            truncate_output(output, 8000)
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            if stdout.trim().is_empty() {
+                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+                if stderr.trim().is_empty() {
+                    "cargo audit returned no output".to_string()
+                } else {
+                    format!("cargo audit error: {}", stderr.trim())
+                }
+            } else {
+                truncate_output(stdout, 8000)
+            }
         }
     }
 }
@@ -38,18 +47,36 @@ fn run_pip_audit() -> String {
     match Command::new("pip-audit").args(["--output", "json"]).output() {
         Err(_) => "pip-audit not installed — run 'pip install pip-audit'".to_string(),
         Ok(out) => {
-            let output = String::from_utf8_lossy(&out.stdout).to_string();
-            truncate_output(output, 8000)
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            if stdout.trim().is_empty() {
+                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+                if stderr.trim().is_empty() {
+                    "pip-audit returned no output".to_string()
+                } else {
+                    format!("pip-audit error: {}", stderr.trim())
+                }
+            } else {
+                truncate_output(stdout, 8000)
+            }
         }
     }
 }
 
 fn run_go_audit() -> String {
-    match Command::new("go").args(["list", "-json", "-m", "all"]).output() {
-        Err(_) => "go not found in PATH".to_string(),
+    match Command::new("govulncheck").args(["-json", "./..."]).output() {
+        Err(_) => "govulncheck not installed — run 'go install golang.org/x/vuln/cmd/govulncheck@latest'".to_string(),
         Ok(out) => {
-            let output = String::from_utf8_lossy(&out.stdout).to_string();
-            truncate_output(output, 8000)
+            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+            if stdout.trim().is_empty() {
+                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+                if stderr.trim().is_empty() {
+                    "govulncheck returned no output".to_string()
+                } else {
+                    format!("govulncheck error: {}", stderr.trim())
+                }
+            } else {
+                truncate_output(stdout, 8000)
+            }
         }
     }
 }
@@ -58,5 +85,6 @@ fn truncate_output(s: String, max_bytes: usize) -> String {
     if s.len() <= max_bytes {
         return s;
     }
-    format!("{}\n... (truncated, {} bytes total)", &s[..max_bytes], s.len())
+    let boundary = s.floor_char_boundary(max_bytes);
+    format!("{}\n... (truncated, {} bytes total)", &s[..boundary], s.len())
 }
