@@ -4,6 +4,13 @@ use zentra_cli::tools::fs_tools::{grep_code, list_files, read_file};
 use zentra_cli::tools::git_tools::{git_log, git_status};
 use zentra_cli::scanners;
 
+use std::sync::Arc;
+use tokio::sync::mpsc;
+use zentra_cli::agent::scanner::ScannerAgent;
+use zentra_cli::provider::openai_compat::OpenAICompatProvider;
+use wiremock::{MockServer, Mock, ResponseTemplate};
+use wiremock::matchers::{method, path};
+
 #[test]
 fn modules_exist() {
     // compile-time verification that all new modules are declared
@@ -282,6 +289,96 @@ static CWD_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock
 
 fn cwd_lock() -> &'static std::sync::Mutex<()> {
     CWD_LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+#[tokio::test]
+async fn scanner_agent_runs_react_loop_and_completes_when_no_tool_calls() {
+    let server = MockServer::start().await;
+
+    // First call: agent returns no tool calls (done immediately)
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "No issues found."}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let provider = Arc::new(OpenAICompatProvider::new(
+        server.uri(), "gpt-4o".to_string(), "test-key".to_string(),
+    ));
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let writer = Arc::new(StateWriter::new(dir.path()).unwrap());
+    let (tx, _rx) = mpsc::channel(16);
+
+    let agent = ScannerAgent::new(ScannerType::Sast, provider, registry, writer, tx);
+    let result = agent.run().await;
+
+    assert!(result.is_ok(), "scanner should complete without error: {:?}", result);
+}
+
+#[tokio::test]
+async fn scanner_agent_executes_tool_call_and_feeds_result_back() {
+    let server = MockServer::start().await;
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
+
+    // First response: agent calls list_files — consumed once (up_to_n_times),
+    // then falls through to the fallback mock below for all subsequent requests.
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "list_files",
+                            "arguments": "{\"dir\": \".\"}"
+                        }
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
+        })))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Second response: agent is done after seeing file list (fallback for all subsequent calls)
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "Scan complete."}}],
+            "usage": {"prompt_tokens": 30, "completion_tokens": 5, "total_tokens": 35}
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = Arc::new(OpenAICompatProvider::new(
+        server.uri(), "gpt-4o".to_string(), "test-key".to_string(),
+    ));
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let writer = Arc::new(StateWriter::new(dir.path()).unwrap());
+    let (tx, mut rx) = mpsc::channel(16);
+
+    let agent = ScannerAgent::new(ScannerType::Sast, provider, registry, writer, tx);
+    agent.run().await.unwrap();
+
+    // Should have sent ToolCall event
+    let mut found_tool_call = false;
+    while let Ok(event) = rx.try_recv() {
+        if matches!(event, ScanEvent::ToolCall { .. }) {
+            found_tool_call = true;
+        }
+    }
+    assert!(found_tool_call, "should have sent ToolCall event");
 }
 
 #[test]
