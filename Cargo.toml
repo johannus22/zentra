@@ -14,15 +14,19 @@ path = "src/lib.rs"
 [dependencies]
 anyhow = "1"
 async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 dirs = "5"
+ignore = "0.4"
 keyring = "3"
+regex = "1"
 reqwest = { version = "0.12", features = ["json"] }
 rpassword = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 toml = "0.8"
+walkdir = "2"
 
 [dev-dependencies]
 tempfile = "3"

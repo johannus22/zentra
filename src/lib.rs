@@ -1,5 +1,9 @@
+pub mod agent;
 pub mod cli;
+pub mod commands;
 pub mod config;
 pub mod provider;
+pub mod scanners;
+pub mod state;
+pub mod tools;
 pub mod wizard;
-pub mod commands;
