@@ -105,3 +105,18 @@ fn ui_state_select_next_wraps() {
     state.select_next();
     assert_eq!(state.selected_idx, 1); // clamped at end
 }
+
+#[test]
+fn ui_state_token_pct_is_correct() {
+    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000);
+    state.apply_event(ScanEvent::TokensUsed { input: 10_000, output: 5_000 });
+    // 15_000 / 200_000 = 7.5% → 7
+    assert_eq!(state.token_pct(), 7);
+}
+
+#[test]
+fn ui_state_token_pct_caps_at_100() {
+    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 1_000);
+    state.apply_event(ScanEvent::TokensUsed { input: 2_000, output: 0 });
+    assert_eq!(state.token_pct(), 100);
+}
