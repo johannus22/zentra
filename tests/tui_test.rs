@@ -175,3 +175,61 @@ fn menu_state_scanner_selector_selected_types() {
     assert!(types.contains(&ScannerType::ThreatModel));
     assert!(types.contains(&ScannerType::Report)); // always included
 }
+
+use zentra_cli::tui::results::parse_findings;
+
+#[test]
+fn parse_findings_extracts_critical_finding() {
+    let raw = "## [CRITICAL] Hardcoded JWT secret\n\
+               **Scanner:** sast\n\
+               **Location:** src/config.rs:18\n\
+               **Description:** Static secret in config.\n\
+               **Recommendation:** Use env var.\n\
+               \n\
+               ---\n";
+    let findings = parse_findings(raw);
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].title, "Hardcoded JWT secret");
+    assert!(matches!(findings[0].severity, zentra_cli::state::Severity::Critical));
+    assert_eq!(findings[0].scanner, "sast");
+    assert_eq!(findings[0].location.as_deref(), Some("src/config.rs:18"));
+}
+
+#[test]
+fn parse_findings_handles_missing_location() {
+    let raw = "## [HIGH] Missing rate limit\n\
+               **Scanner:** api_scan\n\
+               **Description:** No rate limit on /login.\n\
+               **Recommendation:** Add rate limiting.\n\
+               \n\
+               ---\n";
+    let findings = parse_findings(raw);
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].location.is_none());
+}
+
+#[test]
+fn parse_findings_parses_multiple_findings() {
+    let raw = "## [HIGH] Finding A\n\
+               **Scanner:** sast\n\
+               **Description:** desc a.\n\
+               **Recommendation:** fix a.\n\
+               \n\
+               ---\n\
+               ## [LOW] Finding B\n\
+               **Scanner:** threat_model\n\
+               **Description:** desc b.\n\
+               **Recommendation:** fix b.\n\
+               \n\
+               ---\n";
+    let findings = parse_findings(raw);
+    assert_eq!(findings.len(), 2);
+    assert_eq!(findings[0].title, "Finding A");
+    assert_eq!(findings[1].title, "Finding B");
+}
+
+#[test]
+fn parse_findings_returns_empty_on_empty_input() {
+    let findings = parse_findings("");
+    assert!(findings.is_empty());
+}
