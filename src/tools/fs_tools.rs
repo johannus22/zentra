@@ -1,13 +1,13 @@
 use ignore::WalkBuilder;
 use regex::Regex;
 use std::fs;
-use std::path::Path;
+use std::path::{Component, Path};
 
 const MAX_FILE_BYTES: u64 = 100_000;
 const MAX_GREP_RESULTS: usize = 100;
 
 pub fn read_file(path: &str) -> String {
-    if path.contains("..") {
+    if Path::new(path).components().any(|c| c == Component::ParentDir) {
         return "Error: path traversal not allowed".to_string();
     }
     let p = Path::new(path);
@@ -51,7 +51,7 @@ pub fn grep_code(pattern: &str, path: Option<&str>) -> String {
     let search_root = path.unwrap_or(".");
     let mut results: Vec<String> = Vec::new();
 
-    for entry in WalkBuilder::new(search_root).build().flatten() {
+    for entry in WalkBuilder::new(search_root).hidden(false).build().flatten() {
         if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
             if let Ok(content) = fs::read_to_string(entry.path()) {
                 for (i, line) in content.lines().enumerate() {
@@ -64,7 +64,7 @@ pub fn grep_code(pattern: &str, path: Option<&str>) -> String {
                         ));
                         if results.len() >= MAX_GREP_RESULTS {
                             results.push(format!(
-                                "... truncated at {} matches",
+                                "... results truncated, showing first {} matches",
                                 MAX_GREP_RESULTS
                             ));
                             return results.join("\n");
