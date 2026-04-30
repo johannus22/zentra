@@ -1,5 +1,5 @@
 use crate::agent::{ScanEvent, ScannerType};
-use crate::tui::{ScanStatus, UiState};
+use crate::tui::{ScanOutcome, ScanStatus, UiState};
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode};
 use futures::StreamExt;
@@ -7,17 +7,23 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame,
 };
 use tokio::sync::mpsc;
+
+pub const POPUP_ITEMS: &[&str] = &[
+    "Change Model / Provider",
+    "Abort Scan",
+    "Exit App",
+];
 
 pub async fn run_scan_ui(
     mut rx: mpsc::Receiver<ScanEvent>,
     scanners: Vec<ScannerType>,
     model_info: String,
     context_window: u32,
-) -> Result<()> {
+) -> Result<ScanOutcome> {
     let mut terminal = ratatui::init();
     let result = run_loop(&mut terminal, &mut rx, scanners, model_info, context_window).await;
     ratatui::restore();
@@ -30,7 +36,7 @@ async fn run_loop(
     scanners: Vec<ScannerType>,
     model_info: String,
     context_window: u32,
-) -> Result<()> {
+) -> Result<ScanOutcome> {
     let mut state = UiState::new(scanners, model_info, context_window);
     let mut keys = EventStream::new();
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(80));
@@ -39,19 +45,37 @@ async fn run_loop(
         tokio::select! {
             Some(event) = rx.recv() => {
                 state.apply_event(event);
-                if state.all_done() {
+                if state.all_done() && !state.popup_open {
                     terminal.draw(|f| render(f, &mut state))?;
                     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    break;
+                    return Ok(ScanOutcome::Completed);
                 }
             }
             Some(Ok(evt)) = keys.next() => {
                 if let Event::Key(key) = evt {
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => break,
-                        KeyCode::Down => state.select_next(),
-                        KeyCode::Up => state.select_prev(),
-                        _ => {}
+                    if state.popup_open {
+                        match key.code {
+                            KeyCode::Esc => state.toggle_popup(),
+                            KeyCode::Up => state.popup.prev(),
+                            KeyCode::Down => state.popup.next(POPUP_ITEMS.len()),
+                            KeyCode::Enter => {
+                                match state.popup.selected {
+                                    0 => return Ok(ScanOutcome::Reconfigure),
+                                    1 => return Ok(ScanOutcome::Aborted),
+                                    2 => return Ok(ScanOutcome::ExitApp),
+                                    _ => {}
+                                }
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        match key.code {
+                            KeyCode::Char('q') | KeyCode::Esc => return Ok(ScanOutcome::Aborted),
+                            KeyCode::Char('p') | KeyCode::Char('?') => state.toggle_popup(),
+                            KeyCode::Down => state.select_next(),
+                            KeyCode::Up => state.select_prev(),
+                            _ => {}
+                        }
                     }
                 }
             }
@@ -59,7 +83,6 @@ async fn run_loop(
         }
         terminal.draw(|f| render(f, &mut state))?;
     }
-    Ok(())
 }
 
 fn render(frame: &mut Frame, state: &mut UiState) {
@@ -77,7 +100,11 @@ fn render(frame: &mut Frame, state: &mut UiState) {
     render_body(frame, chunks[1], state);
     render_activity(frame, chunks[2], state);
     render_detail(frame, chunks[3], state);
-    render_keys(frame, chunks[4]);
+    render_keys(frame, chunks[4], state.popup_open);
+
+    if state.popup_open {
+        render_popup(frame, area, &state.popup);
+    }
 }
 
 fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
@@ -140,11 +167,7 @@ fn render_scanners(frame: &mut Frame, area: Rect, state: &UiState) {
                 ScanStatus::Failed => Color::Red,
                 _ => Color::DarkGray,
             };
-            let label = format!(
-                "{} {:<14}",
-                icon,
-                format!("{:?}", s.scanner_type)
-            );
+            let label = format!("{} {:<14}", icon, format!("{:?}", s.scanner_type));
             ListItem::new(label).style(Style::default().fg(color))
         })
         .collect();
@@ -154,11 +177,7 @@ fn render_scanners(frame: &mut Frame, area: Rect, state: &UiState) {
     let total_med: u32 = state.scanners.iter().map(|s| s.medium_count).sum();
     let total_low: u32 = state.scanners.iter().map(|s| s.low_count).sum();
 
-    let title = format!(
-        "SCANNERS  {}C {}H {}M {}L",
-        total_crit, total_high, total_med, total_low
-    );
-
+    let title = format!("SCANNERS  {}C {}H {}M {}L", total_crit, total_high, total_med, total_low);
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(title));
     frame.render_widget(list, area);
@@ -207,18 +226,14 @@ fn render_findings(frame: &mut Frame, area: Rect, state: &mut UiState) {
 
 fn render_activity(frame: &mut Frame, area: Rect, state: &UiState) {
     let text = format!(" ACTIVITY  {}", state.activity);
-    let paragraph = Paragraph::new(text)
-        .style(Style::default().fg(Color::DarkGray));
+    let paragraph = Paragraph::new(text).style(Style::default().fg(Color::DarkGray));
     frame.render_widget(paragraph, area);
 }
 
 fn render_detail(frame: &mut Frame, area: Rect, state: &UiState) {
     let content = state.selected_finding().map(|f| {
         let loc = f.location.as_deref().map(|l| format!(" · {}", l)).unwrap_or_default();
-        format!(
-            "[{}] {}{}\n{}\nFIX: {}",
-            f.severity, f.title, loc, f.description, f.recommendation
-        )
+        format!("[{}] {}{}\n{}\nFIX: {}", f.severity, f.title, loc, f.description, f.recommendation)
     }).unwrap_or_default();
 
     let paragraph = Paragraph::new(content)
@@ -227,9 +242,44 @@ fn render_detail(frame: &mut Frame, area: Rect, state: &UiState) {
     frame.render_widget(paragraph, area);
 }
 
-fn render_keys(frame: &mut Frame, area: Rect) {
-    let text = " ↑↓ navigate · Enter expand · q quit";
-    let paragraph = Paragraph::new(text)
-        .style(Style::default().fg(Color::DarkGray));
+fn render_keys(frame: &mut Frame, area: Rect, popup_open: bool) {
+    let text = if popup_open {
+        " ↑↓ navigate · Enter select · Esc close"
+    } else {
+        " ↑↓ navigate · p menu · q quit"
+    };
+    let paragraph = Paragraph::new(text).style(Style::default().fg(Color::DarkGray));
     frame.render_widget(paragraph, area);
+}
+
+fn render_popup(frame: &mut Frame, area: Rect, popup: &crate::tui::PopupState) {
+    let popup_width = 40u16;
+    let popup_height = (POPUP_ITEMS.len() as u16) + 4;
+    let popup_area = centered_rect(popup_width, popup_height, area);
+
+    frame.render_widget(Clear, popup_area);
+
+    let items: Vec<ListItem> = POPUP_ITEMS
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            let prefix = if i == popup.selected { "▶ " } else { "  " };
+            let style = if i == popup.selected {
+                Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow)
+            } else {
+                Style::default()
+            };
+            ListItem::new(format!("{}{}", prefix, label)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title("  MENU  ").title_style(Style::default().fg(Color::Cyan)));
+    frame.render_widget(list, popup_area);
+}
+
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    let x = area.x + area.width.saturating_sub(width) / 2;
+    let y = area.y + area.height.saturating_sub(height) / 2;
+    Rect::new(x, y, width.min(area.width), height.min(area.height))
 }
