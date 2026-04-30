@@ -58,6 +58,9 @@ fn auth_method_default_is_api_key() {
 }
 
 use zentra_cli::auth::{build_auth_url, generate_pkce};
+use wiremock::{MockServer, Mock, ResponseTemplate};
+use wiremock::matchers::{method, path};
+use zentra_cli::auth::{exchange_code_with_url, refresh_access_token_with_url, parse_token_response};
 
 #[test]
 fn pkce_verifier_and_challenge_differ() {
@@ -95,4 +98,73 @@ fn build_auth_url_contains_required_params() {
     assert!(url.contains("S256"), "missing code_challenge_method");
     assert!(url.contains("localhost"), "missing localhost redirect");
     assert!(url.contains("response_type=code"), "missing response_type");
+}
+
+#[tokio::test]
+async fn exchange_code_parses_tokens() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "tok_abc",
+            "refresh_token": "ref_xyz",
+            "expires_in": 3600,
+            "token_type": "Bearer"
+        })))
+        .mount(&server)
+        .await;
+
+    let tokens = exchange_code_with_url("mycode", "myverifier", &server.uri()).await.unwrap();
+    assert_eq!(tokens.access_token, "tok_abc");
+    assert_eq!(tokens.refresh_token, "ref_xyz");
+    assert!(!tokens.is_expired());
+}
+
+#[tokio::test]
+async fn exchange_code_returns_error_on_failure() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": "invalid_grant"
+        })))
+        .mount(&server)
+        .await;
+
+    let result = exchange_code_with_url("bad_code", "verifier", &server.uri()).await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn refresh_token_returns_new_tokens() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "new_tok",
+            "refresh_token": "new_ref",
+            "expires_in": 7200,
+            "token_type": "Bearer"
+        })))
+        .mount(&server)
+        .await;
+
+    let tokens = refresh_access_token_with_url("old_refresh", &server.uri()).await.unwrap();
+    assert_eq!(tokens.access_token, "new_tok");
+}
+
+#[test]
+fn parse_token_response_sets_expires_at_from_expires_in() {
+    let json = serde_json::json!({
+        "access_token": "at",
+        "refresh_token": "rt",
+        "expires_in": 3600
+    });
+    let tokens = parse_token_response(&json).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    assert!(tokens.expires_at > now + 3500);
+    assert!(tokens.expires_at <= now + 3601);
 }

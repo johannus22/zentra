@@ -1,3 +1,4 @@
+use anyhow::Context;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -53,4 +54,110 @@ fn percent_encode(s: &str) -> String {
         '/' => "%2F".to_string(),
         c => c.to_string(),
     }).collect()
+}
+
+pub fn parse_token_response(json: &serde_json::Value) -> anyhow::Result<OAuthTokens> {
+    let access_token = json["access_token"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("Missing access_token in token response"))?
+        .to_string();
+    let refresh_token = json["refresh_token"].as_str().unwrap_or("").to_string();
+    let expires_in = json["expires_in"].as_i64().unwrap_or(3600);
+    let expires_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+        + expires_in;
+    Ok(OAuthTokens { access_token, refresh_token, expires_at })
+}
+
+pub async fn exchange_code_with_url(code: &str, verifier: &str, token_url: &str) -> anyhow::Result<OAuthTokens> {
+    let redirect_uri = format!("http://localhost:{}/callback", REDIRECT_PORT);
+    let url = format!("{}/oauth/token", token_url.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .form(&[
+            ("client_id", OPENAI_CLIENT_ID),
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("code_verifier", verifier),
+            ("redirect_uri", &redirect_uri as &str),
+        ])
+        .send()
+        .await
+        .context("Token exchange request failed")?;
+
+    if !resp.status().is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(anyhow::anyhow!("Token exchange failed: {}", text));
+    }
+    parse_token_response(&resp.json::<serde_json::Value>().await?)
+}
+
+pub async fn exchange_code(code: &str, verifier: &str) -> anyhow::Result<OAuthTokens> {
+    exchange_code_with_url(code, verifier, OPENAI_TOKEN_URL).await
+}
+
+pub async fn refresh_access_token_with_url(refresh_token: &str, token_url: &str) -> anyhow::Result<OAuthTokens> {
+    let url = format!("{}/oauth/token", token_url.trim_end_matches('/'));
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .form(&[
+            ("client_id", OPENAI_CLIENT_ID),
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+        ])
+        .send()
+        .await
+        .context("Token refresh request failed")?;
+
+    if !resp.status().is_success() {
+        let text = resp.text().await.unwrap_or_default();
+        return Err(anyhow::anyhow!("Token refresh failed: {}", text));
+    }
+    parse_token_response(&resp.json::<serde_json::Value>().await?)
+}
+
+pub async fn refresh_access_token(refresh_token: &str) -> anyhow::Result<OAuthTokens> {
+    refresh_access_token_with_url(refresh_token, OPENAI_TOKEN_URL).await
+}
+
+pub async fn wait_for_callback() -> anyhow::Result<String> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", REDIRECT_PORT))
+        .await
+        .context("Failed to bind callback port — is port 8484 already in use?")?;
+
+    let (stream, _) = listener.accept().await
+        .context("Failed to accept OAuth callback connection")?;
+
+    let (reader_half, mut writer_half) = stream.into_split();
+    let mut reader = BufReader::new(reader_half);
+    let mut request_line = String::new();
+    reader.read_line(&mut request_line).await?;
+
+    let code = request_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|path| path.split('?').nth(1))
+        .and_then(|query| {
+            query.split('&')
+                .find(|p| p.starts_with("code="))
+                .map(|p| p.trim_start_matches("code=").to_string())
+        })
+        .ok_or_else(|| anyhow::anyhow!("OAuth callback missing 'code' parameter"))?;
+
+    let body = "<html><body><h2>&#10003; Authenticated. Return to your terminal.</h2></body></html>";
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    writer_half.write_all(response.as_bytes()).await?;
+
+    Ok(code)
 }
