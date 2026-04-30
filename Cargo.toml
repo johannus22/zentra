@@ -1,6 +1,6 @@
 [package]
 name = "zentra-cli"
-version = "0.1.0"
+version = "0.1.42"
 edition = "2021"
 
 [[bin]]
@@ -13,6 +13,7 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
 crossterm = { version = "0.28", features = ["event-stream"] }
 futures = "0.3"
 ratatui = "0.29"
@@ -22,11 +23,14 @@ clap = { version = "4", features = ["derive"] }
 dirs = "5"
 ignore = "0.4"
 keyring = "3"
+open = "5"
+rand = "0.8"
 regex = "1"
 reqwest = { version = "0.12", features = ["json"] }
 rpassword = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 toml = "0.8"
 walkdir = "2"
