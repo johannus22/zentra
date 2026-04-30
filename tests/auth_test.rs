@@ -168,3 +168,11 @@ fn parse_token_response_sets_expires_at_from_expires_in() {
     assert!(tokens.expires_at > now + 3500);
     assert!(tokens.expires_at <= now + 3601);
 }
+
+#[tokio::test]
+async fn ensure_fresh_token_returns_error_when_no_tokens() {
+    let result = zentra_cli::auth::ensure_fresh_token("__nonexistent_profile_xyz__").await;
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(msg.contains("No OAuth tokens"), "got: {}", msg);
+}

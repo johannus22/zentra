@@ -124,6 +124,52 @@ pub async fn refresh_access_token(refresh_token: &str) -> anyhow::Result<OAuthTo
     refresh_access_token_with_url(refresh_token, OPENAI_TOKEN_URL).await
 }
 
+pub async fn run_oauth_flow() -> anyhow::Result<OAuthTokens> {
+    let (verifier, challenge) = generate_pkce();
+    let mut state_bytes = [0u8; 8];
+    rand::thread_rng().fill_bytes(&mut state_bytes);
+    let state = URL_SAFE_NO_PAD.encode(state_bytes);
+
+    let auth_url = build_auth_url(&challenge, &state);
+    println!("\nOpening browser for OpenAI login...");
+    println!("If the browser doesn't open automatically, visit:\n  {}\n", auth_url);
+
+    open::that(&auth_url).context("Failed to launch browser")?;
+    println!("Waiting for authentication (complete login in your browser)...");
+
+    let code = wait_for_callback().await?;
+    println!("✓ Received authorization code, exchanging for tokens...");
+
+    let tokens = exchange_code(&code, &verifier).await?;
+    println!("✓ Authentication successful");
+    Ok(tokens)
+}
+
+pub async fn ensure_fresh_token(profile_name: &str) -> anyhow::Result<String> {
+    use crate::config::keychain;
+
+    let tokens = keychain::get_oauth_tokens(profile_name)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "No OAuth tokens found for profile '{}'. Run 'zentra config setup' to re-authenticate.",
+            profile_name
+        )
+    })?;
+
+    if tokens.is_expired() {
+        if tokens.refresh_token.is_empty() {
+            return Err(anyhow::anyhow!(
+                "OAuth session expired and no refresh token available. \
+                 Run 'zentra config setup' to re-authenticate."
+            ));
+        }
+        let new_tokens = refresh_access_token(&tokens.refresh_token).await?;
+        keychain::set_oauth_tokens(profile_name, &new_tokens)?;
+        return Ok(new_tokens.access_token);
+    }
+
+    Ok(tokens.access_token)
+}
+
 pub async fn wait_for_callback() -> anyhow::Result<String> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;
