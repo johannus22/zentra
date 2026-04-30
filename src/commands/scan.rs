@@ -30,14 +30,20 @@ async fn run_internal(provider_override: Option<String>, scanners: Vec<ScannerTy
         .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found", profile_name))?
         .clone();
 
-    let api_key = if profile.keyless {
-        keychain::get_key(&profile_name)?.unwrap_or_default()
-    } else {
-        keychain::get_key(&profile_name)?
-            .ok_or_else(|| anyhow::anyhow!(
-                "No API key found for profile '{}'. Run 'zentra config setup' to configure it.",
-                profile_name
-            ))?
+    let api_key = match profile.auth_method {
+        crate::config::AuthMethod::OAuth => {
+            crate::auth::ensure_fresh_token(&profile_name).await?
+        }
+        crate::config::AuthMethod::ApiKey => {
+            if profile.keyless {
+                keychain::get_key(&profile_name)?.unwrap_or_default()
+            } else {
+                keychain::get_key(&profile_name)?.ok_or_else(|| anyhow::anyhow!(
+                    "No API key found for profile '{}'. Run 'zentra config setup' to configure it.",
+                    profile_name
+                ))?
+            }
+        }
     };
 
     let provider: Arc<dyn LLMProvider> = match profile.kind.as_str() {
