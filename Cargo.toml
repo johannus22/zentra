@@ -1,6 +1,6 @@
 [package]
 name = "zentra-cli"
-version = "0.1.42"
+version = "0.1.53"
 edition = "2021"
 
 [[bin]]
