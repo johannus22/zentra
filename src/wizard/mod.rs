@@ -152,6 +152,7 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
         base_url,
         model,
         keyless: defaults.keyless,
+        auth_method: Default::default(),
     });
     if global.default_profile.is_none() {
         global.default_profile = Some(name.clone());

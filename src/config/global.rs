@@ -3,6 +3,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthMethod {
+    #[default]
+    ApiKey,
+    OAuth,
+}
+
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct GlobalConfig {
     #[serde(default)]
@@ -12,11 +20,13 @@ pub struct GlobalConfig {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ProviderProfile {
-    pub kind: String,      // "openai_compat" | "anthropic"
+    pub kind: String,
     pub base_url: String,
     pub model: String,
     #[serde(default)]
-    pub keyless: bool,     // true for providers that don't require an API key (e.g. ollama)
+    pub keyless: bool,
+    #[serde(default)]
+    pub auth_method: AuthMethod,
 }
 
 impl GlobalConfig {

@@ -34,3 +34,31 @@ pub fn delete_key(profile: &str) -> Result<()> {
         Err(e) => Err(anyhow::anyhow!("Keychain delete failed: {}", e)),
     }
 }
+
+pub fn set_oauth_tokens(profile: &str, tokens: &crate::auth::OAuthTokens) -> Result<()> {
+    let json = serde_json::to_string(tokens)?;
+    let entry = keyring::Entry::new(&service_name(profile), "oauth_tokens")
+        .context("Failed to access OS keychain")?;
+    entry.set_password(&json)
+        .context("Failed to store OAuth tokens in keychain")?;
+    Ok(())
+}
+
+pub fn get_oauth_tokens(profile: &str) -> Result<Option<crate::auth::OAuthTokens>> {
+    let entry = keyring::Entry::new(&service_name(profile), "oauth_tokens")
+        .context("Failed to access OS keychain")?;
+    match entry.get_password() {
+        Ok(json) => Ok(Some(serde_json::from_str(&json)?)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(anyhow::anyhow!("Keychain read failed: {}", e)),
+    }
+}
+
+pub fn delete_oauth_tokens(profile: &str) -> Result<()> {
+    let entry = keyring::Entry::new(&service_name(profile), "oauth_tokens")
+        .context("Failed to access OS keychain")?;
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(anyhow::anyhow!("Keychain delete failed: {}", e)),
+    }
+}
