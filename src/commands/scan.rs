@@ -8,17 +8,37 @@ use crate::config::{keychain, GlobalConfig, ProjectConfig};
 use crate::provider::{anthropic::AnthropicProvider, openai_compat::OpenAICompatProvider, LLMProvider};
 use crate::state::StateWriter;
 use crate::tools::ToolRegistry;
-use crate::tui;
+use crate::tui::{scan_ui::run_scan_ui, ScanOutcome};
+use crate::wizard;
 
 pub async fn run(provider_override: Option<String>, only: Option<String>) -> Result<()> {
-    run_internal(provider_override, resolve_scanners(only.as_deref())).await
+    let scanners = resolve_scanners(only.as_deref());
+    loop {
+        match run_once(provider_override.clone(), scanners.clone()).await? {
+            ScanOutcome::Completed | ScanOutcome::Aborted => break,
+            ScanOutcome::Reconfigure => {
+                wizard::run_setup(None).await?;
+            }
+            ScanOutcome::ExitApp => std::process::exit(0),
+        }
+    }
+    Ok(())
 }
 
 pub async fn run_with_scanners(scanners: Vec<ScannerType>) -> Result<()> {
-    run_internal(None, scanners).await
+    loop {
+        match run_once(None, scanners.clone()).await? {
+            ScanOutcome::Completed | ScanOutcome::Aborted => break,
+            ScanOutcome::Reconfigure => {
+                wizard::run_setup(None).await?;
+            }
+            ScanOutcome::ExitApp => std::process::exit(0),
+        }
+    }
+    Ok(())
 }
 
-async fn run_internal(provider_override: Option<String>, scanners: Vec<ScannerType>) -> Result<()> {
+async fn run_once(provider_override: Option<String>, scanners: Vec<ScannerType>) -> Result<ScanOutcome> {
     let global = GlobalConfig::load()?;
     let profile_name = provider_override
         .or_else(|| global.default_profile.clone())
@@ -64,7 +84,7 @@ async fn run_internal(provider_override: Option<String>, scanners: Vec<ScannerTy
     );
     let tool_registry = Arc::new(ToolRegistry::new());
 
-    let context_window = provider.context_window();
+    let context_window = profile.context_window.unwrap_or_else(|| provider.context_window());
     let model_info = format!("{} · {}", profile.model, profile_name);
 
     let (tx, rx) = mpsc::channel(128);
@@ -76,11 +96,19 @@ async fn run_internal(provider_override: Option<String>, scanners: Vec<ScannerTy
             .await
     });
 
-    tui::scan_ui::run_scan_ui(rx, scanners, model_info, context_window).await?;
+    let outcome = run_scan_ui(rx, scanners, model_info, context_window).await?;
 
-    scan_task.await??;
-    println!("\n✓ Scan complete. Findings in .zentra/");
-    Ok(())
+    match outcome {
+        ScanOutcome::Completed => {
+            scan_task.await??;
+            println!("\n✓ Scan complete. Findings in .zentra/");
+        }
+        _ => {
+            scan_task.abort();
+        }
+    }
+
+    Ok(outcome)
 }
 
 fn resolve_scanners(only: Option<&str>) -> Vec<ScannerType> {
