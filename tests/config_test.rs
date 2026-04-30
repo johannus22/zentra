@@ -14,6 +14,7 @@ fn global_config_roundtrip() {
         base_url: "https://api.openai.com/v1".to_string(),
         model: "gpt-4o".to_string(),
         keyless: false,
+        auth_method: Default::default(),
     });
 
     let config = GlobalConfig { profiles, default_profile: Some("openai".to_string()) };

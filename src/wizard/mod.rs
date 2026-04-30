@@ -49,7 +49,11 @@ pub fn provider_defaults(provider: &str) -> ProviderDefaults {
 }
 
 pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
-    use crate::{config::{keychain, GlobalConfig, ProviderProfile}, provider};
+    use crate::{
+        auth,
+        config::{keychain, AuthMethod, GlobalConfig, ProviderProfile},
+        provider,
+    };
     use std::io::{self, Write};
 
     println!("\n Zentra — Provider Setup\n");
@@ -88,8 +92,32 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     io::stdin().read_line(&mut model_input)?;
     let model = if model_input.trim().is_empty() { default_model } else { model_input.trim().to_string() };
 
-    let api_key = if defaults.keyless {
-        None
+    // Auth method — only for OpenAI
+    let (auth_method, api_key_opt) = if provider_key == "openai" {
+        println!("\nAuth method:");
+        println!("  1. API Key");
+        println!("  2. Login with browser (ChatGPT / OpenAI subscription)");
+        print!("Selection [1]: ");
+        io::stdout().flush()?;
+        let mut am_input = String::new();
+        io::stdin().read_line(&mut am_input)?;
+        let am_idx = am_input.trim().parse::<usize>().unwrap_or(1);
+
+        if am_idx == 2 {
+            (AuthMethod::OAuth, None)
+        } else {
+            print!("API Key (hidden): ");
+            io::stdout().flush()?;
+            let key = rpassword::read_password()?;
+            if key.is_empty() {
+                println!("\n✗ API key cannot be empty.");
+                println!("Aborted.");
+                return Ok(());
+            }
+            (AuthMethod::ApiKey, Some(key))
+        }
+    } else if defaults.keyless {
+        (AuthMethod::ApiKey, None)
     } else {
         print!("API Key (hidden): ");
         io::stdout().flush()?;
@@ -99,17 +127,33 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
             println!("Aborted.");
             return Ok(());
         }
-        Some(key)
+        (AuthMethod::ApiKey, Some(key))
+    };
+
+    let name = profile_name.unwrap_or_else(|| provider_key.to_string());
+
+    // For OAuth: run browser flow now, before saving profile
+    let oauth_tokens = if auth_method == AuthMethod::OAuth {
+        Some(auth::run_oauth_flow().await?)
+    } else {
+        None
+    };
+
+    // Connection test using resolved credential
+    let test_key = match (&oauth_tokens, &api_key_opt) {
+        (Some(t), _) => t.access_token.clone(),
+        (_, Some(k)) => k.clone(),
+        _ => String::new(),
     };
 
     println!("\nTesting connection...");
     let test_provider: Box<dyn provider::LLMProvider> = if defaults.kind == "anthropic" {
         Box::new(provider::anthropic::AnthropicProvider::new(
-            base_url.clone(), model.clone(), api_key.clone().unwrap_or_default(),
+            base_url.clone(), model.clone(), test_key,
         ))
     } else {
         Box::new(provider::openai_compat::OpenAICompatProvider::new(
-            base_url.clone(), model.clone(), api_key.clone().unwrap_or_default(),
+            base_url.clone(), model.clone(), test_key,
         ))
     };
 
@@ -135,7 +179,6 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
         }
     };
 
-    let name = profile_name.unwrap_or_else(|| provider_key.to_string());
     let mut global = GlobalConfig::load()?;
     if global.profiles.contains_key(&name) {
         print!("Profile '{}' already exists. Overwrite? [y/N]: ", name);
@@ -147,21 +190,26 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
             return Ok(());
         }
     }
+
     global.profiles.insert(name.clone(), ProviderProfile {
         kind: defaults.kind.clone(),
         base_url,
         model,
         keyless: defaults.keyless,
-        auth_method: Default::default(),
+        auth_method: auth_method.clone(),
     });
     if global.default_profile.is_none() {
         global.default_profile = Some(name.clone());
     }
 
-    if let Some(ref key) = api_key {
+    if let Some(ref tokens) = oauth_tokens {
+        keychain::set_oauth_tokens(&name, tokens)?;
+        println!("✓ OAuth tokens saved to OS keychain");
+    } else if let Some(ref key) = api_key_opt {
         keychain::set_key(&name, key)?;
         println!("✓ API key saved to OS keychain (never written to disk)");
     }
+
     global.save()?;
 
     if verified { println!("✓ Profile '{}' saved", name); }
