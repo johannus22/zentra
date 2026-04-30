@@ -176,6 +176,7 @@ fn menu_state_scanner_selector_selected_types() {
     assert!(types.contains(&ScannerType::Report)); // always included
 }
 
+use zentra_cli::tui::{PopupState, ScanOutcome};
 use zentra_cli::tui::results::parse_findings;
 
 #[test]
@@ -232,4 +233,44 @@ fn parse_findings_parses_multiple_findings() {
 fn parse_findings_returns_empty_on_empty_input() {
     let findings = parse_findings("");
     assert!(findings.is_empty());
+}
+
+#[test]
+fn popup_state_starts_at_zero() {
+    let p = PopupState::new();
+    assert_eq!(p.selected, 0);
+}
+
+#[test]
+fn popup_state_next_clamps_at_max() {
+    let mut p = PopupState::new();
+    // 3 items: 0=Change Model/Provider, 1=Abort Scan, 2=Exit App
+    p.next(3);
+    assert_eq!(p.selected, 1);
+    p.next(3);
+    assert_eq!(p.selected, 2);
+    p.next(3); // should clamp
+    assert_eq!(p.selected, 2);
+}
+
+#[test]
+fn popup_state_prev_clamps_at_zero() {
+    let mut p = PopupState::new();
+    p.prev();
+    assert_eq!(p.selected, 0);
+}
+
+#[test]
+fn ui_state_popup_starts_closed() {
+    let state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000);
+    assert!(!state.popup_open);
+}
+
+#[test]
+fn ui_state_toggle_popup() {
+    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000);
+    state.toggle_popup();
+    assert!(state.popup_open);
+    state.toggle_popup();
+    assert!(!state.popup_open);
 }

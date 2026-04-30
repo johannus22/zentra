@@ -6,6 +6,36 @@ use crate::agent::{ScanEvent, ScannerType};
 use crate::state::{Finding, Severity};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScanOutcome {
+    Completed,
+    Aborted,
+    Reconfigure,
+    ExitApp,
+}
+
+pub struct PopupState {
+    pub selected: usize,
+}
+
+impl PopupState {
+    pub fn new() -> Self {
+        Self { selected: 0 }
+    }
+
+    pub fn next(&mut self, item_count: usize) {
+        if self.selected + 1 < item_count {
+            self.selected += 1;
+        }
+    }
+
+    pub fn prev(&mut self) {
+        if self.selected > 0 {
+            self.selected -= 1;
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScanStatus {
     Queued,
     Waiting,  // Report scanner: waits for all others
@@ -57,6 +87,8 @@ pub struct UiState {
     pub total_tokens: u32,
     pub context_window: u32,
     pub model_info: String,
+    pub popup_open: bool,
+    pub popup: PopupState,
 }
 
 impl UiState {
@@ -73,6 +105,8 @@ impl UiState {
             total_tokens: 0,
             context_window,
             model_info,
+            popup_open: false,
+            popup: PopupState::new(),
         }
     }
 
@@ -145,5 +179,12 @@ impl UiState {
             return 0;
         }
         ((self.total_tokens as f64 / self.context_window as f64) * 100.0).min(100.0) as u16
+    }
+
+    pub fn toggle_popup(&mut self) {
+        self.popup_open = !self.popup_open;
+        if self.popup_open {
+            self.popup = PopupState::new();
+        }
     }
 }
