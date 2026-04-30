@@ -7,6 +7,18 @@ pub struct ProviderDefaults {
     pub keyless: bool,
 }
 
+pub fn model_context_window(model: &str) -> u32 {
+    if model.contains("gpt-4o") || model.contains("o1") || model.contains("glm-4") || model.contains("llama-3") {
+        128_000
+    } else if model.contains("claude") {
+        200_000
+    } else if model.contains("gpt-3.5") {
+        16_000
+    } else {
+        32_000
+    }
+}
+
 pub fn provider_defaults(provider: &str) -> ProviderDefaults {
     match provider {
         "openai" => ProviderDefaults {
@@ -39,6 +51,16 @@ pub fn provider_defaults(provider: &str) -> ProviderDefaults {
             kind: "openai_compat".to_string(),
             keyless: true,
         },
+        "zhipu" => ProviderDefaults {
+            base_url: "https://open.bigmodel.cn/api/paas/v4".to_string(),
+            models: vec![
+                "glm-4-flash".to_string(),
+                "glm-4-plus".to_string(),
+                "glm-4-air".to_string(),
+            ],
+            kind: "openai_compat".to_string(),
+            keyless: false,
+        },
         _ => ProviderDefaults {
             base_url: String::new(),
             models: vec![],
@@ -58,7 +80,7 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
 
     println!("\n Zentra — Provider Setup\n");
     println!("Choose a provider:");
-    let providers = ["openai", "anthropic", "cerebras", "litellm", "ollama", "other"];
+    let providers = ["openai", "anthropic", "cerebras", "litellm", "ollama", "zhipu", "other"];
     for (i, p) in providers.iter().enumerate() {
         println!("  {}. {}", i + 1, p);
     }
@@ -91,6 +113,13 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     let mut model_input = String::new();
     io::stdin().read_line(&mut model_input)?;
     let model = if model_input.trim().is_empty() { default_model } else { model_input.trim().to_string() };
+
+    let default_cw = model_context_window(&model);
+    print!("Context window [{default_cw}] (leave blank for auto-detect): ");
+    io::stdout().flush()?;
+    let mut cw_input = String::new();
+    io::stdin().read_line(&mut cw_input)?;
+    let context_window: Option<u32> = cw_input.trim().parse().ok();
 
     // Auth method — only for OpenAI
     let (auth_method, api_key_opt) = if provider_key == "openai" {
@@ -197,6 +226,7 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
         model,
         keyless: defaults.keyless,
         auth_method: auth_method.clone(),
+        context_window,
     });
     if global.default_profile.is_none() {
         global.default_profile = Some(name.clone());

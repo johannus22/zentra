@@ -15,6 +15,7 @@ fn global_config_roundtrip() {
         model: "gpt-4o".to_string(),
         keyless: false,
         auth_method: Default::default(),
+        context_window: None,
     });
 
     let config = GlobalConfig { profiles, default_profile: Some("openai".to_string()) };
@@ -151,4 +152,44 @@ fn global_config_load_from_missing_path_is_empty() {
     ).unwrap();
     assert!(config.profiles.is_empty());
     assert!(config.default_profile.is_none());
+}
+
+#[test]
+fn provider_profile_context_window_defaults_to_none() {
+    use zentra_cli::config::GlobalConfig;
+    let toml = r#"
+        [profiles.test]
+        kind = "openai_compat"
+        base_url = "https://api.openai.com/v1"
+        model = "gpt-4o"
+    "#;
+    let cfg: GlobalConfig = toml::from_str(toml).unwrap();
+    let profile = cfg.profiles.get("test").unwrap();
+    assert!(profile.context_window.is_none());
+}
+
+#[test]
+fn provider_profile_context_window_round_trips() {
+    use zentra_cli::config::{GlobalConfig, ProviderProfile};
+    let mut cfg = GlobalConfig::default();
+    cfg.profiles.insert("myprofile".to_string(), ProviderProfile {
+        kind: "openai_compat".to_string(),
+        base_url: "https://api.openai.com/v1".to_string(),
+        model: "gpt-4o".to_string(),
+        keyless: false,
+        auth_method: Default::default(),
+        context_window: Some(64_000),
+    });
+    let serialized = toml::to_string_pretty(&cfg).unwrap();
+    let deserialized: GlobalConfig = toml::from_str(&serialized).unwrap();
+    assert_eq!(deserialized.profiles["myprofile"].context_window, Some(64_000));
+}
+
+#[test]
+fn model_context_window_returns_known_values() {
+    use zentra_cli::wizard::model_context_window;
+    assert_eq!(model_context_window("gpt-4o"), 128_000);
+    assert_eq!(model_context_window("claude-opus-4-7"), 200_000);
+    assert_eq!(model_context_window("glm-4-flash"), 128_000);
+    assert_eq!(model_context_window("unknown-model"), 32_000);
 }

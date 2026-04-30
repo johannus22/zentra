@@ -27,6 +27,8 @@ pub struct ProviderProfile {
     pub keyless: bool,
     #[serde(default)]
     pub auth_method: AuthMethod,
+    #[serde(default)]
+    pub context_window: Option<u32>,
 }
 
 impl GlobalConfig {
