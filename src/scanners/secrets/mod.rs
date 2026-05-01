@@ -35,7 +35,7 @@ impl HistoryDepth {
         if s.eq_ignore_ascii_case("all") {
             HistoryDepth::All
         } else if let Ok(n) = s.parse::<usize>() {
-            if n == 0 { HistoryDepth::Last(0) } else { HistoryDepth::Last(n) }
+            if n == 0 { HistoryDepth::Last50 } else { HistoryDepth::Last(n) }
         } else {
             HistoryDepth::Last(50)
         }

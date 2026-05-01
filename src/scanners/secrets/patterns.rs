@@ -98,7 +98,8 @@ fn build_patterns() -> Vec<DetectorPattern> {
         det("mailchimp_key", r"([a-f0-9]{32}-us[0-9]{1,2})"),
         // LLM providers
         det("anthropic_key", r"(sk-ant-[a-zA-Z0-9-]{93,})"),
-        det("openai_key", r"(sk-[a-zA-Z0-9T]{48,})"),
+        det("openai_key_legacy", r"(sk-[a-zA-Z0-9]{48,})"),
+        det("openai_key_project", r"(sk-proj-[a-zA-Z0-9_\-]{48,})"),
         det("huggingface_token", r"(hf_[a-zA-Z0-9]{34,})"),
         // Package registries
         det("npm_token", r"(npm_[a-zA-Z0-9]{36})"),
@@ -169,6 +170,6 @@ mod tests {
     fn no_false_positive_on_normal_word() {
         let patterns = all_patterns();
         let hits = scan_line("let name = \"hello_world\";", patterns);
-        assert!(hits.is_empty() || hits.iter().all(|h| h.secret.len() < 8));
+        assert!(hits.is_empty(), "expected no hits on plain word, got: {:?}", hits.iter().map(|h| &h.detector).collect::<Vec<_>>());
     }
 }
