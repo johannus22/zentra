@@ -2,6 +2,7 @@ pub mod api_scan;
 pub mod iac_scan;
 pub mod report;
 pub mod sast;
+pub mod secrets;
 pub mod supply_chain;
 pub mod threat_model;
 
@@ -15,6 +16,7 @@ pub fn system_prompt(scanner: ScannerType) -> &'static str {
         ScannerType::ApiScan => api_scan::system_prompt(),
         ScannerType::IacScan => iac_scan::system_prompt(),
         ScannerType::Report => report::system_prompt(),
+        ScannerType::SecretsScan => panic!("SecretsScan is non-LLM; orchestrator dispatches it directly"),
     }
 }
 
@@ -26,5 +28,6 @@ pub fn allowed_tools(scanner: ScannerType) -> &'static [&'static str] {
         ScannerType::ApiScan => api_scan::allowed_tools(),
         ScannerType::IacScan => iac_scan::allowed_tools(),
         ScannerType::Report => report::allowed_tools(),
+        ScannerType::SecretsScan => panic!("SecretsScan is non-LLM; orchestrator dispatches it directly"),
     }
 }

@@ -10,6 +10,7 @@ pub enum ScannerType {
     SupplyChain,
     ApiScan,
     IacScan,
+    SecretsScan,
     Report,
 }
 
@@ -21,6 +22,7 @@ impl ScannerType {
             ScannerType::SupplyChain => "supply_chain",
             ScannerType::ApiScan => "api_scan",
             ScannerType::IacScan => "iac_scan",
+            ScannerType::SecretsScan => "secrets",
             ScannerType::Report => "report",
         }
     }
