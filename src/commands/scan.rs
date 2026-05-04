@@ -6,15 +6,21 @@ use tokio::sync::mpsc;
 use crate::agent::{orchestrator::OrchestratorAgent, ScannerType};
 use crate::config::{keychain, GlobalConfig, ProjectConfig};
 use crate::provider::{anthropic::AnthropicProvider, openai_compat::OpenAICompatProvider, LLMProvider};
+use crate::scanners::secrets::HistoryDepth;
 use crate::state::StateWriter;
 use crate::tools::ToolRegistry;
 use crate::tui::{scan_ui::run_scan_ui, ScanOutcome};
 use crate::wizard;
 
-pub async fn run(provider_override: Option<String>, only: Option<String>) -> Result<()> {
+pub async fn run(
+    provider_override: Option<String>,
+    only: Option<String>,
+    depth_str: String,
+) -> Result<()> {
+    let depth = HistoryDepth::from_str(&depth_str);
     let scanners = resolve_scanners(only.as_deref());
     loop {
-        match run_once(provider_override.clone(), scanners.clone()).await? {
+        match run_once(provider_override.clone(), scanners.clone(), depth.clone()).await? {
             ScanOutcome::Completed | ScanOutcome::Aborted => break,
             ScanOutcome::Reconfigure => {
                 wizard::run_setup(None).await?;
@@ -26,8 +32,9 @@ pub async fn run(provider_override: Option<String>, only: Option<String>) -> Res
 }
 
 pub async fn run_with_scanners(scanners: Vec<ScannerType>) -> Result<()> {
+    let depth = HistoryDepth::default();
     loop {
-        match run_once(None, scanners.clone()).await? {
+        match run_once(None, scanners.clone(), depth.clone()).await? {
             ScanOutcome::Completed | ScanOutcome::Aborted => break,
             ScanOutcome::Reconfigure => {
                 wizard::run_setup(None).await?;
@@ -38,7 +45,11 @@ pub async fn run_with_scanners(scanners: Vec<ScannerType>) -> Result<()> {
     Ok(())
 }
 
-async fn run_once(provider_override: Option<String>, scanners: Vec<ScannerType>) -> Result<ScanOutcome> {
+async fn run_once(
+    provider_override: Option<String>,
+    scanners: Vec<ScannerType>,
+    depth: HistoryDepth,
+) -> Result<ScanOutcome> {
     let global = GlobalConfig::load()?;
     let profile_name = provider_override
         .or_else(|| global.default_profile.clone())
@@ -91,7 +102,7 @@ async fn run_once(provider_override: Option<String>, scanners: Vec<ScannerType>)
     let scanners_for_agent = scanners.clone();
 
     let scan_task = tokio::spawn(async move {
-        OrchestratorAgent::new(provider, tool_registry, state_writer, tx)
+        OrchestratorAgent::new(provider, tool_registry, state_writer, tx, depth)
             .run(&scanners_for_agent)
             .await
     });
@@ -118,6 +129,7 @@ fn resolve_scanners(only: Option<&str>) -> Vec<ScannerType> {
         Some("supply-chain") => vec![ScannerType::SupplyChain, ScannerType::Report],
         Some("api") => vec![ScannerType::ApiScan, ScannerType::Report],
         Some("iac") => vec![ScannerType::IacScan, ScannerType::Report],
+        Some("secrets") => vec![ScannerType::SecretsScan],
         Some("report") => vec![ScannerType::Report],
         _ => vec![
             ScannerType::ThreatModel,
@@ -125,6 +137,7 @@ fn resolve_scanners(only: Option<&str>) -> Vec<ScannerType> {
             ScannerType::SupplyChain,
             ScannerType::ApiScan,
             ScannerType::IacScan,
+            ScannerType::SecretsScan,
             ScannerType::Report,
         ],
     }

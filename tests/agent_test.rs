@@ -441,7 +441,7 @@ async fn orchestrator_runs_selected_scanners_in_order() {
     let (tx, mut rx) = mpsc::channel(32);
 
     let orchestrator = OrchestratorAgent::new(
-        provider, registry, writer, tx,
+        provider, registry, writer, tx, zentra_cli::scanners::secrets::HistoryDepth::default(),
     );
 
     orchestrator.run(&[ScannerType::ThreatModel, ScannerType::Sast, ScannerType::Report]).await.unwrap();

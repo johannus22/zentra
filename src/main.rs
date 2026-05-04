@@ -43,8 +43,8 @@ async fn main() -> anyhow::Result<()> {
             cli::ConfigAction::Show => commands::config::show().await?,
             cli::ConfigAction::Remove { name } => commands::config::remove(&name).await?,
         },
-        Some(cli::Commands::Scan { provider, only }) => {
-            commands::scan::run(provider, only).await?
+        Some(cli::Commands::Scan { provider, only, depth }) => {
+            commands::scan::run(provider, only, depth).await?
         }
         Some(cli::Commands::Update) => {
             eprintln!("zentra update — available in Plan 4 (install + CI)");

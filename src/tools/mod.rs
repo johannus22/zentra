@@ -128,6 +128,20 @@ impl ToolRegistry {
                     "required": []
                 }),
             },
+            ToolDefinition {
+                name: "scan_secrets".to_string(),
+                description: "Run the deterministic secrets scanner on the codebase and git history. Returns a JSON summary of findings (max 50 active, no raw values). Use to inventory potential leaked credentials without LLM analysis.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "depth": {
+                            "type": "string",
+                            "description": "Git history depth: a number like '50' or 'all' for full history. Default '50'."
+                        }
+                    },
+                    "required": []
+                }),
+            },
         ]
     }
 
@@ -188,6 +202,19 @@ impl ToolRegistry {
                 git_tools::git_blame(file, line)
             }
             "git_status" => git_tools::git_status(),
+            "scan_secrets" => {
+                let depth_str = args["depth"].as_str().unwrap_or("50");
+                let depth = crate::scanners::secrets::HistoryDepth::from_str(depth_str);
+                let root = state_writer.project_root().to_path_buf();
+                let (tool_tx, _rx) = mpsc::channel(128);
+                match crate::scanners::secrets::SecretScanner::new(root, depth, tool_tx)
+                    .run(state_writer)
+                    .await
+                {
+                    Ok(matches) => crate::scanners::secrets::report::to_tool_json(&matches).to_string(),
+                    Err(e) => format!("scan_secrets error: {}", e),
+                }
+            }
             unknown => format!("Unknown tool: '{}'", unknown),
         }
     }
