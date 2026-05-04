@@ -55,4 +55,10 @@ impl StateWriter {
             Err(e) => Err(e.into()),
         }
     }
+
+    pub fn project_root(&self) -> &std::path::Path {
+        self.zentra_dir
+            .parent()
+            .expect("zentra_dir always has a parent")
+    }
 }

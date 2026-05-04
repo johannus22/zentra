@@ -18,12 +18,15 @@ pub enum Commands {
     },
     /// Run security scan
     Scan {
-        /// Run only a specific scanner (threat-model, sast, supply-chain, api, iac, report)
+        /// Run only a specific scanner (threat-model, sast, supply-chain, api, iac, secrets, report)
         #[arg(long)]
         only: Option<String>,
         /// Override the default provider profile for this scan
         #[arg(long)]
         provider: Option<String>,
+        /// Git history depth for secrets scan: a number or 'all' [default: 50]
+        #[arg(long, default_value = "50")]
+        depth: String,
     },
     /// Upgrade zentra to the latest release
     Update,
@@ -78,5 +81,32 @@ mod tests {
     fn parses_no_args_as_none() {
         let cli = Cli::try_parse_from(["zentra"]).unwrap();
         assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn parses_scan_with_depth_number() {
+        let cli = Cli::try_parse_from(["zentra", "scan", "--depth", "25"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Scan { ref depth, .. }) if depth == "25"
+        ));
+    }
+
+    #[test]
+    fn parses_scan_with_depth_all() {
+        let cli = Cli::try_parse_from(["zentra", "scan", "--depth", "all"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Scan { ref depth, .. }) if depth == "all"
+        ));
+    }
+
+    #[test]
+    fn scan_depth_defaults_to_50() {
+        let cli = Cli::try_parse_from(["zentra", "scan"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Scan { ref depth, .. }) if depth == "50"
+        ));
     }
 }
