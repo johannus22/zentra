@@ -27,6 +27,7 @@ impl<'a> ContextValidator<'a> {
             || f.starts_with("tests/")
             || f.starts_with("spec/")
             || f.starts_with("mock/")
+            || f.starts_with("__test__/")
         {
             return Some("test_directory".to_string());
         }
@@ -39,7 +40,7 @@ impl<'a> ContextValidator<'a> {
         ];
         if placeholders.iter().any(|p| r.contains(p))
             || r.starts_with('<')
-            || r.starts_with('>')
+            || r.contains('>')
             || is_all_same_char(&m.redacted)
         {
             return Some("placeholder_value".to_string());
