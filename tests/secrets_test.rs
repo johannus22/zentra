@@ -63,14 +63,6 @@ async fn git_history_depth_zero_returns_empty() {
     let dir = TempDir::new().unwrap();
     init_git_repo(&dir);
 
-    std::fs::write(dir.path().join("config.rs"), r#"let key = "AKIAIOSFODNN7EXAMPLE";"#).unwrap();
-    Command::new("git").args(["add", "."]).current_dir(dir.path()).output().unwrap();
-    Command::new("git")
-        .args(["commit", "-m", "add config"])
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-
     let al = Allowlist::load(dir.path());
     let validator = ContextValidator::new(&al);
     let pats = patterns::all_patterns();

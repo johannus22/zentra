@@ -10,6 +10,21 @@ use super::{
     HistoryDepth, SecretsMatch,
 };
 
+fn push_match(
+    results: &mut Vec<SecretsMatch>,
+    m: SecretsMatch,
+    validator: &ContextValidator<'_>,
+    line: &str,
+) {
+    let suppressed = validator.check(&m, line, None);
+    let mut m = m;
+    if let Some(reason) = suppressed {
+        m.suppressed = true;
+        m.suppression_reason = Some(reason);
+    }
+    results.push(m);
+}
+
 pub async fn scan_history(
     root: &Path,
     depth: &HistoryDepth,
@@ -107,22 +122,13 @@ pub async fn scan_history(
                     suppressed: false,
                     suppression_reason: None,
                 };
-                let suppression = validator.check(&m, line, None);
-                let mut m = m;
-                if let Some(reason) = suppression {
-                    m.suppressed = true;
-                    m.suppression_reason = Some(reason);
-                }
-                results.push(m);
+                push_match(&mut results, m, validator, line);
             }
 
-            let covered_secrets: std::collections::HashSet<&str> =
-                pattern_hits.iter().map(|h| h.secret.as_str()).collect();
-
             for hit in entropy::scan_line_for_high_entropy(line) {
-                if covered_secrets
+                if pattern_hits
                     .iter()
-                    .any(|s| s.contains(&hit.token) || hit.token.contains(s))
+                    .any(|s| s.secret.contains(&hit.token) || hit.token.contains(&s.secret))
                 {
                     continue;
                 }
@@ -137,13 +143,7 @@ pub async fn scan_history(
                     suppressed: false,
                     suppression_reason: None,
                 };
-                let suppression = validator.check(&m, line, None);
-                let mut m = m;
-                if let Some(reason) = suppression {
-                    m.suppressed = true;
-                    m.suppression_reason = Some(reason);
-                }
-                results.push(m);
+                push_match(&mut results, m, validator, line);
             }
         }
     }
