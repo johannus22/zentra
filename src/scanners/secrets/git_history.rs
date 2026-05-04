@@ -15,8 +15,9 @@ fn push_match(
     m: SecretsMatch,
     validator: &ContextValidator<'_>,
     line: &str,
+    prev_line: Option<&str>,
 ) {
-    let suppressed = validator.check(&m, line, None);
+    let suppressed = validator.check(&m, line, prev_line);
     let mut m = m;
     if let Some(reason) = suppressed {
         m.suppressed = true;
@@ -58,6 +59,7 @@ pub async fn scan_history(
     let mut current_commit: Option<String> = None;
     let mut current_file: Option<String> = None;
     let mut line_no: u32 = 0;
+    let mut prev_content_line: Option<String> = None;
     let mut results: Vec<SecretsMatch> = Vec::new();
 
     while let Ok(Some(raw)) = lines.next_line().await {
@@ -65,12 +67,14 @@ pub async fn scan_history(
             current_commit = raw.split_whitespace().nth(1).map(|s| s.to_string());
             current_file = None;
             line_no = 0;
+            prev_content_line = None;
             continue;
         }
 
         if raw.starts_with("+++ b/") {
             current_file = Some(raw[6..].to_string());
             line_no = 0;
+            prev_content_line = None;
             continue;
         }
 
@@ -88,6 +92,7 @@ pub async fn scan_history(
                     .unwrap_or(1);
                 line_no = num.saturating_sub(1);
             }
+            prev_content_line = None;
             continue;
         }
 
@@ -96,6 +101,7 @@ pub async fn scan_history(
         }
 
         if raw.starts_with(' ') {
+            prev_content_line = Some(raw[1..].to_string());
             line_no += 1;
             continue;
         }
@@ -108,21 +114,21 @@ pub async fn scan_history(
             line_no += 1;
             let line = &raw[1..];
             let file = current_file.as_deref().unwrap_or("");
+            let prev = prev_content_line.as_deref();
 
             let pattern_hits = patterns::scan_line(line, detector_patterns);
             for hit in &pattern_hits {
-                let entropy_score = entropy::score(&hit.secret);
                 let m = SecretsMatch {
                     file: file.to_string(),
                     line: line_no,
                     commit: current_commit.clone(),
                     detector: hit.detector.clone(),
-                    entropy: Some(entropy_score),
+                    entropy: Some(entropy::score(&hit.secret)),
                     redacted: hit.redacted.clone(),
                     suppressed: false,
                     suppression_reason: None,
                 };
-                push_match(&mut results, m, validator, line);
+                push_match(&mut results, m, validator, line, prev);
             }
 
             for hit in entropy::scan_line_for_high_entropy(line) {
@@ -132,19 +138,20 @@ pub async fn scan_history(
                 {
                     continue;
                 }
-                let redacted = patterns::redact(&hit.token);
                 let m = SecretsMatch {
                     file: file.to_string(),
                     line: line_no,
                     commit: current_commit.clone(),
                     detector: hit.detector.clone(),
                     entropy: Some(hit.entropy),
-                    redacted,
+                    redacted: patterns::redact(&hit.token),
                     suppressed: false,
                     suppression_reason: None,
                 };
-                push_match(&mut results, m, validator, line);
+                push_match(&mut results, m, validator, line, prev);
             }
+
+            prev_content_line = Some(line.to_string());
         }
     }
 
