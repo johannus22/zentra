@@ -2,7 +2,9 @@ use std::process::Command;
 use tempfile::TempDir;
 use zentra_cli::scanners::secrets::{
     allowlist::Allowlist, git_history, patterns, validator::ContextValidator, HistoryDepth,
+    SecretScanner,
 };
+use zentra_cli::state::StateWriter;
 
 fn init_git_repo(dir: &TempDir) {
     Command::new("git").args(["init"]).current_dir(dir.path()).output().unwrap();
@@ -86,4 +88,76 @@ async fn git_not_available_returns_empty_gracefully() {
 
     assert!(result.is_ok(), "expected Ok([]) when git is unavailable, got {:?}", result);
     assert!(result.unwrap().is_empty());
+}
+
+// ---- Engine integration tests ----
+
+#[tokio::test]
+async fn engine_detects_secret_in_working_tree() {
+    let dir = TempDir::new().unwrap();
+
+    std::fs::write(dir.path().join("config.rs"), r#"let key = "AKIAIOSFODNN7EXAMPLE";"#).unwrap();
+    std::fs::create_dir_all(dir.path().join(".zentra")).unwrap();
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(128);
+    let writer = StateWriter::new(dir.path()).unwrap();
+
+    let scanner = SecretScanner::new(
+        dir.path().to_path_buf(),
+        HistoryDepth::Last(0),
+        tx,
+    );
+
+    let matches = scanner.run(&writer).await.unwrap();
+
+    assert!(
+        matches.iter().any(|m| m.detector == "aws_access_key" && !m.suppressed),
+        "expected active aws_access_key hit in working tree, got: {:?}",
+        matches
+    );
+}
+
+#[tokio::test]
+async fn engine_suppresses_secrets_in_test_dir() {
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join("tests")).unwrap();
+    std::fs::write(
+        dir.path().join("tests").join("fixtures.rs"),
+        r#"let key = "AKIAIOSFODNN7EXAMPLE";"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join(".zentra")).unwrap();
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(128);
+    let writer = StateWriter::new(dir.path()).unwrap();
+    let scanner = SecretScanner::new(dir.path().to_path_buf(), HistoryDepth::Last(0), tx);
+    let matches = scanner.run(&writer).await.unwrap();
+
+    let active: Vec<_> = matches.iter().filter(|m| !m.suppressed).collect();
+    assert!(
+        active.is_empty(),
+        "secrets in tests/ should be suppressed, but got active: {:?}",
+        active
+    );
+}
+
+#[tokio::test]
+async fn engine_writes_report_files() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("config.rs"), r#"let key = "AKIAIOSFODNN7EXAMPLE";"#).unwrap();
+    std::fs::create_dir_all(dir.path().join(".zentra")).unwrap();
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(128);
+    let writer = StateWriter::new(dir.path()).unwrap();
+    let scanner = SecretScanner::new(dir.path().to_path_buf(), HistoryDepth::Last(0), tx);
+    scanner.run(&writer).await.unwrap();
+
+    assert!(
+        dir.path().join(".zentra/secrets-report.md").exists(),
+        "secrets-report.md should be written"
+    );
+    assert!(
+        dir.path().join(".zentra/secrets-findings.json").exists(),
+        "secrets-findings.json should be written"
+    );
 }
