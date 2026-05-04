@@ -2,7 +2,7 @@
 use std::sync::OnceLock;
 use regex::Regex;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EntropyHit {
     pub token: String,
     pub entropy: f64,
@@ -66,7 +66,7 @@ pub fn scan_line_for_high_entropy(line: &str) -> Vec<EntropyHit> {
     }
 
     for m in hex_re().find_iter(line) {
-        if covered.iter().any(|(s, e)| m.start() >= *s && m.end() <= *e) {
+        if covered.iter().any(|(s, e)| m.start() < *e && m.end() > *s) {
             continue;
         }
         let s = m.as_str();
@@ -82,12 +82,13 @@ pub fn scan_line_for_high_entropy(line: &str) -> Vec<EntropyHit> {
     }
 
     for m in alphanum_re().find_iter(line) {
-        if covered.iter().any(|(s, e)| m.start() >= *s && m.end() <= *e) {
+        if covered.iter().any(|(s, e)| m.start() < *e && m.end() > *s) {
             continue;
         }
         let s = m.as_str();
         let e = shannon_entropy(s);
         if e > 3.5 {
+            covered.push((m.start(), m.end()));
             results.push(EntropyHit {
                 token: s.to_string(),
                 entropy: e,
