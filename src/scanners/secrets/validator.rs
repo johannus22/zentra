@@ -79,8 +79,11 @@ impl<'a> ContextValidator<'a> {
 }
 
 fn is_all_same_char(s: &str) -> bool {
-    let chars: Vec<char> = s.chars().collect();
-    chars.len() > 3 && chars.windows(2).all(|w| w[0] == w[1])
+    s.chars().count() > 3 && {
+        let mut it = s.chars();
+        let first = it.next().unwrap();
+        it.all(|c| c == first)
+    }
 }
 
 fn is_identifier_like(s: &str) -> bool {
