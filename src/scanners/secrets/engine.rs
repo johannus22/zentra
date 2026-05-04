@@ -50,12 +50,10 @@ impl SecretScanner {
                 .cmp(&(&b.file, b.line, &b.detector))
         });
         all_matches.dedup_by(|a, b| {
-            a.file == b.file
-                && a.line == b.line
-                && a.detector == b.detector
-                && a.commit == b.commit
+            a.file == b.file && a.line == b.line && a.detector == b.detector
         });
 
+        // Non-fatal: findings are still returned to the orchestrator even if file write fails
         report::write(&self.root, &all_matches).unwrap_or_else(|e| {
             eprintln!("secrets report write error: {}", e);
         });
@@ -87,13 +85,28 @@ impl SecretScanner {
     }
 }
 
+fn push_match_fs(
+    results: &mut Vec<SecretsMatch>,
+    m: SecretsMatch,
+    validator: &ContextValidator<'_>,
+    line: &str,
+    prev_line: Option<&str>,
+) {
+    let suppression = validator.check(&m, line, prev_line);
+    let mut m = m;
+    if let Some(reason) = suppression {
+        m.suppressed = true;
+        m.suppression_reason = Some(reason);
+    }
+    results.push(m);
+}
+
 fn scan_filesystem(
     root: &Path,
     detector_patterns: &[patterns::DetectorPattern],
     validator: &ContextValidator<'_>,
 ) -> Vec<SecretsMatch> {
     let mut results = Vec::new();
-    let root_str = root.to_string_lossy();
 
     for entry in WalkBuilder::new(root)
         .hidden(false)
@@ -114,7 +127,7 @@ fn scan_filesystem(
         let rel = path
             .strip_prefix(root)
             .map(|p| p.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_else(|_| path_str.replace(&*root_str, "").trim_start_matches('/').to_string());
+            .unwrap_or_default();
 
         let content = match std::fs::read_to_string(path) {
             Ok(s) => s,
@@ -130,48 +143,34 @@ fn scan_filesystem(
             let pattern_hits = patterns::scan_line(line, detector_patterns);
 
             for hit in &pattern_hits {
-                let entropy_score = entropy::score(&hit.secret);
                 let m = SecretsMatch {
                     file: rel.clone(),
                     line: line_no,
                     commit: None,
                     detector: hit.detector.clone(),
-                    entropy: Some(entropy_score),
+                    entropy: Some(entropy::score(&hit.secret)),
                     redacted: hit.redacted.clone(),
                     suppressed: false,
                     suppression_reason: None,
                 };
-                let suppression = validator.check(&m, line, prev_line);
-                let mut m = m;
-                if let Some(reason) = suppression {
-                    m.suppressed = true;
-                    m.suppression_reason = Some(reason);
-                }
-                results.push(m);
+                push_match_fs(&mut results, m, validator, line, prev_line);
             }
 
             for hit in entropy::scan_line_for_high_entropy(line) {
                 if pattern_hits.iter().any(|s| s.secret.contains(&hit.token) || hit.token.contains(&s.secret)) {
                     continue;
                 }
-                let redacted = patterns::redact(&hit.token);
                 let m = SecretsMatch {
                     file: rel.clone(),
                     line: line_no,
                     commit: None,
                     detector: hit.detector.clone(),
                     entropy: Some(hit.entropy),
-                    redacted,
+                    redacted: patterns::redact(&hit.token),
                     suppressed: false,
                     suppression_reason: None,
                 };
-                let suppression = validator.check(&m, line, prev_line);
-                let mut m = m;
-                if let Some(reason) = suppression {
-                    m.suppressed = true;
-                    m.suppression_reason = Some(reason);
-                }
-                results.push(m);
+                push_match_fs(&mut results, m, validator, line, prev_line);
             }
         }
     }
