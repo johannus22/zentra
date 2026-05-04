@@ -7,8 +7,8 @@ pub fn write(root: &Path, matches: &[SecretsMatch]) -> Result<()> {
     let zentra = root.join(".zentra");
     fs::create_dir_all(&zentra)?;
 
-    let active: Vec<&SecretsMatch> = matches.iter().filter(|m| !m.suppressed).collect();
-    let suppressed: Vec<&SecretsMatch> = matches.iter().filter(|m| m.suppressed).collect();
+    let (active, suppressed): (Vec<&SecretsMatch>, Vec<&SecretsMatch>) =
+        matches.iter().partition(|m| !m.suppressed);
 
     let mut md = String::new();
     md.push_str("# Secrets Scan Report\n\n");
