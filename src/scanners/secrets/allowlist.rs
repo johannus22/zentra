@@ -18,7 +18,7 @@ pub struct AllowlistInner {
     pub entries: Vec<AllowlistEntry>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct AllowlistEntry {
     pub detector: Option<String>,
     pub path: Option<String>,
