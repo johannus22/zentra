@@ -13,6 +13,7 @@ pub fn key_file_path(profile: &str) -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".zentra").join("keys").join(format!("{}.key", profile)))
 }
 
+#[derive(Debug)]
 pub enum KeyStorage {
     Keychain,
     File,
@@ -58,7 +59,7 @@ pub fn get_key(profile: &str) -> Result<Option<String>> {
         if path.exists() {
             let key = std::fs::read_to_string(&path)
                 .context("Failed to read API key from file")?;
-            return Ok(Some(key));
+            return Ok(Some(key.trim().to_string()));
         }
     }
     Ok(None)
@@ -72,8 +73,10 @@ pub fn delete_key(profile: &str) -> Result<()> {
         Err(e) => return Err(anyhow::anyhow!("Keychain delete failed: {}", e)),
     }
     if let Some(path) = key_file_path(profile) {
-        if path.exists() {
-            std::fs::remove_file(&path).ok();
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(anyhow::anyhow!("Failed to remove key file: {}", e)),
         }
     }
     Ok(())

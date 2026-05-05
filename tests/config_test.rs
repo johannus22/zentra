@@ -348,9 +348,8 @@ fn keychain_file_fallback_get_reads_key_file() {
 
     // keyring has no entry for this profile → falls through to file
     let result = keychain::get_key(profile).expect("get_key should not error");
-    assert_eq!(result, Some("test-api-key-value".to_string()));
-
     let _ = std::fs::remove_file(&path);
+    assert_eq!(result, Some("test-api-key-value".to_string()));
 }
 
 #[test]
