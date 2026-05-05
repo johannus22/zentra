@@ -75,14 +75,18 @@ impl CustomProvidersFile {
                     "⚠ {}: provider '{}' missing required field — skipped",
                     path.display(), p.name
                 );
-            } else if p.kind != "openai_compat" && p.kind != "anthropic" {
+            }
+            ok
+        });
+        for p in file.providers.iter_mut() {
+            if p.kind != "openai_compat" && p.kind != "anthropic" {
                 eprintln!(
                     "⚠ {}: provider '{}' has unrecognized kind '{}', treating as openai_compat",
                     path.display(), p.name, p.kind
                 );
+                p.kind = "openai_compat".to_string();
             }
-            ok
-        });
+        }
         file
     }
 }
