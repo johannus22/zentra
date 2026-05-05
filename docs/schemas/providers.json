@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Zentra Custom Providers",
+  "description": "User-defined LLM provider presets for ~/.zentra/providers.toml",
+  "type": "object",
+  "properties": {
+    "providers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "base_url", "default_model"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9_-]+$",
+            "description": "Slug used as the default profile name. Must be lowercase alphanumeric with hyphens/underscores."
+          },
+          "display_name": {
+            "type": "string",
+            "description": "Label shown in the wizard menu. Defaults to name if omitted."
+          },
+          "base_url": {
+            "type": "string",
+            "description": "Full base URL of the provider API, including /v1 if required."
+          },
+          "default_model": {
+            "type": "string",
+            "description": "Pre-fills the model prompt in the wizard. User can still override."
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["openai_compat", "anthropic"],
+            "default": "openai_compat",
+            "description": "Provider API format. Use openai_compat for most providers."
+          },
+          "keyless": {
+            "type": "boolean",
+            "default": false,
+            "description": "Set true for local providers that need no API key (e.g. a local Ollama instance)."
+          }
+        }
+      }
+    }
+  }
+}
