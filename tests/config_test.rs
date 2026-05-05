@@ -343,6 +343,8 @@ use zentra_cli::config::keychain;
 fn keychain_file_fallback_get_reads_key_file() {
     let profile = "zentra-test-fb-read";
     let path = keychain::key_file_path(profile).expect("home dir required");
+    // Clear any pre-existing keyring entry so the file fallback path is exercised
+    let _ = keychain::delete_key(profile);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, "test-api-key-value").unwrap();
 
