@@ -193,3 +193,95 @@ fn model_context_window_returns_known_values() {
     assert_eq!(model_context_window("glm-4-flash"), 128_000);
     assert_eq!(model_context_window("unknown-model"), 32_000);
 }
+
+// ── Custom Providers ────────────────────────────────────────────────────────
+
+use zentra_cli::config::custom_providers::{CustomProvider, CustomProvidersFile};
+
+#[test]
+fn custom_providers_loads_valid_file() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("providers.toml");
+    std::fs::write(&path, r#"
+[[providers]]
+name = "company-llm"
+display_name = "Company LLM"
+base_url = "https://llm.mycompany.com/v1"
+default_model = "llama-3.3-70b"
+kind = "openai_compat"
+keyless = false
+"#).unwrap();
+    let file = CustomProvidersFile::load_from(&path);
+    assert_eq!(file.providers.len(), 1);
+    let cp = &file.providers[0];
+    assert_eq!(cp.name, "company-llm");
+    assert_eq!(cp.base_url, "https://llm.mycompany.com/v1");
+    assert_eq!(cp.default_model, "llama-3.3-70b");
+    assert_eq!(cp.kind, "openai_compat");
+    assert!(!cp.keyless);
+    assert_eq!(cp.display_name.as_deref(), Some("Company LLM"));
+}
+
+#[test]
+fn custom_providers_missing_file_returns_empty() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("no-such-file.toml");
+    let file = CustomProvidersFile::load_from(&path);
+    assert!(file.providers.is_empty());
+}
+
+#[test]
+fn custom_providers_malformed_toml_returns_empty() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("providers.toml");
+    std::fs::write(&path, "this is [[[not valid toml").unwrap();
+    let file = CustomProvidersFile::load_from(&path);
+    assert!(file.providers.is_empty());
+}
+
+#[test]
+fn custom_providers_skips_entry_missing_required_field() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("providers.toml");
+    std::fs::write(&path, r#"
+[[providers]]
+name = "good"
+base_url = "https://good.example.com/v1"
+default_model = "gpt-4o"
+
+[[providers]]
+name = "bad-no-base-url"
+default_model = "gpt-4o"
+"#).unwrap();
+    let file = CustomProvidersFile::load_from(&path);
+    assert_eq!(file.providers.len(), 1);
+    assert_eq!(file.providers[0].name, "good");
+}
+
+#[test]
+fn custom_providers_display_name_defaults_to_name() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("providers.toml");
+    std::fs::write(&path, r#"
+[[providers]]
+name = "my-provider"
+base_url = "https://example.com/v1"
+default_model = "gpt-4o"
+"#).unwrap();
+    let file = CustomProvidersFile::load_from(&path);
+    assert_eq!(file.providers[0].effective_display_name(), "my-provider");
+}
+
+#[test]
+fn custom_providers_kind_defaults_to_openai_compat() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("providers.toml");
+    std::fs::write(&path, r#"
+[[providers]]
+name = "my-provider"
+base_url = "https://example.com/v1"
+default_model = "gpt-4o"
+"#).unwrap();
+    let file = CustomProvidersFile::load_from(&path);
+    assert_eq!(file.providers[0].kind, "openai_compat");
+}
