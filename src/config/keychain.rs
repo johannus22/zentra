@@ -23,28 +23,27 @@ pub fn set_key(profile: &str, api_key: &str) -> Result<KeyStorage> {
     let entry = keyring::Entry::new(&service_name(profile), "api_key")
         .context("Failed to access OS keychain")?;
 
-    let keyring_ok = match entry.set_password(api_key) {
-        Ok(()) => entry.get_password().map(|s| s == api_key).unwrap_or(false),
-        Err(_) => false,
-    };
+    let keyring_ok = entry.set_password(api_key).is_ok();
+
+    // Always write file backup — Windows keyring may accept the write in-process
+    // but silently fail to persist it across process restarts.
+    if let Some(path) = key_file_path(profile) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&path, api_key);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
+    }
 
     if keyring_ok {
-        return Ok(KeyStorage::Keychain);
+        Ok(KeyStorage::Keychain)
+    } else {
+        Ok(KeyStorage::File)
     }
-
-    let path = key_file_path(profile)
-        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).context("Failed to create ~/.zentra/keys/")?;
-    }
-    std::fs::write(&path, api_key).context("Failed to write API key to file")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-            .context("Failed to set file permissions")?;
-    }
-    Ok(KeyStorage::File)
 }
 
 pub fn get_key(profile: &str) -> Result<Option<String>> {
