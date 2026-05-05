@@ -38,8 +38,8 @@ fn global_config_missing_file_returns_empty() {
 
 #[test]
 fn keychain_service_name_is_scoped_per_profile() {
-    assert_eq!(zentra_cli::config::keychain::service_name("openai"), "zentra/openai");
-    assert_eq!(zentra_cli::config::keychain::service_name("work-litellm"), "zentra/work-litellm");
+    assert_eq!(zentra_cli::config::keychain::service_name("openai"), "zentra.openai");
+    assert_eq!(zentra_cli::config::keychain::service_name("work-litellm"), "zentra.work-litellm");
 }
 
 #[test]
@@ -118,7 +118,7 @@ fn init_creates_gitignore_if_missing() {
 fn provider_defaults_openai_prefills_url_and_models() {
     let d = provider_defaults("openai");
     assert_eq!(d.base_url, "https://api.openai.com/v1");
-    assert!(d.models.contains(&"gpt-4o".to_string()));
+    assert!(d.models.contains(&"gpt-5.5".to_string()));
     assert!(!d.keyless);
     assert_eq!(d.kind, "openai_compat");
 }
@@ -134,7 +134,7 @@ fn provider_defaults_anthropic_prefills_url() {
 #[test]
 fn provider_defaults_ollama_is_keyless() {
     let d = provider_defaults("ollama");
-    assert_eq!(d.base_url, "http://localhost:11434/v1");
+    assert_eq!(d.base_url, "https://ollama.com/v1");
     assert!(d.keyless);
 }
 
@@ -333,4 +333,42 @@ kind = ""
 "#).unwrap();
     let file = CustomProvidersFile::load_from(&path);
     assert!(file.providers.is_empty());
+}
+
+// ── Keychain File Fallback ─────────────────────────────────────────────────
+
+use zentra_cli::config::keychain;
+
+#[test]
+fn keychain_file_fallback_get_reads_key_file() {
+    let profile = "zentra-test-fb-read";
+    let path = keychain::key_file_path(profile).expect("home dir required");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "test-api-key-value").unwrap();
+
+    // keyring has no entry for this profile → falls through to file
+    let result = keychain::get_key(profile).expect("get_key should not error");
+    assert_eq!(result, Some("test-api-key-value".to_string()));
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn keychain_file_fallback_delete_removes_file() {
+    let profile = "zentra-test-fb-del";
+    let path = keychain::key_file_path(profile).expect("home dir required");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "dummy-key").unwrap();
+
+    keychain::delete_key(profile).expect("delete_key should not error");
+
+    assert!(!path.exists(), "file should be removed after delete_key");
+}
+
+#[test]
+fn keychain_get_returns_none_when_both_absent() {
+    // Profile name unlikely to exist in any real keychain or file
+    let result = keychain::get_key("zentra-test-absent-zzzzz")
+        .expect("get_key should not error");
+    assert_eq!(result, None);
 }
