@@ -24,7 +24,7 @@ pub fn provider_defaults(provider: &str) -> ProviderDefaults {
     match provider {
         "openai" => ProviderDefaults {
             base_url: "https://api.openai.com/v1".to_string(),
-            models: vec!["gpt-4o".to_string(), "gpt-4o-mini".to_string(), "o1".to_string()],
+            models: vec!["gpt-5.5".to_string(), "gpt-5.4".to_string(), "gpt-5.4-mini".to_string()],
             kind: "openai_compat".to_string(),
             keyless: false,
         },
@@ -47,8 +47,8 @@ pub fn provider_defaults(provider: &str) -> ProviderDefaults {
             keyless: false,
         },
         "ollama" => ProviderDefaults {
-            base_url: "http://localhost:11434/v1".to_string(),
-            models: vec!["llama3.2".to_string()],
+            base_url: "https://ollama.com/v1".to_string(),
+            models: vec!["gemma3".to_string()],
             kind: "openai_compat".to_string(),
             keyless: true,
         },
@@ -278,8 +278,14 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
         keychain::set_oauth_tokens(&name, tokens)?;
         println!("✓ OAuth tokens saved to OS keychain");
     } else if let Some(ref key) = api_key_opt {
-        keychain::set_key(&name, key)?;
-        println!("✓ API key saved to OS keychain (never written to disk)");
+        match keychain::set_key(&name, key)? {
+            keychain::KeyStorage::Keychain => {
+                println!("✓ API key saved to OS keychain (never written to disk)");
+            }
+            keychain::KeyStorage::File => {
+                println!("⚠ OS keychain unavailable — API key saved to file (~/.zentra/keys/)");
+            }
+        }
     }
 
     global.save()?;
