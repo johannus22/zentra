@@ -89,6 +89,7 @@ pub struct UiState {
     pub model_info: String,
     pub popup_open: bool,
     pub popup: PopupState,
+    pub scan_done: bool,
 }
 
 impl UiState {
@@ -107,6 +108,7 @@ impl UiState {
             model_info,
             popup_open: false,
             popup: PopupState::new(),
+            scan_done: false,
         }
     }
 
