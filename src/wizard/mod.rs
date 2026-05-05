@@ -1,4 +1,5 @@
 use anyhow::Result;
+use crate::config::custom_providers::{CustomProvider, CustomProvidersFile};
 
 pub struct ProviderDefaults {
     pub base_url: String,
@@ -70,8 +71,8 @@ pub fn provider_defaults(provider: &str) -> ProviderDefaults {
     }
 }
 
-impl From<&crate::config::custom_providers::CustomProvider> for ProviderDefaults {
-    fn from(cp: &crate::config::custom_providers::CustomProvider) -> Self {
+impl From<&CustomProvider> for ProviderDefaults {
+    fn from(cp: &CustomProvider) -> Self {
         ProviderDefaults {
             base_url: cp.base_url.clone(),
             models: vec![cp.default_model.clone()],
@@ -89,14 +90,15 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     };
     use std::io::{self, Write};
 
+    const PROVIDERS: &[&str] = &["openai", "anthropic", "cerebras", "litellm", "ollama", "zhipu", "other"];
+
     // Load user-defined provider presets from ~/.zentra/providers.toml
-    let custom_file = crate::config::custom_providers::CustomProvidersFile::load();
-    const BUILTIN_SLUGS: &[&str] = &["openai", "anthropic", "cerebras", "litellm", "ollama", "zhipu", "other"];
-    let valid_customs: Vec<&crate::config::custom_providers::CustomProvider> = custom_file
+    let custom_file = CustomProvidersFile::load();
+    let valid_customs: Vec<&CustomProvider> = custom_file
         .providers
         .iter()
         .filter(|cp| {
-            if BUILTIN_SLUGS.contains(&cp.name.as_str()) {
+            if PROVIDERS.contains(&cp.name.as_str()) {
                 eprintln!("⚠ custom provider '{}' conflicts with built-in name — skipped", cp.name);
                 false
             } else {
@@ -107,14 +109,13 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
 
     println!("\n Zentra — Provider Setup\n");
     println!("Choose a provider:");
-    let providers = ["openai", "anthropic", "cerebras", "litellm", "ollama", "zhipu", "other"];
-    for (i, p) in providers.iter().enumerate() {
+    for (i, p) in PROVIDERS.iter().enumerate() {
         println!("  {}. {}", i + 1, p);
     }
     if !valid_customs.is_empty() {
         println!("  ── Custom ──");
         for (i, cp) in valid_customs.iter().enumerate() {
-            println!("  {}. {}  ({})", providers.len() + i + 1, cp.effective_display_name(), cp.name);
+            println!("  {}. {}  ({})", PROVIDERS.len() + i + 1, cp.effective_display_name(), cp.name);
         }
     }
     print!("Selection [1]: ");
@@ -123,11 +124,11 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     io::stdin().read_line(&mut input)?;
     let idx = input.trim().parse::<usize>().unwrap_or(1).saturating_sub(1);
 
-    let (defaults, is_openai, default_profile_name) = if idx < providers.len() {
-        let key = providers.get(idx).copied().unwrap_or("openai");
+    let (defaults, is_openai, default_profile_name) = if idx < PROVIDERS.len() {
+        let key = PROVIDERS[idx];
         (provider_defaults(key), key == "openai", key.to_string())
     } else {
-        match valid_customs.get(idx - providers.len()) {
+        match valid_customs.get(idx - PROVIDERS.len()) {
             Some(cp) => (ProviderDefaults::from(*cp), false, cp.name.clone()),
             None => (provider_defaults("openai"), false, "openai".to_string()),
         }
