@@ -98,7 +98,7 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
         .providers
         .iter()
         .filter(|cp| {
-            if PROVIDERS.contains(&cp.name.as_str()) {
+            if PROVIDERS.iter().any(|s| s.eq_ignore_ascii_case(&cp.name)) {
                 eprintln!("⚠ custom provider '{}' conflicts with built-in name — skipped", cp.name);
                 false
             } else {
