@@ -196,7 +196,7 @@ fn model_context_window_returns_known_values() {
 
 // ── Custom Providers ────────────────────────────────────────────────────────
 
-use zentra_cli::config::custom_providers::{CustomProvider, CustomProvidersFile};
+use zentra_cli::config::custom_providers::CustomProvidersFile;
 
 #[test]
 fn custom_providers_loads_valid_file() {
