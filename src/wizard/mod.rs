@@ -70,6 +70,17 @@ pub fn provider_defaults(provider: &str) -> ProviderDefaults {
     }
 }
 
+impl From<&crate::config::custom_providers::CustomProvider> for ProviderDefaults {
+    fn from(cp: &crate::config::custom_providers::CustomProvider) -> Self {
+        ProviderDefaults {
+            base_url: cp.base_url.clone(),
+            models: vec![cp.default_model.clone()],
+            kind: cp.kind.clone(),
+            keyless: cp.keyless,
+        }
+    }
+}
+
 pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     use crate::{
         auth,
@@ -78,19 +89,49 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     };
     use std::io::{self, Write};
 
+    // Load user-defined provider presets from ~/.zentra/providers.toml
+    let custom_file = crate::config::custom_providers::CustomProvidersFile::load();
+    const BUILTIN_SLUGS: &[&str] = &["openai", "anthropic", "cerebras", "litellm", "ollama", "zhipu", "other"];
+    let valid_customs: Vec<&crate::config::custom_providers::CustomProvider> = custom_file
+        .providers
+        .iter()
+        .filter(|cp| {
+            if BUILTIN_SLUGS.contains(&cp.name.as_str()) {
+                eprintln!("⚠ custom provider '{}' conflicts with built-in name — skipped", cp.name);
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+
     println!("\n Zentra — Provider Setup\n");
     println!("Choose a provider:");
     let providers = ["openai", "anthropic", "cerebras", "litellm", "ollama", "zhipu", "other"];
     for (i, p) in providers.iter().enumerate() {
         println!("  {}. {}", i + 1, p);
     }
+    if !valid_customs.is_empty() {
+        println!("  ── Custom ──");
+        for (i, cp) in valid_customs.iter().enumerate() {
+            println!("  {}. {}  ({})", providers.len() + i + 1, cp.effective_display_name(), cp.name);
+        }
+    }
     print!("Selection [1]: ");
     io::stdout().flush()?;
     let mut input = String::new();
     io::stdin().read_line(&mut input)?;
     let idx = input.trim().parse::<usize>().unwrap_or(1).saturating_sub(1);
-    let provider_key = providers.get(idx).copied().unwrap_or("openai");
-    let defaults = provider_defaults(provider_key);
+
+    let (defaults, is_openai, default_profile_name) = if idx < providers.len() {
+        let key = providers.get(idx).copied().unwrap_or("openai");
+        (provider_defaults(key), key == "openai", key.to_string())
+    } else {
+        match valid_customs.get(idx - providers.len()) {
+            Some(cp) => (ProviderDefaults::from(*cp), false, cp.name.clone()),
+            None => (provider_defaults("openai"), false, "openai".to_string()),
+        }
+    };
 
     let base_url = if defaults.base_url.is_empty() {
         print!("Base URL: ");
@@ -122,7 +163,7 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     let context_window: Option<u32> = cw_input.trim().parse().ok();
 
     // Auth method — only for OpenAI
-    let (auth_method, api_key_opt) = if provider_key == "openai" {
+    let (auth_method, api_key_opt) = if is_openai {
         println!("\nAuth method:");
         println!("  1. API Key");
         println!("  2. Login with browser (ChatGPT / OpenAI subscription)");
@@ -159,7 +200,7 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
         (AuthMethod::ApiKey, Some(key))
     };
 
-    let name = profile_name.unwrap_or_else(|| provider_key.to_string());
+    let name = profile_name.unwrap_or(default_profile_name);
 
     // For OAuth: run browser flow now, before saving profile
     let oauth_tokens = if auth_method == AuthMethod::OAuth {
