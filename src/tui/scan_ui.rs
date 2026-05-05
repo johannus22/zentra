@@ -1,7 +1,7 @@
 use crate::agent::{ScanEvent, ScannerType};
 use crate::tui::{ScanOutcome, ScanStatus, UiState};
 use anyhow::Result;
-use crossterm::event::{Event, EventStream, KeyCode};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind};
 use futures::StreamExt;
 use ratatui::{
     layout::{Constraint, Layout, Rect},
@@ -45,15 +45,12 @@ async fn run_loop(
         tokio::select! {
             Some(event) = rx.recv() => {
                 state.apply_event(event);
-                if state.all_done() && !state.popup_open {
-                    terminal.draw(|f| render(f, &mut state))?;
-                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                    return Ok(ScanOutcome::Completed);
-                }
             }
             Some(Ok(evt)) = keys.next() => {
                 if let Event::Key(key) = evt {
-                    if state.popup_open {
+                    if key.kind != KeyEventKind::Press {
+                        // ignore release / repeat events to prevent double-step
+                    } else if state.popup_open {
                         match key.code {
                             KeyCode::Esc => state.toggle_popup(),
                             KeyCode::Up => state.popup.prev(),
@@ -70,7 +67,13 @@ async fn run_loop(
                         }
                     } else {
                         match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc => return Ok(ScanOutcome::Aborted),
+                            KeyCode::Char('q') | KeyCode::Esc => {
+                                return Ok(if state.scan_done {
+                                    ScanOutcome::Completed
+                                } else {
+                                    ScanOutcome::Aborted
+                                });
+                            }
                             KeyCode::Char('p') | KeyCode::Char('?') => state.toggle_popup(),
                             KeyCode::Down => state.select_next(),
                             KeyCode::Up => state.select_prev(),
@@ -81,6 +84,13 @@ async fn run_loop(
             }
             _ = ticker.tick() => {}
         }
+
+        // Detect scan completion after any event (Bug 4)
+        if state.all_done() && !state.scan_done {
+            state.scan_done = true;
+            state.activity = "✓ Scan complete — browse findings · q to exit".to_string();
+        }
+
         terminal.draw(|f| render(f, &mut state))?;
     }
 }
@@ -88,10 +98,10 @@ async fn run_loop(
 fn render(frame: &mut Frame, state: &mut UiState) {
     let area = frame.area();
     let chunks = Layout::vertical([
-        Constraint::Length(4),
+        Constraint::Length(7),   // 4-line ASCII banner + model line + 2 borders
         Constraint::Min(6),
         Constraint::Length(1),
-        Constraint::Length(3),
+        Constraint::Length(8),   // detail: 6 inner rows for title/loc/desc/fix
         Constraint::Length(1),
     ])
     .split(area);
@@ -100,7 +110,7 @@ fn render(frame: &mut Frame, state: &mut UiState) {
     render_body(frame, chunks[1], state);
     render_activity(frame, chunks[2], state);
     render_detail(frame, chunks[3], state);
-    render_keys(frame, chunks[4], state.popup_open);
+    render_keys(frame, chunks[4], state.popup_open, state.scan_done);
 
     if state.popup_open {
         render_popup(frame, area, &state.popup);
@@ -184,6 +194,7 @@ fn render_scanners(frame: &mut Frame, area: Rect, state: &UiState) {
 }
 
 fn render_findings(frame: &mut Frame, area: Rect, state: &mut UiState) {
+    let inner_width = area.width.saturating_sub(2) as usize; // subtract left+right border
     let items: Vec<ListItem> = state
         .findings
         .iter()
@@ -198,11 +209,13 @@ fn render_findings(frame: &mut Frame, area: Rect, state: &mut UiState) {
             };
             let sev = format!("{}", f.severity);
             let loc = f.location.as_deref().unwrap_or("").chars().take(20).collect::<String>();
-            let title = f.title.chars().take(30).collect::<String>();
+            let fixed = 8 + 8 + loc.len(); // sev col + scanner col + loc col
+            let title_width = inner_width.saturating_sub(fixed).max(10);
+            let title = f.title.chars().take(title_width).collect::<String>();
             let line = Line::from(vec![
                 Span::styled(format!("{:<8}", sev), Style::default().fg(sev_color).add_modifier(Modifier::BOLD)),
                 Span::raw(format!("{:<8}", f.scanner.chars().take(6).collect::<String>())),
-                Span::raw(format!("{:<32}", title)),
+                Span::raw(format!("{:<width$}", title, width = title_width)),
                 Span::styled(loc, Style::default().fg(Color::DarkGray)),
             ]);
             let style = if i == state.selected_idx {
@@ -242,9 +255,11 @@ fn render_detail(frame: &mut Frame, area: Rect, state: &UiState) {
     frame.render_widget(paragraph, area);
 }
 
-fn render_keys(frame: &mut Frame, area: Rect, popup_open: bool) {
+fn render_keys(frame: &mut Frame, area: Rect, popup_open: bool, scan_done: bool) {
     let text = if popup_open {
         " ↑↓ navigate · Enter select · Esc close"
+    } else if scan_done {
+        " ↑↓ select finding · q exit"
     } else {
         " ↑↓ navigate · p menu · q quit"
     };
