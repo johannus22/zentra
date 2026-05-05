@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct CustomProvider {
+    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub display_name: Option<String>,
@@ -22,7 +23,10 @@ fn default_kind() -> String {
 
 impl CustomProvider {
     pub fn effective_display_name(&self) -> &str {
-        self.display_name.as_deref().unwrap_or(&self.name)
+        self.display_name
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&self.name)
     }
 }
 
@@ -65,11 +69,16 @@ impl CustomProvidersFile {
             }
         };
         file.providers.retain(|p| {
-            let ok = !p.name.is_empty() && !p.base_url.is_empty() && !p.default_model.is_empty();
+            let ok = !p.name.is_empty() && !p.base_url.is_empty() && !p.default_model.is_empty() && !p.kind.is_empty();
             if !ok {
                 eprintln!(
                     "⚠ {}: provider '{}' missing required field — skipped",
                     path.display(), p.name
+                );
+            } else if p.kind != "openai_compat" && p.kind != "anthropic" {
+                eprintln!(
+                    "⚠ {}: provider '{}' has unrecognized kind '{}', treating as openai_compat",
+                    path.display(), p.name, p.kind
                 );
             }
             ok

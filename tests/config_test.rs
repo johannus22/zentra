@@ -285,3 +285,52 @@ default_model = "gpt-4o"
     let file = CustomProvidersFile::load_from(&path);
     assert_eq!(file.providers[0].kind, "openai_compat");
 }
+
+#[test]
+fn custom_providers_file_with_nameless_entry_keeps_valid_entries() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("providers.toml");
+    std::fs::write(&path, r#"
+[[providers]]
+name = "good"
+base_url = "https://good.example.com/v1"
+default_model = "gpt-4o"
+
+[[providers]]
+base_url = "https://bad.example.com/v1"
+default_model = "gpt-4o"
+"#).unwrap();
+    let file = CustomProvidersFile::load_from(&path);
+    assert_eq!(file.providers.len(), 1, "valid entry should be kept despite nameless sibling");
+    assert_eq!(file.providers[0].name, "good");
+}
+
+#[test]
+fn custom_providers_display_name_empty_string_falls_back_to_name() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("providers.toml");
+    std::fs::write(&path, r#"
+[[providers]]
+name = "my-provider"
+display_name = ""
+base_url = "https://example.com/v1"
+default_model = "gpt-4o"
+"#).unwrap();
+    let file = CustomProvidersFile::load_from(&path);
+    assert_eq!(file.providers[0].effective_display_name(), "my-provider");
+}
+
+#[test]
+fn custom_providers_empty_kind_is_skipped() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("providers.toml");
+    std::fs::write(&path, r#"
+[[providers]]
+name = "bad-kind"
+base_url = "https://example.com/v1"
+default_model = "gpt-4o"
+kind = ""
+"#).unwrap();
+    let file = CustomProvidersFile::load_from(&path);
+    assert!(file.providers.is_empty());
+}
