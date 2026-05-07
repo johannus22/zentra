@@ -161,3 +161,41 @@ async fn engine_writes_report_files() {
         "secrets-findings.json should be written"
     );
 }
+
+#[tokio::test]
+async fn engine_skips_node_modules_and_target() {
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join("node_modules")).unwrap();
+    std::fs::write(
+        dir.path().join("node_modules").join("secret.js"),
+        r#"let key = "AKIAIOSFODNN7EXAMPLE";"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("target")).unwrap();
+    std::fs::write(
+        dir.path().join("target").join("secret.rs"),
+        r#"let key = "AKIAIOSFODNN7EXAMPLE";"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("src").join("main.rs"),
+        r#"let key = "AKIAIOSFODNN7EXAMPLE";"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join(".zentra")).unwrap();
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(128);
+    let writer = StateWriter::new(dir.path()).unwrap();
+    let scanner = SecretScanner::new(dir.path().to_path_buf(), HistoryDepth::Last(0), tx);
+    let matches = scanner.run(&writer).await.unwrap();
+
+    assert!(
+        matches.iter().any(|m| m.detector == "aws_access_key" && m.file == "src/main.rs"),
+        "should find secret in src/"
+    );
+    assert!(
+        !matches.iter().any(|m| m.file.starts_with("node_modules") || m.file.starts_with("target")),
+        "should skip node_modules and target"
+    );
+}
