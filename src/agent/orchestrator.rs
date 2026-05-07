@@ -37,9 +37,18 @@ impl OrchestratorAgent {
     }
 
     pub async fn run(self, scanners: &[ScannerType]) -> Result<()> {
-        // Phase 0: FrameworkAnalysis — builds .zentra/context.md for all subsequent scanners
+        // Phase 0: FrameworkAnalysis — builds .zentra/architecture.md for all subsequent scanners
         if scanners.contains(&ScannerType::FrameworkAnalysis) {
             self.run_llm_scanner(ScannerType::FrameworkAnalysis, None).await?;
+
+            // Safety net: if the agent exhausted iterations without calling write_architecture,
+            // write a minimal placeholder so Phase 0 won't re-trigger on the next scan.
+            if self.state_writer.read_architecture().is_empty() {
+                let _ = self.state_writer.write_architecture(
+                    "# Framework Architecture Analysis\n\nAnalysis incomplete. \
+Delete this file and re-run the scan to retry."
+                );
+            }
         }
 
         // Read produced architecture; inject into every LLM scanner that follows
