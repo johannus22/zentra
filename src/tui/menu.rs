@@ -738,19 +738,19 @@ fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &
         ]),
         Line::from(vec![
             Span::raw("  Model      "),
-            Span::styled(format!("[{:width$}]", clip_with_ellipsis(&form.model, max_field_width), width = max_field_width), field_style(1)),
+            Span::styled(format!("{:width$}", clip_with_ellipsis(&form.model, max_field_width), width = max_field_width), field_style(1)),
         ]),
         Line::from(vec![
             Span::raw("  Base URL   "),
-            Span::styled(format!("[{:width$}]", clip_with_ellipsis(&form.base_url, max_field_width), width = max_field_width), field_style(2)),
+            Span::styled(format!("{:width$}", clip_with_ellipsis(&form.base_url, max_field_width), width = max_field_width), field_style(2)),
         ]),
         Line::from(vec![
             Span::raw("  API Key    "),
-            Span::styled(format!("[{:width$}]", clip_with_ellipsis(&form.masked_key(), max_field_width), width = max_field_width), field_style(3)),
+            Span::styled(format!("{:width$}", clip_with_ellipsis(&form.masked_key(), max_field_width), width = max_field_width), field_style(3)),
         ]),
         Line::from(vec![
             Span::raw("  Name       "),
-            Span::styled(format!("[{:width$}]", clip_with_ellipsis(&form.profile_name, max_field_width), width = max_field_width), field_style(4)),
+            Span::styled(format!("{:width$}", clip_with_ellipsis(&form.profile_name, max_field_width), width = max_field_width), field_style(4)),
         ]),
         Line::from(Span::raw("")),
     ];
