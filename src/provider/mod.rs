@@ -1,6 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
 pub mod anthropic;
 pub mod openai_compat;
@@ -71,6 +72,7 @@ pub trait LLMProvider: Send + Sync {
         messages: &[AgentMessage],
         tools: &[ToolDefinition],
         max_tokens: u32,
+        cancel_token: Option<&CancellationToken>,
     ) -> Result<CompletionResponse>;
 
     fn context_window(&self) -> u32;
