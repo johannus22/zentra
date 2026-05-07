@@ -662,11 +662,23 @@ fn render_provider_selector(frame: &mut Frame, area: ratatui::layout::Rect, stat
     ])
     .split(area);
 
-    let header = Paragraph::new(BANNER)
-        .block(Block::default().borders(Borders::ALL))
-        .style(Style::default().fg(Color::Cyan));
-    frame.render_widget(header, chunks[1]);
+    // ── Header block ────────────────────────────────────────────────────────
+    let header_center = Layout::horizontal([
+        Constraint::Percentage(30),
+        Constraint::Percentage(40),
+        Constraint::Percentage(30),
+    ]).split(chunks[1])[1];
 
+    let header_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = header_block.inner(header_center);
+    frame.render_widget(header_block, header_center);
+
+    let banner_para = Paragraph::new(BANNER).style(Style::default().fg(Color::Cyan));
+    frame.render_widget(banner_para, inner);
+
+    // ── Provider list ───────────────────────────────────────────────────────
     let items: Vec<ListItem> = state.profiles.iter().enumerate().map(|(i, (name, model))| {
         let selected = state.provider_idx == i;
         let is_active = *name == state.active_profile;
@@ -701,7 +713,12 @@ fn render_provider_selector(frame: &mut Frame, area: ratatui::layout::Rect, stat
 
     let keys = Paragraph::new(" ↑↓ navigate · Enter select · Esc back")
         .style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(keys, chunks[3]);
+    let hints_center = Layout::horizontal([
+        Constraint::Percentage(30),
+        Constraint::Percentage(40),
+        Constraint::Percentage(30),
+    ]).split(chunks[3])[1];
+    frame.render_widget(keys, hints_center);
 }
 
 fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
@@ -716,16 +733,38 @@ fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &
         }
     };
 
+    // ── Header + form stacked vertically ────────────────────────────────────
+    let outer_chunks = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(6),
+        Constraint::Length(13),
+        Constraint::Fill(1),
+    ])
+    .split(area);
+
+    // Header block (same style as main menu)
+    let header_center = Layout::horizontal([
+        Constraint::Percentage(30),
+        Constraint::Percentage(40),
+        Constraint::Percentage(30),
+    ]).split(outer_chunks[1])[1];
+
+    let header_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let header_inner = header_block.inner(header_center);
+    frame.render_widget(header_block, header_center);
+
+    let banner_para = Paragraph::new(BANNER).style(Style::default().fg(Color::Cyan));
+    frame.render_widget(banner_para, header_inner);
+
+    // ── Form block ──────────────────────────────────────────────────────────
     let form_area = Layout::horizontal([
         Constraint::Percentage(30),
         Constraint::Percentage(40),
         Constraint::Percentage(30),
     ])
-    .split(Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(13),
-        Constraint::Fill(1),
-    ]).split(area)[1])[1];
+    .split(outer_chunks[2])[1];
 
     let block = Block::default().borders(Borders::ALL).title(" ADD PROVIDER ").title_style(Style::default().fg(Color::Cyan));
     let inner = block.inner(form_area);
