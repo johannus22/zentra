@@ -248,7 +248,22 @@ fn run_menu_loop(
                         }
                         _ => {}
                     },
-                    MenuScreen::ProviderSelector => match key.code {  // Task 5
+                    MenuScreen::ProviderSelector => match key.code {
+                        KeyCode::Up => {
+                            if state.provider_idx > 0 {
+                                state.provider_idx -= 1;
+                            }
+                        }
+                        KeyCode::Down => {
+                            if state.provider_idx + 1 < state.profiles.len() {
+                                state.provider_idx += 1;
+                            }
+                        }
+                        KeyCode::Enter => {
+                            if let Some((name, _)) = state.profiles.get(state.provider_idx) {
+                                return Ok(MenuAction::ChangeProvider(name.clone()));
+                            }
+                        }
                         KeyCode::Esc => {
                             state.screen = MenuScreen::Main;
                             state.selected_idx = ACTION_CHANGE_PROVIDER;
@@ -275,8 +290,8 @@ fn render_menu(frame: &mut Frame, state: &MenuState) {
     match state.screen {
         MenuScreen::Main => render_main_menu(frame, area, state),
         MenuScreen::ScannerSelector => render_scanner_selector(frame, area, state),
-        MenuScreen::ProviderSelector => render_main_menu(frame, area, state), // placeholder
-        MenuScreen::ProviderForm => render_main_menu(frame, area, state),     // placeholder
+        MenuScreen::ProviderSelector => render_provider_selector(frame, area, state),
+        MenuScreen::ProviderForm => render_main_menu(frame, area, state), // placeholder — Task 6
     }
 }
 
@@ -441,6 +456,58 @@ fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state
     frame.render_widget(list, list_area);
 
     let keys = Paragraph::new(" Space toggle · Enter run · Esc back")
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(keys, chunks[3]);
+}
+
+fn render_provider_selector(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
+    let chunks = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(6),
+        Constraint::Min(6),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .split(area);
+
+    let header = Paragraph::new(BANNER)
+        .block(Block::default().borders(Borders::ALL))
+        .style(Style::default().fg(Color::Cyan));
+    frame.render_widget(header, chunks[1]);
+
+    let items: Vec<ListItem> = state.profiles.iter().enumerate().map(|(i, (name, model))| {
+        let selected = state.provider_idx == i;
+        let is_active = *name == state.active_profile;
+        let bullet = if is_active { "●" } else { " " };
+        let prefix = if selected { "▶" } else { " " };
+        let style = if selected {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        let bullet_style = Style::default().fg(if is_active { Color::Green } else { Color::DarkGray });
+        ListItem::new(Line::from(vec![
+            Span::raw(format!("{} ", prefix)),
+            Span::styled(format!("{} ", bullet), bullet_style),
+            Span::styled(format!("{:<20}", name.chars().take(20).collect::<String>()), style.clone()),
+            Span::styled(
+                model.chars().take(20).collect::<String>(),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]))
+    }).collect();
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title("SELECT PROVIDER"));
+    let list_area = Layout::horizontal([
+        Constraint::Percentage(10),
+        Constraint::Percentage(80),
+        Constraint::Percentage(10),
+    ])
+    .split(chunks[2])[1];
+    frame.render_widget(list, list_area);
+
+    let keys = Paragraph::new(" ↑↓ navigate · Enter select · Esc back")
         .style(Style::default().fg(Color::DarkGray));
     frame.render_widget(keys, chunks[3]);
 }
