@@ -38,7 +38,7 @@ impl SecretScanner {
 
         let mut all_matches = Vec::new();
 
-        let fs_matches = scan_filesystem(&self.root, detector_patterns, &validator);
+        let fs_matches = scan_filesystem(&self.root, detector_patterns, &validator, &self.tx);
         all_matches.extend(fs_matches);
 
         let git_matches =
@@ -107,6 +107,7 @@ fn scan_filesystem(
     root: &Path,
     detector_patterns: &[patterns::DetectorPattern],
     validator: &ContextValidator<'_>,
+    tx: &mpsc::Sender<ScanEvent>,
 ) -> Vec<SecretsMatch> {
     let mut results = Vec::new();
 
@@ -126,6 +127,7 @@ fn scan_filesystem(
         .follow_links(false)
         .build();
 
+    let mut file_count: usize = 0;
     for entry in walker.flatten()
     {
         if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
@@ -142,6 +144,15 @@ fn scan_filesystem(
             if meta.len() > 1_048_576 {
                 continue; // skip files > 1MB
             }
+        }
+
+        file_count += 1;
+        if file_count % 100 == 0 {
+            let _ = tx.try_send(ScanEvent::ToolCall {
+                scanner: ScannerType::SecretsScan,
+                tool: "scan_files".to_string(),
+                arg: format!("{} files checked", file_count),
+            });
         }
 
         let mut file = match std::fs::File::open(path) {
