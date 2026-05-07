@@ -1,6 +1,7 @@
 use anyhow::Result;
 use ignore::overrides::OverrideBuilder;
 use ignore::WalkBuilder;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
 
@@ -137,10 +138,29 @@ fn scan_filesystem(
             .map(|p| p.to_string_lossy().replace('\\', "/"))
             .unwrap_or_default();
 
-        let content = match std::fs::read_to_string(path) {
-            Ok(s) => s,
+        if let Ok(meta) = entry.metadata() {
+            if meta.len() > 1_048_576 {
+                continue; // skip files > 1MB
+            }
+        }
+
+        let mut file = match std::fs::File::open(path) {
+            Ok(f) => f,
             Err(_) => continue,
         };
+        let mut buf = [0u8; 8192];
+        let n = match file.read(&mut buf) {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        if buf[..n].contains(&0) {
+            continue; // binary file
+        }
+        let mut content = String::from_utf8_lossy(&buf[..n]).into_owned();
+        let mut remainder = String::new();
+        if file.read_to_string(&mut remainder).is_ok() {
+            content.push_str(&remainder);
+        }
 
         let content_lines: Vec<&str> = content.lines().collect();
 
