@@ -18,6 +18,20 @@ pub const POPUP_ITEMS: &[&str] = &[
     "Exit App",
 ];
 
+pub const LOADING_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+pub const ACTIVITY_VERBS: &[&str] = &[
+    "Heraldizzing", 
+    "Gingerizing", 
+    "Jekloysizing", 
+    "Jedding", 
+    "Kodecrafting", 
+    "Jaredizing", 
+    "Adding Salt", 
+    "ML BangBangizing",
+    "Gabottizzizing"
+];
+
 pub async fn run_scan_ui(
     mut rx: mpsc::Receiver<ScanEvent>,
     scanners: Vec<ScannerType>,
@@ -40,6 +54,7 @@ async fn run_loop(
     let mut state = UiState::new(scanners, model_info, context_window);
     let mut keys = EventStream::new();
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(80));
+    let mut animation_ticker = tokio::time::interval(std::time::Duration::from_millis(80));
 
     loop {
         tokio::select! {
@@ -83,6 +98,9 @@ async fn run_loop(
                 }
             }
             _ = ticker.tick() => {}
+            _ = animation_ticker.tick() => {
+                state.animation_index = state.animation_index.wrapping_add(1);
+            }
         }
 
         // Detect scan completion after any event (Bug 4)
@@ -165,11 +183,13 @@ fn render_scanners(frame: &mut Frame, area: Rect, state: &UiState) {
         .scanners
         .iter()
         .map(|s| {
+            
+
             let icon = match s.status {
-                ScanStatus::Running => "⟳",
-                ScanStatus::Done => "✓",
-                ScanStatus::Failed => "✗",
-                ScanStatus::Queued | ScanStatus::Waiting => "○",
+                ScanStatus::Running => LOADING_FRAMES[state.animation_index % LOADING_FRAMES.len()],
+                ScanStatus::Done => '✓',
+                ScanStatus::Failed => '✗',
+                ScanStatus::Queued | ScanStatus::Waiting => '○',
             };
             let color = match s.status {
                 ScanStatus::Running => Color::Yellow,
@@ -238,9 +258,31 @@ fn render_findings(frame: &mut Frame, area: Rect, state: &mut UiState) {
 }
 
 fn render_activity(frame: &mut Frame, area: Rect, state: &UiState) {
-    let text = format!(" ACTIVITY  {}", state.activity);
-    let paragraph = Paragraph::new(text).style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(paragraph, area);
+    let animation_speed = 20;
+    let word_index = (state.animation_index as usize / animation_speed) % ACTIVITY_VERBS.len();
+    let current_verb = ACTIVITY_VERBS[word_index];
+        let speed = 1.676767;
+        let brightness = (state.animation_index as f64 * speed).sin();
+        let pulse = ((brightness * 60.0) + 190.0) as u8; // Ranges from 130 to 250
+        let glow_color = Color::Rgb(pulse, pulse, 255); // A "breathing" white-blue
+    // let text = format!(" ACTIVITY  {}", state.activity);
+    // let paragraph = Paragraph::new(text).style(Style::default().fg(Color::DarkGray));
+    let content = Line::from(vec![
+
+        Span::styled(
+            format!( "{:<2}", LOADING_FRAMES[state.animation_index % LOADING_FRAMES.len()],),
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD)
+        ),
+        Span::styled(
+            format!("{: <22}", current_verb), // Left-align to prevent text jumping
+            Style::default().fg(glow_color).add_modifier(Modifier::BOLD)
+        ),
+        Span::styled(
+            format!(" {}", state.activity),
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(content), area);
 }
 
 fn render_detail(frame: &mut Frame, area: Rect, state: &UiState) {

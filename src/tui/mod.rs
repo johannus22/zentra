@@ -90,6 +90,7 @@ pub struct UiState {
     pub popup_open: bool,
     pub popup: PopupState,
     pub scan_done: bool,
+    pub animation_index: usize,
 }
 
 impl UiState {
@@ -109,6 +110,7 @@ impl UiState {
             popup_open: false,
             popup: PopupState::new(),
             scan_done: false,
+            animation_index: 0,
         }
     }
 
