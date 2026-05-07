@@ -536,7 +536,9 @@ fn clip_with_ellipsis_handles_very_long_url() {
 
 #[test]
 fn provider_form_handles_long_url() {
-    let mut form = ProviderFormState::default();
-    form.base_url = "https://very-long-custom-endpoint.example.com/v1/chat/completions".to_string();
+    let form = ProviderFormState {
+        base_url: "https://very-long-custom-endpoint.example.com/v1/chat/completions".to_string(),
+        ..Default::default()
+    };
     assert!(form.base_url.len() > 40);
 }

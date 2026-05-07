@@ -6,6 +6,7 @@ use zentra_cli::scanners;
 
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use zentra_cli::agent::scanner::ScannerAgent;
 use zentra_cli::provider::openai_compat::OpenAICompatProvider;
 use wiremock::{MockServer, Mock, ResponseTemplate};
@@ -323,7 +324,7 @@ async fn scanner_agent_runs_react_loop_and_completes_when_no_tool_calls() {
     let writer = Arc::new(StateWriter::new(dir.path()).unwrap());
     let (tx, _rx) = mpsc::channel(16);
 
-    let agent = ScannerAgent::new(ScannerType::Sast, provider, registry, writer, tx, None);
+    let agent = ScannerAgent::new(ScannerType::Sast, provider, registry, writer, tx, None, CancellationToken::new());
     let result = agent.run().await;
 
     assert!(result.is_ok(), "scanner should complete without error: {:?}", result);
@@ -378,7 +379,7 @@ async fn scanner_agent_executes_tool_call_and_feeds_result_back() {
     let writer = Arc::new(StateWriter::new(dir.path()).unwrap());
     let (tx, mut rx) = mpsc::channel(16);
 
-    let agent = ScannerAgent::new(ScannerType::Sast, provider, registry, writer, tx, None);
+    let agent = ScannerAgent::new(ScannerType::Sast, provider, registry, writer, tx, None, CancellationToken::new());
     agent.run().await.unwrap();
 
     // Should have sent ToolCall event
@@ -442,7 +443,7 @@ async fn orchestrator_runs_selected_scanners_in_order() {
     let (tx, mut rx) = mpsc::channel(32);
 
     let orchestrator = OrchestratorAgent::new(
-        provider, registry, writer, tx, zentra_cli::scanners::secrets::HistoryDepth::default(),
+        provider, registry, writer, tx, zentra_cli::scanners::secrets::HistoryDepth::default(), CancellationToken::new(),
     );
 
     orchestrator.run(&[ScannerType::ThreatModel, ScannerType::Sast, ScannerType::Report]).await.unwrap();
@@ -484,7 +485,7 @@ async fn scanner_agent_emits_tokens_used_event() {
     let writer = Arc::new(StateWriter::new(dir.path()).unwrap());
     let (tx, mut rx) = mpsc::channel(16);
 
-    ScannerAgent::new(ScannerType::Sast, provider, registry, writer, tx, None)
+    ScannerAgent::new(ScannerType::Sast, provider, registry, writer, tx, None, CancellationToken::new())
         .run()
         .await
         .unwrap();
