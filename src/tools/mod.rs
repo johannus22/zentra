@@ -129,10 +129,10 @@ impl ToolRegistry {
                 }),
             },
             ToolDefinition {
-                name: "write_context".to_string(),
-                description: "Write the framework and tech-stack analysis to .zentra/context.md. \
-Call once with the complete analysis. Other scanners will read this to calibrate their findings \
-and avoid false positives.".to_string(),
+                name: "write_architecture".to_string(),
+                description: "Write the full framework and tech-stack analysis to \
+.zentra/architecture.md. Call once with the complete analysis. Other scanners will read this \
+document to calibrate their findings and avoid false positives.".to_string(),
                 parameters: serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -219,11 +219,11 @@ data entry points, security middleware already present, and known safety guarant
                 git_tools::git_blame(file, line)
             }
             "git_status" => git_tools::git_status(),
-            "write_context" => {
+            "write_architecture" => {
                 let content = args["content"].as_str().unwrap_or("");
-                match state_writer.write_context(content) {
-                    Ok(_) => "Context written to .zentra/context.md.".to_string(),
-                    Err(e) => format!("Error writing context: {}", e),
+                match state_writer.write_architecture(content) {
+                    Ok(_) => "Architecture written to .zentra/architecture.md.".to_string(),
+                    Err(e) => format!("Error writing architecture: {}", e),
                 }
             }
             "scan_secrets" => {

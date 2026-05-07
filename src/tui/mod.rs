@@ -201,7 +201,7 @@ impl UiState {
     }
 
     pub fn total_findings(&self) -> usize {
-        self.findings.len()
+        self.findings.iter().filter(|f| f.scanner != "framework").count()
     }
 
     pub fn token_pct(&self) -> u16 {
