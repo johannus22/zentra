@@ -9,6 +9,7 @@ fn ui_state_scanner_starts_as_queued() {
         vec![ScannerType::Sast, ScannerType::Report],
         "gpt-4o · openai".to_string(),
         200_000,
+        vec![],
     );
     assert_eq!(state.scanners[0].status, ScanStatus::Queued);
     assert_eq!(state.scanners[1].status, ScanStatus::Waiting);
@@ -20,6 +21,7 @@ fn ui_state_apply_scanner_started() {
         vec![ScannerType::Sast],
         "gpt-4o".to_string(),
         200_000,
+        vec![],
     );
     state.apply_event(ScanEvent::ScannerStarted(ScannerType::Sast));
     assert_eq!(state.scanners[0].status, ScanStatus::Running);
@@ -31,6 +33,7 @@ fn ui_state_apply_scanner_completed() {
         vec![ScannerType::Sast],
         "gpt-4o".to_string(),
         200_000,
+        vec![],
     );
     state.apply_event(ScanEvent::ScannerStarted(ScannerType::Sast));
     state.apply_event(ScanEvent::ScannerCompleted(ScannerType::Sast));
@@ -39,7 +42,7 @@ fn ui_state_apply_scanner_completed() {
 
 #[test]
 fn ui_state_apply_finding_added() {
-    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000);
+    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000, vec![]);
     let f = Finding {
         scanner: "sast".to_string(),
         severity: Severity::High,
@@ -55,7 +58,7 @@ fn ui_state_apply_finding_added() {
 
 #[test]
 fn ui_state_apply_tool_call_updates_activity() {
-    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000);
+    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000, vec![]);
     state.apply_event(ScanEvent::ToolCall {
         scanner: ScannerType::Sast,
         tool: "read_file".to_string(),
@@ -67,7 +70,7 @@ fn ui_state_apply_tool_call_updates_activity() {
 
 #[test]
 fn ui_state_apply_tokens_used_accumulates() {
-    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000);
+    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000, vec![]);
     state.apply_event(ScanEvent::TokensUsed { input: 1000, output: 200 });
     state.apply_event(ScanEvent::TokensUsed { input: 500, output: 100 });
     assert_eq!(state.total_tokens, 1800);
@@ -79,6 +82,7 @@ fn ui_state_all_done_when_all_scanners_completed_or_failed() {
         vec![ScannerType::Sast, ScannerType::Report],
         "m".to_string(),
         200_000,
+        vec![],
     );
     assert!(!state.all_done());
     state.apply_event(ScanEvent::ScannerStarted(ScannerType::Sast));
@@ -90,7 +94,7 @@ fn ui_state_all_done_when_all_scanners_completed_or_failed() {
 
 #[test]
 fn ui_state_select_next_wraps() {
-    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000);
+    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000, vec![]);
     let f = Finding {
         scanner: "sast".to_string(),
         severity: Severity::High,
@@ -109,15 +113,15 @@ fn ui_state_select_next_wraps() {
 
 #[test]
 fn ui_state_token_pct_is_correct() {
-    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000);
+    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000, vec![]);
     state.apply_event(ScanEvent::TokensUsed { input: 10_000, output: 5_000 });
-    // 15_000 / 200_000 = 7.5% → 7
-    assert_eq!(state.token_pct(), 7);
+    // peak_input = 10_000 / 200_000 = 5%
+    assert_eq!(state.token_pct(), 5);
 }
 
 #[test]
 fn ui_state_token_pct_caps_at_100() {
-    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 1_000);
+    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 1_000, vec![]);
     state.apply_event(ScanEvent::TokensUsed { input: 2_000, output: 0 });
     assert_eq!(state.token_pct(), 100);
 }
@@ -262,13 +266,13 @@ fn popup_state_prev_clamps_at_zero() {
 
 #[test]
 fn ui_state_popup_starts_closed() {
-    let state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000);
+    let state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000, vec![]);
     assert!(!state.popup_open);
 }
 
 #[test]
 fn ui_state_toggle_popup() {
-    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000);
+    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000, vec![]);
     state.toggle_popup();
     assert!(state.popup_open);
     state.toggle_popup();
