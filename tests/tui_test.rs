@@ -274,3 +274,33 @@ fn ui_state_toggle_popup() {
     state.toggle_popup();
     assert!(!state.popup_open);
 }
+
+// ── Results Parser ─────────────────────────────────────────────────────────
+
+#[test]
+fn parse_findings_returns_all_findings() {
+    use zentra_cli::tui::results::parse_findings;
+    // Matches the exact on-disk format written by StateWriter::write_finding:
+    // writeln! appends one extra \n after the \n\n---\n in the format string.
+    let raw = "\
+## [HIGH] SQL Injection\n\
+**Scanner:** Sast\n\
+**Description:** Unsanitised input in login handler\n\
+**Recommendation:** Use parameterised queries\n\
+\n\
+---\n\
+\n\
+## [MEDIUM] Hardcoded API key\n\
+**Scanner:** Sast\n\
+**Location:** src/config/auth.rs:42\n\
+**Description:** API key embedded in source\n\
+**Recommendation:** Use environment variables\n\
+\n\
+---\n\
+\n";
+    let findings = parse_findings(raw);
+    assert_eq!(findings.len(), 2, "expected 2 findings, got {}", findings.len());
+    assert_eq!(findings[0].title, "SQL Injection");
+    assert_eq!(findings[1].title, "Hardcoded API key");
+    assert_eq!(findings[1].location.as_deref(), Some("src/config/auth.rs:42"));
+}
