@@ -1,7 +1,7 @@
 use zentra_cli::agent::{ScanEvent, ScannerType};
 use zentra_cli::state::{Finding, Severity};
-use zentra_cli::tui::{ScanStatus, UiScanner, UiState};
-use zentra_cli::tui::menu::{MenuAction, MenuState, MenuScreen};
+use zentra_cli::tui::{ScanStatus, UiState};
+use zentra_cli::tui::menu::{MenuState, MenuScreen};
 
 #[test]
 fn ui_state_scanner_starts_as_queued() {
@@ -189,7 +189,7 @@ fn menu_state_scanner_selector_selected_types() {
     assert!(types.contains(&ScannerType::Report)); // always included
 }
 
-use zentra_cli::tui::{PopupState, ScanOutcome};
+use zentra_cli::tui::PopupState;
 use zentra_cli::tui::results::parse_findings;
 
 #[test]
@@ -442,8 +442,7 @@ fn provider_form_default_uses_first_known_provider() {
 
 #[test]
 fn provider_form_append_char_to_api_key() {
-    let mut form = ProviderFormState::default();
-    form.focused_field = 3; // api_key field
+    let mut form = ProviderFormState { focused_field: 3, ..Default::default() }; // api_key field
     form.append_char('s');
     form.append_char('k');
     assert_eq!(form.api_key, "sk");
@@ -451,9 +450,7 @@ fn provider_form_append_char_to_api_key() {
 
 #[test]
 fn provider_form_backspace_removes_last_char() {
-    let mut form = ProviderFormState::default();
-    form.focused_field = 4; // profile_name
-    form.profile_name = "test".to_string();
+    let mut form = ProviderFormState { focused_field: 4, profile_name: "test".to_string(), ..Default::default() }; // profile_name field
     form.backspace();
     assert_eq!(form.profile_name, "tes");
 }
@@ -467,8 +464,7 @@ fn provider_form_cycle_provider_updates_defaults() {
 
 #[test]
 fn provider_form_masked_key_shows_prefix_only() {
-    let mut form = ProviderFormState::default();
-    form.api_key = "sk-ant-abc123xyz".to_string();
+    let form = ProviderFormState { api_key: "sk-ant-abc123xyz".to_string(), ..Default::default() };
     let masked = form.masked_key();
     assert!(masked.starts_with("sk-ant"));
     assert!(masked.contains('*'));
@@ -483,9 +479,11 @@ fn provider_form_validate_fails_on_empty_key() {
 
 #[test]
 fn provider_form_validate_rejects_unsafe_profile_name() {
-    let mut form = ProviderFormState::default();
-    form.api_key = "sk-test-key-12345".to_string();
-    form.profile_name = "../evil".to_string();
+    let form = ProviderFormState {
+        api_key: "sk-test-key-12345".to_string(),
+        profile_name: "../evil".to_string(),
+        ..Default::default()
+    };
     assert!(form.validate().is_err());
     let err = form.validate().unwrap_err().to_string();
     assert!(err.contains("letters") || err.contains("alphanumeric") || err.contains("only"));

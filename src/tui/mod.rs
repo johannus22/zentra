@@ -18,6 +18,12 @@ pub struct PopupState {
     pub selected: usize,
 }
 
+impl Default for PopupState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PopupState {
     pub fn new() -> Self {
         Self { selected: 0 }

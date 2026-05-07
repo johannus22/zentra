@@ -45,7 +45,7 @@ impl Allowlist {
 
     pub fn is_fingerprint_allowed(&self, file: &str, line: u32, redacted: &str) -> bool {
         let fp = compute_fingerprint(file, line, redacted);
-        self.inner.fingerprints.iter().any(|f| *f == fp)
+        self.inner.fingerprints.contains(&fp)
     }
 
     pub fn is_entry_allowed(&self, detector: &str, file: &str) -> bool {

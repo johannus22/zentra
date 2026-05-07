@@ -38,6 +38,7 @@ pub const ACTIVITY_VERBS: &[&str] = &[
     "Gabottizzizing"
 ];
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_scan_ui(
     mut rx: mpsc::Receiver<ScanEvent>,
     scanners: Vec<ScannerType>,
@@ -56,6 +57,7 @@ pub async fn run_scan_ui(
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_loop(
     terminal: &mut ratatui::DefaultTerminal,
     rx: &mut mpsc::Receiver<ScanEvent>,

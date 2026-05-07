@@ -207,6 +207,7 @@ use zentra_cli::agent::{ScanEvent, ScannerType};
 use zentra_cli::agent::orchestrator::OrchestratorAgent;
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
 async fn tool_registry_dispatches_read_file() {
     let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().unwrap();
