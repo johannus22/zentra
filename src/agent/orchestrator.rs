@@ -42,8 +42,8 @@ impl OrchestratorAgent {
             self.run_llm_scanner(ScannerType::FrameworkAnalysis, None).await?;
         }
 
-        // Read the produced context; inject into every LLM scanner that follows
-        let context = self.state_writer.read_context();
+        // Read produced architecture; inject into every LLM scanner that follows
+        let context = self.state_writer.read_architecture();
         let context_opt: Option<String> = if context.is_empty() { None } else { Some(context) };
 
         // Phase 1: ThreatModel — sequential

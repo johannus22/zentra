@@ -108,9 +108,12 @@ async fn run_once(
     let branch = current_branch();
     let profiles: Vec<String> = global.profiles.keys().cloned().collect();
 
-    // FrameworkAnalysis always runs first — prepend it if not already in the list
+    // FrameworkAnalysis runs only when .zentra/architecture.md doesn't exist yet.
+    // On subsequent scans the cached file is read and injected by the orchestrator.
     let mut scanners_with_framework = scanners.clone();
-    if !scanners_with_framework.contains(&ScannerType::FrameworkAnalysis) {
+    if !scanners_with_framework.contains(&ScannerType::FrameworkAnalysis)
+        && !state_writer.architecture_exists()
+    {
         scanners_with_framework.insert(0, ScannerType::FrameworkAnalysis);
     }
 

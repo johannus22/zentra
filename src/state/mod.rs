@@ -16,12 +16,10 @@ impl StateWriter {
         let zentra_dir = project_root.join(".zentra");
         fs::create_dir_all(&zentra_dir)?;
         fs::create_dir_all(zentra_dir.join("reports"))?;
-        // Truncate findings and context files so each new scan starts clean
-        for filename in &["detailed-findings.md", "context.md"] {
-            let p = zentra_dir.join(filename);
-            if p.exists() {
-                OpenOptions::new().write(true).truncate(true).open(&p)?;
-            }
+        // Truncate only findings — architecture.md persists across scans
+        let findings_path = zentra_dir.join("detailed-findings.md");
+        if findings_path.exists() {
+            OpenOptions::new().write(true).truncate(true).open(&findings_path)?;
         }
         Ok(Self { zentra_dir })
     }
@@ -63,15 +61,18 @@ impl StateWriter {
         }
     }
 
-    pub fn write_context(&self, content: &str) -> Result<()> {
-        let path = self.zentra_dir.join("context.md");
-        fs::write(path, content)?;
+    pub fn write_architecture(&self, content: &str) -> Result<()> {
+        fs::write(self.zentra_dir.join("architecture.md"), content)?;
         Ok(())
     }
 
-    pub fn read_context(&self) -> String {
-        let path = self.zentra_dir.join("context.md");
-        std::fs::read_to_string(&path).unwrap_or_default()
+    pub fn read_architecture(&self) -> String {
+        std::fs::read_to_string(self.zentra_dir.join("architecture.md")).unwrap_or_default()
+    }
+
+    pub fn architecture_exists(&self) -> bool {
+        let p = self.zentra_dir.join("architecture.md");
+        p.exists() && std::fs::metadata(&p).map(|m| m.len() > 0).unwrap_or(false)
     }
 
     pub fn project_root(&self) -> &std::path::Path {
