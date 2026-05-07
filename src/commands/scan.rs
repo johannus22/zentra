@@ -11,6 +11,7 @@ use crate::state::StateWriter;
 use crate::tools::ToolRegistry;
 use crate::tui::{scan_ui::run_scan_ui, ScanOutcome};
 use crate::wizard;
+use tokio_util::sync::CancellationToken;
 
 pub async fn run(
     provider_override: Option<String>,
@@ -121,15 +122,18 @@ async fn run_once(
     let (tx, rx) = mpsc::channel(128);
     let scanners_for_agent = scanners_with_framework.clone();
 
+    let cancel_token = CancellationToken::new();
+    let token_for_ui = cancel_token.clone();
+    let token_for_orchestrator = cancel_token.clone();
+
     let scan_task = tokio::spawn(async move {
-        OrchestratorAgent::new(provider, tool_registry, state_writer, tx, depth)
+        OrchestratorAgent::new(provider, tool_registry, state_writer, tx, depth, token_for_orchestrator)
             .run(&scanners_for_agent)
             .await
     });
 
-    let abort_handle = scan_task.abort_handle();
     let outcome = run_scan_ui(
-        rx, scanners_with_framework, model_info, context_window, abort_handle, profiles, branch, project_name,
+        rx, scanners_with_framework, model_info, context_window, token_for_ui, profiles, branch, project_name,
     ).await?;
 
     match outcome {
@@ -138,7 +142,7 @@ async fn run_once(
             println!("\n✓ Scan complete. Findings in .zentra/");
         }
         _ => {
-            scan_task.abort();
+            cancel_token.cancel();
             let _ = scan_task.await; // ensure task stops before returning; returns Err(JoinError::Cancelled)
         }
     }

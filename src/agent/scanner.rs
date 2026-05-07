@@ -6,6 +6,7 @@ use crate::tools::ToolRegistry;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 const MAX_ITERATIONS: usize = 30;
 
@@ -16,6 +17,7 @@ pub struct ScannerAgent {
     state_writer: Arc<StateWriter>,
     tx: mpsc::Sender<ScanEvent>,
     context: Option<String>,
+    cancel_token: CancellationToken,
 }
 
 impl ScannerAgent {
@@ -26,8 +28,9 @@ impl ScannerAgent {
         state_writer: Arc<StateWriter>,
         tx: mpsc::Sender<ScanEvent>,
         context: Option<String>,
+        cancel_token: CancellationToken,
     ) -> Self {
-        Self { scanner_type, provider, tool_registry, state_writer, tx, context }
+        Self { scanner_type, provider, tool_registry, state_writer, tx, context, cancel_token }
     }
 
     pub async fn run(self) -> Result<()> {
@@ -58,7 +61,9 @@ for example, do not flag SQL injection if the ORM listed here auto-parameterises
         self.tx.send(ScanEvent::ScannerStarted(self.scanner_type)).await.ok();
 
         for _iter in 0..MAX_ITERATIONS {
-            let resp = match self.provider.complete_with_tools(system, &messages, &tools, 4096).await {
+            let resp = match self.provider.complete_with_tools(
+                system, &messages, &tools, 4096, Some(&self.cancel_token)
+            ).await {
                 Ok(r) => r,
                 Err(e) => {
                     self.tx.send(ScanEvent::Error {

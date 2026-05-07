@@ -12,6 +12,17 @@ use ratatui::{
 use ratatui::layout::Alignment;
 use std::time::Duration;
 
+pub fn clip_with_ellipsis(s: &str, max_width: usize) -> String {
+    let count = s.chars().count();
+    if count > max_width && max_width > 0 {
+        let take = max_width.saturating_sub(1);
+        let clipped: String = s.chars().take(take).collect();
+        format!("{}…", clipped)
+    } else {
+        s.to_string()
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum MenuRow {
     Section(&'static str),
@@ -705,6 +716,21 @@ fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &
         }
     };
 
+    let form_area = Layout::horizontal([
+        Constraint::Percentage(15),
+        Constraint::Percentage(70),
+        Constraint::Percentage(15),
+    ])
+    .split(Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(16),
+        Constraint::Fill(1),
+    ]).split(area)[1])[1];
+
+    let block = Block::default().borders(Borders::ALL).title(" ADD PROVIDER ").title_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(form_area);
+    let max_field_width = inner.width.saturating_sub(15) as usize;
+
     let fields = vec![
         Line::from(vec![
             Span::raw("  Provider   "),
@@ -712,19 +738,19 @@ fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &
         ]),
         Line::from(vec![
             Span::raw("  Model      "),
-            Span::styled(format!("[{:<20}]", form.model.chars().take(20).collect::<String>()), field_style(1)),
+            Span::styled(format!("[{:width$}]", clip_with_ellipsis(&form.model, max_field_width), width = max_field_width), field_style(1)),
         ]),
         Line::from(vec![
             Span::raw("  Base URL   "),
-            Span::styled(format!("[{:<20}]", form.base_url.chars().take(20).collect::<String>()), field_style(2)),
+            Span::styled(format!("[{:width$}]", clip_with_ellipsis(&form.base_url, max_field_width), width = max_field_width), field_style(2)),
         ]),
         Line::from(vec![
             Span::raw("  API Key    "),
-            Span::styled(format!("[{:<20}]", form.masked_key().chars().take(20).collect::<String>()), field_style(3)),
+            Span::styled(format!("[{:width$}]", clip_with_ellipsis(&form.masked_key(), max_field_width), width = max_field_width), field_style(3)),
         ]),
         Line::from(vec![
             Span::raw("  Name       "),
-            Span::styled(format!("[{:<20}]", form.profile_name.chars().take(20).collect::<String>()), field_style(4)),
+            Span::styled(format!("[{:width$}]", clip_with_ellipsis(&form.profile_name, max_field_width), width = max_field_width), field_style(4)),
         ]),
         Line::from(Span::raw("")),
         Line::from(Span::styled("  ──────────────────────────────────────", Style::default().fg(Color::DarkGray))),
@@ -746,19 +772,7 @@ fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &
     }
 
     let content = Text::from(all_lines);
-    let paragraph = Paragraph::new(content)
-        .block(Block::default().borders(Borders::ALL).title(" ADD PROVIDER ").title_style(Style::default().fg(Color::Cyan)));
-
-    let form_area = Layout::horizontal([
-        Constraint::Percentage(15),
-        Constraint::Percentage(70),
-        Constraint::Percentage(15),
-    ])
-    .split(Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(14),
-        Constraint::Fill(1),
-    ]).split(area)[1])[1];
+    let paragraph = Paragraph::new(content).block(block);
 
     frame.render_widget(paragraph, form_area);
 }
