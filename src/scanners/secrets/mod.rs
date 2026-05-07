@@ -30,16 +30,21 @@ pub enum HistoryDepth {
     All,
 }
 
-impl HistoryDepth {
-    pub fn from_str(s: &str) -> Self {
+impl std::str::FromStr for HistoryDepth {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.eq_ignore_ascii_case("all") {
-            HistoryDepth::All
+            Ok(HistoryDepth::All)
         } else if let Ok(n) = s.parse::<usize>() {
-            HistoryDepth::Last(n)
+            Ok(HistoryDepth::Last(n))
         } else {
-            HistoryDepth::Last(50)
+            Ok(HistoryDepth::Last(50))
         }
     }
+}
+
+impl HistoryDepth {
 
     pub fn max_count_arg(&self) -> Option<String> {
         match self {

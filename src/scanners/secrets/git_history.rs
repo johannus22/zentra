@@ -71,8 +71,8 @@ pub async fn scan_history(
             continue;
         }
 
-        if raw.starts_with("+++ b/") {
-            current_file = Some(raw[6..].to_string());
+        if let Some(stripped) = raw.strip_prefix("+++ b/") {
+            current_file = Some(stripped.to_string());
             line_no = 0;
             prev_content_line = None;
             continue;
@@ -86,7 +86,7 @@ pub async fn scan_history(
         if raw.starts_with("@@ ") {
             if let Some(plus_part) = raw.split('+').nth(1) {
                 let num: u32 = plus_part
-                    .split(|c| c == ',' || c == ' ')
+                    .split([',', ' '])
                     .next()
                     .and_then(|s: &str| s.parse().ok())
                     .unwrap_or(1);
@@ -100,8 +100,8 @@ pub async fn scan_history(
             continue;
         }
 
-        if raw.starts_with(' ') {
-            prev_content_line = Some(raw[1..].to_string());
+        if let Some(stripped) = raw.strip_prefix(' ') {
+            prev_content_line = Some(stripped.to_string());
             line_no += 1;
             continue;
         }

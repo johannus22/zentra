@@ -17,7 +17,7 @@ pub async fn run(
     only: Option<String>,
     depth_str: String,
 ) -> Result<()> {
-    let depth = HistoryDepth::from_str(&depth_str);
+    let depth = depth_str.parse::<HistoryDepth>().unwrap_or(HistoryDepth::Last(50));
     let scanners = resolve_scanners(only.as_deref());
     let mut provider_override = provider_override;
     loop {

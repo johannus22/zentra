@@ -9,6 +9,12 @@ use tokio::sync::mpsc;
 
 pub struct ToolRegistry;
 
+impl Default for ToolRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolRegistry {
     pub fn new() -> Self {
         Self
@@ -228,7 +234,7 @@ data entry points, security middleware already present, and known safety guarant
             }
             "scan_secrets" => {
                 let depth_str = args["depth"].as_str().unwrap_or("50");
-                let depth = crate::scanners::secrets::HistoryDepth::from_str(depth_str);
+                let depth = depth_str.parse::<crate::scanners::secrets::HistoryDepth>().unwrap_or(crate::scanners::secrets::HistoryDepth::Last(50));
                 let root = state_writer.project_root().to_path_buf();
                 let (tool_tx, _rx) = mpsc::channel(128);
                 match crate::scanners::secrets::SecretScanner::new(root, depth, tool_tx)

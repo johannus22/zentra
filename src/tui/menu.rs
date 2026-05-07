@@ -658,7 +658,7 @@ fn render_provider_selector(frame: &mut Frame, area: ratatui::layout::Rect, stat
         ListItem::new(Line::from(vec![
             Span::raw(format!("{} ", prefix)),
             Span::styled(format!("{} ", bullet), bullet_style),
-            Span::styled(format!("{:<20}", name.chars().take(20).collect::<String>()), style.clone()),
+            Span::styled(format!("{:<20}", name.chars().take(20).collect::<String>()), style),
             Span::styled(
                 model.chars().take(20).collect::<String>(),
                 Style::default().fg(Color::DarkGray),
