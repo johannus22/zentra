@@ -96,6 +96,8 @@ pub struct UiState {
     pub scan_aborted: bool,
     pub animation_index: usize,
     pub scan_start: std::time::Instant,
+    pub scan_end: Option<std::time::Instant>,
+    pub project_name: String,
     pub profiles: Vec<String>,
     pub provider_popup_open: bool,
     pub provider_popup: PopupState,
@@ -108,6 +110,7 @@ impl UiState {
         context_window: u32,
         profiles: Vec<String>,
         branch: String,
+        project_name: String,
     ) -> Self {
         let scanners = scanner_types
             .iter()
@@ -129,6 +132,8 @@ impl UiState {
             scan_aborted: false,
             animation_index: 0,
             scan_start: std::time::Instant::now(),
+            scan_end: None,
+            project_name,
             profiles,
             provider_popup_open: false,
             provider_popup: PopupState::new(),
@@ -223,5 +228,19 @@ impl UiState {
         if self.provider_popup_open {
             self.provider_popup = PopupState::new();
         }
+    }
+
+    pub fn mark_complete(&mut self) {
+        if self.scan_end.is_some() {
+            return;
+        }
+        self.scan_done = true;
+        self.scan_end = Some(std::time::Instant::now());
+    }
+
+    pub fn elapsed_duration(&self) -> std::time::Duration {
+        self.scan_end
+            .map(|end| end.checked_duration_since(self.scan_start).unwrap_or(std::time::Duration::ZERO))
+            .unwrap_or_else(|| self.scan_start.elapsed())
     }
 }
