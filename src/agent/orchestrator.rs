@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::agent::{ScanEvent, ScannerType};
 use crate::agent::scanner::ScannerAgent;
@@ -23,6 +24,7 @@ pub struct OrchestratorAgent {
     state_writer: Arc<StateWriter>,
     tx: mpsc::Sender<ScanEvent>,
     depth: HistoryDepth,
+    cancel_token: CancellationToken,
 }
 
 impl OrchestratorAgent {
@@ -32,8 +34,9 @@ impl OrchestratorAgent {
         state_writer: Arc<StateWriter>,
         tx: mpsc::Sender<ScanEvent>,
         depth: HistoryDepth,
+        cancel_token: CancellationToken,
     ) -> Self {
-        Self { provider, tool_registry, state_writer, tx, depth }
+        Self { provider, tool_registry, state_writer, tx, depth, cancel_token }
     }
 
     pub async fn run(self, scanners: &[ScannerType]) -> Result<()> {
@@ -88,8 +91,9 @@ Delete this file and re-run the scan to retry."
                     let writer = Arc::clone(&self.state_writer);
                     let tx = self.tx.clone();
                     let ctx = context_opt.clone();
+                    let token = self.cancel_token.clone();
                     handles.push(tokio::spawn(async move {
-                        ScannerAgent::new(scanner_type, provider, registry, writer, tx, ctx)
+                        ScannerAgent::new(scanner_type, provider, registry, writer, tx, ctx, token)
                             .run()
                             .await
                     }));
@@ -116,6 +120,7 @@ Delete this file and re-run the scan to retry."
             Arc::clone(&self.state_writer),
             self.tx.clone(),
             context.map(str::to_string),
+            self.cancel_token.clone(),
         )
         .run()
         .await
