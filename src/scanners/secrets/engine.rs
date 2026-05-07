@@ -1,4 +1,5 @@
 use anyhow::Result;
+use ignore::overrides::OverrideBuilder;
 use ignore::WalkBuilder;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
@@ -108,21 +109,28 @@ fn scan_filesystem(
 ) -> Vec<SecretsMatch> {
     let mut results = Vec::new();
 
-    for entry in WalkBuilder::new(root)
+    let mut override_builder = OverrideBuilder::new(root);
+    for pat in &[
+        "node_modules", "target", "dist", "build", ".git",
+        "vendor", "__pycache__", ".pytest_cache", "*.egg-info",
+        ".next", ".nuxt", ".svelte-kit", ".zentra",
+    ] {
+        let _ = override_builder.add(&format!("!{}/", pat));
+    }
+
+    let walker = WalkBuilder::new(root)
+        .standard_filters(true)
+        .overrides(override_builder.build().unwrap_or_else(|_| ignore::overrides::Override::empty()))
         .hidden(false)
         .follow_links(false)
-        .build()
-        .flatten()
+        .build();
+
+    for entry in walker.flatten()
     {
         if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
             continue;
         }
         let path = entry.path();
-        let path_str = path.to_string_lossy();
-
-        if path_str.contains(".zentra") || path_str.contains(".git") {
-            continue;
-        }
 
         let rel = path
             .strip_prefix(root)
