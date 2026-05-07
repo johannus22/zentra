@@ -191,9 +191,11 @@ fn render_menu(frame: &mut Frame, state: &MenuState) {
 
 fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
     let chunks = Layout::vertical([
+        Constraint::Fill(1),
         Constraint::Length(6),
-        Constraint::Min(8),
+        Constraint::Min(7),
         Constraint::Length(1),
+        Constraint::Fill(1),
     ])
     .split(area);
 
@@ -203,13 +205,15 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
         ""
     };
     let header_text = format!(
-        "{}\nAI-powered Application Security · v0.1.0{}",
-        BANNER, warning
+        "{}\nAI-powered Application Security · v{}{}",
+        BANNER,
+        env!("CARGO_PKG_VERSION"),
+        warning
     );
     let header = Paragraph::new(header_text)
         .block(Block::default().borders(Borders::ALL))
         .style(Style::default().fg(Color::Cyan));
-    frame.render_widget(header, chunks[0]);
+    frame.render_widget(header, chunks[1]);
 
     let menu_items = [
         "Run Full Scan",
@@ -244,14 +248,29 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
         Constraint::Percentage(60),
         Constraint::Percentage(20),
     ])
-    .split(chunks[1])[1];
+    .split(chunks[2])[1];
     frame.render_widget(list, menu_area);
 
-    let keys = Paragraph::new(" ↑↓ navigate · Enter select · q quit");
-    frame.render_widget(keys, chunks[2]);
+    let keys = Paragraph::new(" ↑↓ navigate · Enter select · q quit")
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(keys, chunks[3]);
 }
 
 fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
+    let chunks = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(6),
+        Constraint::Min(10),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .split(area);
+
+    let header = Paragraph::new(BANNER)
+        .block(Block::default().borders(Borders::ALL))
+        .style(Style::default().fg(Color::Cyan));
+    frame.render_widget(header, chunks[1]);
+
     let scanner_names = [
         ("Threat Model", "STRIDE · attack surface · trust boundaries"),
         ("SAST", "OWASP Top 10 static analysis"),
@@ -281,8 +300,10 @@ fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state
         })
         .collect();
 
-    items.push(ListItem::new("  ─────────────────────────────────────────").style(Style::default().fg(Color::DarkGray)));
-    items.push(ListItem::new("  [✓] Report              Always included   [locked]").style(Style::default().fg(Color::DarkGray)));
+    items.push(ListItem::new("  ─────────────────────────────────────────")
+        .style(Style::default().fg(Color::DarkGray)));
+    items.push(ListItem::new("  [✓] Report              Always included   [locked]")
+        .style(Style::default().fg(Color::DarkGray)));
     let run_label = format!(
         "▶ Run Selected ({} scanners)",
         state.scanner_selected.iter().filter(|&&b| b).count() + 1
@@ -295,6 +316,16 @@ fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state
     items.push(ListItem::new(run_label).style(run_style));
 
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title("← SELECT SCANNERS"));
-    frame.render_widget(list, area);
+        .block(Block::default().borders(Borders::ALL).title("SELECT SCANNERS"));
+    let list_area = Layout::horizontal([
+        Constraint::Percentage(10),
+        Constraint::Percentage(80),
+        Constraint::Percentage(10),
+    ])
+    .split(chunks[2])[1];
+    frame.render_widget(list, list_area);
+
+    let keys = Paragraph::new(" Space toggle · Enter run · Esc back")
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(keys, chunks[3]);
 }
