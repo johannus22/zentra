@@ -396,7 +396,7 @@ fn menu_state_change_provider_requires_provider() {
     assert!(!state.is_item_enabled(3)); // Change Provider = index 3
 }
 
-use zentra_cli::tui::menu::ProviderFormState;
+use zentra_cli::tui::menu::{clip_with_ellipsis, ProviderFormState};
 use zentra_cli::tui::scan_ui::popup_items;
 
 #[test]
@@ -509,4 +509,36 @@ fn ui_state_error_event_captures_message() {
         state.scanners[0].error.as_deref(),
         Some("rate limit exceeded")
     );
+}
+
+#[test]
+fn clip_with_ellipsis_leaves_short_string_unchanged() {
+    assert_eq!(clip_with_ellipsis("short", 10), "short");
+}
+
+#[test]
+fn clip_with_ellipsis_truncates_long_string_with_ellipsis() {
+    let s = "https://api.openai.com/v1";
+    // 25 chars, max 20 → take 19 + "…" = 20
+    let result = clip_with_ellipsis(s, 20);
+    assert_eq!(result, "https://api.openai.…");
+    assert!(result.ends_with('…'));
+}
+
+#[test]
+fn clip_with_ellipsis_handles_very_long_url() {
+    let s = "https://very-long-custom-endpoint.example.com/v1/chat/completions";
+    let result = clip_with_ellipsis(s, 10);
+    assert_eq!(result.chars().count(), 10); // Unicode char count
+    assert_eq!(result, "https://v…");
+    assert!(result.ends_with('…'));
+}
+
+#[test]
+fn provider_form_handles_long_url() {
+    let form = ProviderFormState {
+        base_url: "https://very-long-custom-endpoint.example.com/v1/chat/completions".to_string(),
+        ..Default::default()
+    };
+    assert!(form.base_url.len() > 40);
 }

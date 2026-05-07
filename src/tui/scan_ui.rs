@@ -11,6 +11,7 @@ use ratatui::{
     Frame,
 };
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 pub fn popup_items(scan_done: bool) -> Vec<&'static str> {
     let mut items = vec![
@@ -44,14 +45,14 @@ pub async fn run_scan_ui(
     scanners: Vec<ScannerType>,
     model_info: String,
     context_window: u32,
-    abort_handle: tokio::task::AbortHandle,
+    cancel_token: CancellationToken,
     profiles: Vec<String>,
     branch: String,
     project_name: String,
 ) -> Result<ScanOutcome> {
     let mut terminal = ratatui::init();
     let result = run_loop(
-        &mut terminal, &mut rx, scanners, model_info, context_window, abort_handle, profiles, branch, project_name,
+        &mut terminal, &mut rx, scanners, model_info, context_window, cancel_token.clone(), profiles, branch, project_name,
     ).await;
     ratatui::restore();
     result
@@ -64,7 +65,7 @@ async fn run_loop(
     scanners: Vec<ScannerType>,
     model_info: String,
     context_window: u32,
-    abort_handle: tokio::task::AbortHandle,
+    cancel_token: CancellationToken,
     profiles: Vec<String>,
     branch: String,
     project_name: String,
@@ -90,6 +91,7 @@ async fn run_loop(
                             KeyCode::Down => state.provider_popup.next(state.profiles.len()),
                             KeyCode::Enter => {
                                 if let Some(name) = state.profiles.get(state.provider_popup.selected) {
+                                    cancel_token.cancel();
                                     return Ok(ScanOutcome::ChangeProvider(name.clone()));
                                 }
                             }
@@ -111,6 +113,7 @@ async fn run_loop(
                                 }
                                 match items.get(state.popup.selected).copied().unwrap_or("") {
                                     "Change Provider and Restart Scan" => {
+                                        cancel_token.cancel();
                                         state.toggle_popup();
                                         state.toggle_provider_popup();
                                     }
@@ -118,12 +121,15 @@ async fn run_loop(
                                         return Ok(ScanOutcome::Reconfigure);
                                     }
                                     "Abort Scan" => {
-                                        abort_handle.abort();
+                                        cancel_token.cancel();
                                         state.abort_scan();
                                         state.activity = "✗ Scan aborted — browse findings · q to exit".to_string();
                                         state.toggle_popup();
                                     }
-                                    "Exit App" => return Ok(ScanOutcome::ExitApp),
+                                    "Exit App" => {
+                                        cancel_token.cancel();
+                                        return Ok(ScanOutcome::ExitApp);
+                                    }
                                     _ => {}
                                 }
                             }

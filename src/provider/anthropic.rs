@@ -1,6 +1,7 @@
 use super::*;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 
 pub struct AnthropicProvider {
     base_url: String,
@@ -14,15 +15,34 @@ impl AnthropicProvider {
         Self { base_url, model, api_key, client: reqwest::Client::new() }
     }
 
-    async fn post_messages(&self, body: serde_json::Value) -> Result<serde_json::Value> {
+    async fn post_messages(
+        &self,
+        body: serde_json::Value,
+        cancel_token: Option<&CancellationToken>,
+    ) -> Result<serde_json::Value> {
         let url = format!("{}/messages", self.base_url.trim_end_matches('/'));
-        let resp = self.client.post(&url)
+        let request = self.client.post(&url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
             .json(&body)
-            .send().await
-            .context("HTTP request to Anthropic failed")?;
+            .build()
+            .context("Failed to build HTTP request")?;
+
+        let resp = if let Some(token) = cancel_token {
+            tokio::select! {
+                biased;
+                _ = token.cancelled() => {
+                    return Err(anyhow::anyhow!("LLM request cancelled by user"));
+                }
+                resp = self.client.execute(request) => {
+                    resp.context("HTTP request to Anthropic failed")?
+                }
+            }
+        } else {
+            self.client.execute(request).await
+                .context("HTTP request to Anthropic failed")?
+        };
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -72,7 +92,7 @@ impl LLMProvider for AnthropicProvider {
             "max_tokens": req.max_tokens.unwrap_or(4096),
         });
 
-        let json = self.post_messages(body).await?;
+        let json = self.post_messages(body, None).await?;
         parse_anthropic_response(&json)
     }
 
@@ -82,6 +102,7 @@ impl LLMProvider for AnthropicProvider {
         messages: &[AgentMessage],
         tools: &[ToolDefinition],
         max_tokens: u32,
+        cancel_token: Option<&CancellationToken>,
     ) -> Result<CompletionResponse> {
         let mut wire_messages: Vec<serde_json::Value> = Vec::new();
 
@@ -140,7 +161,7 @@ impl LLMProvider for AnthropicProvider {
             body["tools"] = serde_json::json!(wire_tools);
         }
 
-        let json = self.post_messages(body).await?;
+        let json = self.post_messages(body, cancel_token).await?;
         parse_anthropic_response(&json)
     }
 
