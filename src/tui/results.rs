@@ -91,7 +91,7 @@ fn run_results_blocking(findings: Vec<Finding>) -> Result<()> {
         ScannerType::IacScan,
         ScannerType::Report,
     ];
-    let mut state = UiState::new(scanner_types, "Results — read-only".to_string(), 0, vec![], String::new());
+    let mut state = UiState::new(scanner_types, "Results — read-only".to_string(), 0, vec![], String::new(), String::new());
 
     for s in state.scanners.iter_mut() {
         s.status = ScanStatus::Done;

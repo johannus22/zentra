@@ -128,7 +128,7 @@ async fn run_once(
 
     let abort_handle = scan_task.abort_handle();
     let outcome = run_scan_ui(
-        rx, scanners_with_framework, model_info, context_window, abort_handle, profiles, branch,
+        rx, scanners_with_framework, model_info, context_window, abort_handle, profiles, branch, String::new(),
     ).await?;
 
     match outcome {

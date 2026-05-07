@@ -41,10 +41,11 @@ pub async fn run_scan_ui(
     abort_handle: tokio::task::AbortHandle,
     profiles: Vec<String>,
     branch: String,
+    project_name: String,
 ) -> Result<ScanOutcome> {
     let mut terminal = ratatui::init();
     let result = run_loop(
-        &mut terminal, &mut rx, scanners, model_info, context_window, abort_handle, profiles, branch,
+        &mut terminal, &mut rx, scanners, model_info, context_window, abort_handle, profiles, branch, project_name,
     ).await;
     ratatui::restore();
     result
@@ -59,8 +60,9 @@ async fn run_loop(
     abort_handle: tokio::task::AbortHandle,
     profiles: Vec<String>,
     branch: String,
+    project_name: String,
 ) -> Result<ScanOutcome> {
-    let mut state = UiState::new(scanners, model_info, context_window, profiles, branch);
+    let mut state = UiState::new(scanners, model_info, context_window, profiles, branch, project_name);
     let mut keys = EventStream::new();
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(80));
     let mut animation_ticker = tokio::time::interval(std::time::Duration::from_millis(80));
@@ -141,7 +143,7 @@ async fn run_loop(
 
         // Detect scan completion after any event (Bug 4)
         if state.all_done() && !state.scan_done {
-            state.scan_done = true;
+            state.mark_complete();
             state.activity = "✓ Scan complete — browse findings · q to exit".to_string();
         }
 
@@ -316,7 +318,7 @@ fn render_activity(frame: &mut Frame, area: Rect, state: &UiState) {
         let (icon, icon_color, verb) = if state.scan_aborted {
             ("✗", Color::Red, "Aborted".to_string())
         } else {
-            let elapsed = state.scan_start.elapsed();
+            let elapsed = state.elapsed_duration();
             let secs = elapsed.as_secs();
             let duration = if secs >= 60 {
                 format!("Hacked in {}m {}s", secs / 60, secs % 60)
