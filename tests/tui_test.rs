@@ -488,3 +488,25 @@ fn provider_form_validate_rejects_unsafe_profile_name() {
     let err = form.validate().unwrap_err().to_string();
     assert!(err.contains("letters") || err.contains("alphanumeric") || err.contains("only"));
 }
+
+#[test]
+fn ui_state_error_event_captures_message() {
+    let mut state = UiState::new(
+        vec![ScannerType::Sast],
+        "m".to_string(),
+        200_000,
+        vec![],
+        String::new(),
+        String::new(),
+    );
+    state.apply_event(ScanEvent::ScannerStarted(ScannerType::Sast));
+    state.apply_event(ScanEvent::Error {
+        scanner: ScannerType::Sast,
+        message: "rate limit exceeded".to_string(),
+    });
+    assert_eq!(state.scanners[0].status, ScanStatus::Failed);
+    assert_eq!(
+        state.scanners[0].error.as_deref(),
+        Some("rate limit exceeded")
+    );
+}
