@@ -717,13 +717,13 @@ fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &
     };
 
     let form_area = Layout::horizontal([
-        Constraint::Percentage(15),
-        Constraint::Percentage(70),
-        Constraint::Percentage(15),
+        Constraint::Percentage(25),
+        Constraint::Percentage(50),
+        Constraint::Percentage(25),
     ])
     .split(Layout::vertical([
         Constraint::Fill(1),
-        Constraint::Length(16),
+        Constraint::Length(13),
         Constraint::Fill(1),
     ]).split(area)[1])[1];
 
@@ -753,26 +753,44 @@ fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &
             Span::styled(format!("[{:width$}]", clip_with_ellipsis(&form.profile_name, max_field_width), width = max_field_width), field_style(4)),
         ]),
         Line::from(Span::raw("")),
-        Line::from(Span::styled("  ──────────────────────────────────────", Style::default().fg(Color::DarkGray))),
-        Line::from(vec![
-            Span::styled(
-                if form.focused_field == 5 { "  ▶ Save" } else { "    Save" },
-                field_style(5),
-            ),
-            Span::styled("          Esc Cancel", Style::default().fg(Color::DarkGray)),
-        ]),
     ];
 
-    let mut all_lines = fields;
+    let content = Text::from(fields);
+    let paragraph = Paragraph::new(content);
+
+    let chunks = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(2),
+    ])
+    .split(inner);
+
+    let bottom_rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(chunks[1]);
+
+    let button_chunks = Layout::horizontal([
+        Constraint::Percentage(50),
+        Constraint::Percentage(50),
+    ])
+    .split(bottom_rows[0]);
+
+    frame.render_widget(block, form_area);
+    frame.render_widget(paragraph, chunks[0]);
+
+    let save_label = if form.focused_field == 5 { "  ▶ Save" } else { "    Save" };
+    let save = Paragraph::new(Line::from(Span::styled(save_label, field_style(5))));
+    frame.render_widget(save, button_chunks[0]);
+
+    let cancel = Paragraph::new(Line::from(Span::styled("Esc Cancel", Style::default().fg(Color::DarkGray))));
+    frame.render_widget(cancel, button_chunks[1]);
+
     if let Some(ref err) = form.error {
-        all_lines.push(Line::from(Span::styled(
+        let error = Paragraph::new(Line::from(Span::styled(
             format!("  ✗ {}", err),
             Style::default().fg(Color::Red),
         )));
+        frame.render_widget(error, bottom_rows[1]);
     }
-
-    let content = Text::from(all_lines);
-    let paragraph = Paragraph::new(content).block(block);
-
-    frame.render_widget(paragraph, form_area);
 }
