@@ -640,9 +640,9 @@ fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title("SELECT SCANNERS"));
     let list_area = Layout::horizontal([
-        Constraint::Percentage(10),
-        Constraint::Percentage(80),
-        Constraint::Percentage(10),
+        Constraint::Percentage(30),
+        Constraint::Percentage(40),
+        Constraint::Percentage(30),
     ])
     .split(chunks[2])[1];
     frame.render_widget(list, list_area);
@@ -692,9 +692,9 @@ fn render_provider_selector(frame: &mut Frame, area: ratatui::layout::Rect, stat
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title("SELECT PROVIDER"));
     let list_area = Layout::horizontal([
-        Constraint::Percentage(10),
-        Constraint::Percentage(80),
-        Constraint::Percentage(10),
+        Constraint::Percentage(30),
+        Constraint::Percentage(40),
+        Constraint::Percentage(30),
     ])
     .split(chunks[2])[1];
     frame.render_widget(list, list_area);
@@ -717,9 +717,9 @@ fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &
     };
 
     let form_area = Layout::horizontal([
-        Constraint::Percentage(25),
-        Constraint::Percentage(50),
-        Constraint::Percentage(25),
+        Constraint::Percentage(30),
+        Constraint::Percentage(40),
+        Constraint::Percentage(30),
     ])
     .split(Layout::vertical([
         Constraint::Fill(1),
