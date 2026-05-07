@@ -136,38 +136,39 @@ fn ui_state_token_pct_caps_at_100() {
 
 #[test]
 fn menu_state_starts_at_first_item() {
-    let state = MenuState::new(true, true);
+    let state = MenuState::new(true, true, vec![], String::new(), String::new());
     assert_eq!(state.selected_idx, 0);
     assert_eq!(state.screen, MenuScreen::Main);
 }
 
 #[test]
 fn menu_state_navigate_wraps() {
-    let mut state = MenuState::new(true, true);
-    // 5 items: RunFull(0), SelectScanners(1), ViewResults(2), Config(3), Exit(4)
+    let mut state = MenuState::new(true, true, vec![], String::new(), String::new());
+    // 6 items: RunFull(0), SelectScanners(1), ViewResults(2), ChangeProvider(3), AddProvider(4), Exit(5)
     state.next();
     assert_eq!(state.selected_idx, 1);
-    state.next(); state.next(); state.next();
-    assert_eq!(state.selected_idx, 4);
-    state.next(); // should clamp at last
-    assert_eq!(state.selected_idx, 4);
+    state.next(); state.next(); state.next(); state.next();
+    assert_eq!(state.selected_idx, 5);
+    state.next(); // clamp
+    assert_eq!(state.selected_idx, 5);
     state.prev();
-    assert_eq!(state.selected_idx, 3);
+    assert_eq!(state.selected_idx, 4);
 }
 
 #[test]
 fn menu_state_disabled_items_when_unconfigured() {
-    let state = MenuState::new(false, false); // no provider, no project
+    let state = MenuState::new(false, false, vec![], String::new(), String::new()); // no provider, no project
     assert!(!state.is_item_enabled(0)); // RunFull
     assert!(!state.is_item_enabled(1)); // SelectScanners
     assert!(state.is_item_enabled(2));  // ViewResults
-    assert!(state.is_item_enabled(3));  // Config
-    assert!(state.is_item_enabled(4));  // Exit
+    assert!(!state.is_item_enabled(3)); // ChangeProvider
+    assert!(state.is_item_enabled(4));  // AddProvider
+    assert!(state.is_item_enabled(5));  // Exit
 }
 
 #[test]
 fn menu_state_scanner_selector_toggle() {
-    let mut state = MenuState::new(true, true);
+    let mut state = MenuState::new(true, true, vec![], String::new(), String::new());
     state.screen = MenuScreen::ScannerSelector;
     assert!(state.scanner_selected[0]);
     state.toggle_scanner(); // toggle ThreatModel off
@@ -178,7 +179,7 @@ fn menu_state_scanner_selector_toggle() {
 
 #[test]
 fn menu_state_scanner_selector_selected_types() {
-    let mut state = MenuState::new(true, true);
+    let mut state = MenuState::new(true, true, vec![], String::new(), String::new());
     state.screen = MenuScreen::ScannerSelector;
     state.scanner_idx = 1; // SAST
     state.toggle_scanner(); // disable SAST
@@ -363,6 +364,36 @@ fn parse_findings_returns_all_findings() {
     assert_eq!(findings[0].title, "SQL Injection");
     assert_eq!(findings[1].title, "Hardcoded API key");
     assert_eq!(findings[1].location.as_deref(), Some("src/config/auth.rs:42"));
+}
+
+#[test]
+fn menu_state_new_stores_active_profile() {
+    let state = MenuState::new(
+        true,
+        true,
+        vec![("anthropic".to_string(), "claude-opus-4-7".to_string())],
+        "claude-opus-4-7".to_string(),
+        "anthropic".to_string(),
+    );
+    assert_eq!(state.active_profile, "anthropic");
+    assert_eq!(state.active_model, "claude-opus-4-7");
+    assert_eq!(state.profiles.len(), 1);
+}
+
+#[test]
+fn menu_state_navigate_new_max_is_5() {
+    let mut state = MenuState::new(true, true, vec![], String::new(), String::new());
+    // 6 items: 0-5
+    for _ in 0..5 { state.next(); }
+    assert_eq!(state.selected_idx, 5);
+    state.next(); // clamp
+    assert_eq!(state.selected_idx, 5);
+}
+
+#[test]
+fn menu_state_change_provider_requires_provider() {
+    let state = MenuState::new(false, false, vec![], String::new(), String::new());
+    assert!(!state.is_item_enabled(3)); // Change Provider = index 3
 }
 
 use zentra_cli::tui::scan_ui::popup_items;

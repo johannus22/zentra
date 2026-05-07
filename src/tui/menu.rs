@@ -4,17 +4,47 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
+use ratatui::layout::Alignment;
 use std::time::Duration;
+
+#[derive(Debug, Clone, Copy)]
+enum MenuRow {
+    Section(&'static str),
+    Item { label: &'static str, action: usize },
+}
+
+const ACTION_RUN_FULL_SCAN: usize = 0;
+const ACTION_SELECT_SCANNERS: usize = 1;
+const ACTION_VIEW_RESULTS: usize = 2;
+const ACTION_CHANGE_PROVIDER: usize = 3;
+const ACTION_ADD_PROVIDER: usize = 4;
+const ACTION_EXIT: usize = 5;
+
+/// Highest selectable action index in the main menu (6 items: 0–5).
+const MAX_MENU_ACTION: usize = 5;
+
+const MAIN_MENU_ROWS: &[MenuRow] = &[
+    MenuRow::Section("SCAN"),
+    MenuRow::Item { label: "Run Full Scan",      action: ACTION_RUN_FULL_SCAN },
+    MenuRow::Item { label: "Select Scanners",    action: ACTION_SELECT_SCANNERS },
+    MenuRow::Item { label: "View Last Results",  action: ACTION_VIEW_RESULTS },
+    MenuRow::Section("PROVIDER"),
+    MenuRow::Item { label: "Change Provider",    action: ACTION_CHANGE_PROVIDER },
+    MenuRow::Item { label: "Add Provider",       action: ACTION_ADD_PROVIDER },
+    MenuRow::Section("APP"),
+    MenuRow::Item { label: "Exit",               action: ACTION_EXIT },
+];
 
 #[derive(Debug, Clone)]
 pub enum MenuAction {
     RunScan(Vec<ScannerType>),
     ViewLastResults,
-    Config,
+    ChangeProvider(String),   // profile name — from ProviderSelector
+    ProviderAdded(String),    // newly created profile name — from ProviderForm
     Exit,
 }
 
@@ -22,6 +52,8 @@ pub enum MenuAction {
 pub enum MenuScreen {
     Main,
     ScannerSelector,
+    ProviderSelector,
+    ProviderForm,
 }
 
 pub struct MenuState {
@@ -31,10 +63,20 @@ pub struct MenuState {
     pub scanner_selected: [bool; 5], // ThreatModel, Sast, SupplyChain, ApiScan, IacScan
     pub provider_configured: bool,
     pub project_configured: bool,
+    pub active_model: String,
+    pub active_profile: String,
+    pub profiles: Vec<(String, String)>,  // (profile_name, model)
+    pub provider_idx: usize,
 }
 
 impl MenuState {
-    pub fn new(provider_configured: bool, project_configured: bool) -> Self {
+    pub fn new(
+        provider_configured: bool,
+        project_configured: bool,
+        profiles: Vec<(String, String)>,
+        active_model: String,
+        active_profile: String,
+    ) -> Self {
         Self {
             selected_idx: 0,
             screen: MenuScreen::Main,
@@ -42,13 +84,18 @@ impl MenuState {
             scanner_selected: [true; 5],
             provider_configured,
             project_configured,
+            active_model,
+            active_profile,
+            profiles,
+            provider_idx: 0,
         }
     }
 
     pub fn next(&mut self) {
         let max = match self.screen {
-            MenuScreen::Main => 4,
+            MenuScreen::Main => MAX_MENU_ACTION,
             MenuScreen::ScannerSelector => 5,
+            MenuScreen::ProviderSelector | MenuScreen::ProviderForm => 0,
         };
         if self.selected_idx < max {
             self.selected_idx += 1;
@@ -63,7 +110,9 @@ impl MenuState {
 
     pub fn is_item_enabled(&self, idx: usize) -> bool {
         match idx {
-            0 | 1 => self.provider_configured,
+            i if i == ACTION_RUN_FULL_SCAN
+              || i == ACTION_SELECT_SCANNERS
+              || i == ACTION_CHANGE_PROVIDER => self.provider_configured,
             _ => true,
         }
     }
@@ -94,14 +143,32 @@ impl MenuState {
     }
 }
 
-pub async fn run_menu(provider_configured: bool, project_configured: bool) -> Result<MenuAction> {
-    tokio::task::spawn_blocking(move || run_menu_blocking(provider_configured, project_configured))
-        .await?
+pub async fn run_menu(
+    provider_configured: bool,
+    project_configured: bool,
+    profiles: Vec<(String, String)>,
+    active_model: String,
+    active_profile: String,
+) -> Result<MenuAction> {
+    tokio::task::spawn_blocking(move || {
+        run_menu_blocking(provider_configured, project_configured, profiles, active_model, active_profile)
+    })
+    .await?
 }
 
-fn run_menu_blocking(provider_configured: bool, project_configured: bool) -> Result<MenuAction> {
+fn run_menu_blocking(
+    provider_configured: bool,
+    project_configured: bool,
+    profiles: Vec<(String, String)>,
+    active_model: String,
+    active_profile: String,
+) -> Result<MenuAction> {
+    debug_assert!(
+        MAIN_MENU_ROWS.iter().filter(|r| matches!(r, MenuRow::Item { .. })).count() == MAX_MENU_ACTION + 1,
+        "MAX_MENU_ACTION out of sync with MAIN_MENU_ROWS"
+    );
     let mut terminal = ratatui::init();
-    let mut state = MenuState::new(provider_configured, project_configured);
+    let mut state = MenuState::new(provider_configured, project_configured, profiles, active_model, active_profile);
     let result = run_menu_loop(&mut terminal, &mut state);
     ratatui::restore();
     result
@@ -128,23 +195,31 @@ fn run_menu_loop(
                                 continue;
                             }
                             match state.selected_idx {
-                                0 => {
+                                ACTION_RUN_FULL_SCAN => {
                                     return Ok(MenuAction::RunScan(vec![
                                         ScannerType::ThreatModel,
                                         ScannerType::Sast,
                                         ScannerType::SupplyChain,
                                         ScannerType::ApiScan,
                                         ScannerType::IacScan,
+                                        ScannerType::SecretsScan,
                                         ScannerType::Report,
                                     ]));
                                 }
-                                1 => {
+                                ACTION_SELECT_SCANNERS => {
                                     state.screen = MenuScreen::ScannerSelector;
+                                    state.scanner_idx = 0;
                                     state.selected_idx = 0;
                                 }
-                                2 => return Ok(MenuAction::ViewLastResults),
-                                3 => return Ok(MenuAction::Config),
-                                4 => return Ok(MenuAction::Exit),
+                                ACTION_VIEW_RESULTS => return Ok(MenuAction::ViewLastResults),
+                                ACTION_CHANGE_PROVIDER => {
+                                    state.screen = MenuScreen::ProviderSelector;
+                                    state.provider_idx = 0;
+                                }
+                                ACTION_ADD_PROVIDER => {
+                                    state.screen = MenuScreen::ProviderForm;
+                                }
+                                ACTION_EXIT => return Ok(MenuAction::Exit),
                                 _ => {}
                             }
                         }
@@ -173,6 +248,20 @@ fn run_menu_loop(
                         }
                         _ => {}
                     },
+                    MenuScreen::ProviderSelector => match key.code {  // Task 5
+                        KeyCode::Esc => {
+                            state.screen = MenuScreen::Main;
+                            state.selected_idx = ACTION_CHANGE_PROVIDER;
+                        }
+                        _ => {}
+                    },
+                    MenuScreen::ProviderForm => match key.code {  // Task 6
+                        KeyCode::Esc => {
+                            state.screen = MenuScreen::Main;
+                            state.selected_idx = ACTION_ADD_PROVIDER;
+                        }
+                        _ => {}
+                    },
                 }
             }
         }
@@ -186,63 +275,89 @@ fn render_menu(frame: &mut Frame, state: &MenuState) {
     match state.screen {
         MenuScreen::Main => render_main_menu(frame, area, state),
         MenuScreen::ScannerSelector => render_scanner_selector(frame, area, state),
+        MenuScreen::ProviderSelector => render_main_menu(frame, area, state), // placeholder
+        MenuScreen::ProviderForm => render_main_menu(frame, area, state),     // placeholder
     }
 }
 
 fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
     let chunks = Layout::vertical([
         Constraint::Fill(1),
-        Constraint::Length(6),
-        Constraint::Min(7),
-        Constraint::Length(1),
+        Constraint::Length(6),   // header block
+        Constraint::Min(12),     // menu list
+        Constraint::Length(1),   // key hints
         Constraint::Fill(1),
     ])
     .split(area);
 
+    // ── Header block: banner left, version/model/profile right ──────────────
+    let header_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = header_block.inner(chunks[1]);
+    frame.render_widget(header_block, chunks[1]);
+
+    let header_cols = Layout::horizontal([
+        Constraint::Min(36),
+        Constraint::Length(26),
+    ])
+    .split(inner);
+
+    let banner_para = Paragraph::new(BANNER).style(Style::default().fg(Color::Cyan));
+    frame.render_widget(banner_para, header_cols[0]);
+
     let warning = if !state.provider_configured {
-        "\n⚠  No provider configured — select Setup/Config to get started"
+        "⚠ No provider configured"
     } else {
         ""
     };
-    let header_text = format!(
-        "{}\nAI-powered Application Security · v{}{}",
-        BANNER,
-        env!("CARGO_PKG_VERSION"),
-        warning
+    let info = Text::from(vec![
+        Line::from(vec![Span::styled(
+            format!("v{}", env!("CARGO_PKG_VERSION")),
+            Style::default().fg(Color::DarkGray),
+        )]),
+        Line::from(vec![Span::styled(
+            state.active_model.chars().take(22).collect::<String>(),
+            Style::default().fg(Color::Green),
+        )]),
+        Line::from(vec![Span::styled(
+            state.active_profile.chars().take(22).collect::<String>(),
+            Style::default().fg(Color::DarkGray),
+        )]),
+        Line::from(vec![Span::styled(
+            warning.to_string(),
+            Style::default().fg(Color::Yellow),
+        )]),
+    ]);
+    frame.render_widget(
+        Paragraph::new(info).alignment(Alignment::Right),
+        header_cols[1],
     );
-    let header = Paragraph::new(header_text)
-        .block(Block::default().borders(Borders::ALL))
-        .style(Style::default().fg(Color::Cyan));
-    frame.render_widget(header, chunks[1]);
 
-    let menu_items = [
-        "Run Full Scan",
-        "Select Scanners",
-        "View Last Results",
-        "Setup / Config",
-        "Exit",
-    ];
+    // ── Menu list with grouped sections ─────────────────────────────────────
+    let items: Vec<ListItem> = MAIN_MENU_ROWS.iter().map(|row| {
+        match row {
+            MenuRow::Section(label) => {
+                ListItem::new(format!("  {}", label))
+                    .style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC))
+            }
+            MenuRow::Item { label, action } => {
+                let enabled = state.is_item_enabled(*action);
+                let selected = state.selected_idx == *action;
+                let prefix = if selected { "▶ " } else { "  " };
+                let style = if !enabled {
+                    Style::default().fg(Color::DarkGray)
+                } else if selected {
+                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(format!("{}{}", prefix, label)).style(style)
+            }
+        }
+    }).collect();
 
-    let items: Vec<ListItem> = menu_items
-        .iter()
-        .enumerate()
-        .map(|(i, label)| {
-            let enabled = state.is_item_enabled(i);
-            let selected = state.selected_idx == i;
-            let prefix = if selected { "▶ " } else { "  " };
-            let style = if !enabled {
-                Style::default().fg(Color::DarkGray)
-            } else if selected {
-                Style::default().add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(format!("{}{}", prefix, label)).style(style)
-        })
-        .collect();
-
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL));
+    let list = List::new(items).block(Block::default().borders(Borders::ALL));
     let menu_area = Layout::horizontal([
         Constraint::Percentage(20),
         Constraint::Percentage(60),

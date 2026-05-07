@@ -13,7 +13,7 @@ async fn main() -> anyhow::Result<()> {
         let project_configured = ProjectConfig::load_from(&ProjectConfig::default_path()).is_ok();
 
         loop {
-            match run_menu(provider_configured, project_configured).await? {
+            match run_menu(provider_configured, project_configured, vec![], String::new(), String::new()).await? {
                 MenuAction::RunScan(scanners) => {
                     commands::scan::run_with_scanners(scanners).await?;
                     break;
@@ -21,7 +21,11 @@ async fn main() -> anyhow::Result<()> {
                 MenuAction::ViewLastResults => {
                     zentra_cli::tui::results::run_results().await?;
                 }
-                MenuAction::Config => {
+                MenuAction::ChangeProvider(_profile) => {
+                    // Task 7 will wire real provider switching
+                    break;
+                }
+                MenuAction::ProviderAdded(_profile) => {
                     wizard::run_setup(None).await?;
                     break;
                 }
