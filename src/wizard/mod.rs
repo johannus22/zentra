@@ -1,6 +1,9 @@
 use anyhow::Result;
 use crate::config::custom_providers::{CustomProvider, CustomProvidersFile};
 
+pub const KNOWN_PROVIDER_NAMES: &[&str] =
+    &["anthropic", "openai", "cerebras", "litellm", "ollama", "zhipu"];
+
 pub struct ProviderDefaults {
     pub base_url: String,
     pub models: Vec<String>,

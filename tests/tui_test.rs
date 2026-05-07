@@ -396,6 +396,7 @@ fn menu_state_change_provider_requires_provider() {
     assert!(!state.is_item_enabled(3)); // Change Provider = index 3
 }
 
+use zentra_cli::tui::menu::ProviderFormState;
 use zentra_cli::tui::scan_ui::popup_items;
 
 #[test]
@@ -428,4 +429,64 @@ fn ui_state_abort_scan_marks_running_as_failed() {
     assert!(state.scan_aborted);
     assert!(state.scan_done);
     assert!(state.scan_end.is_some());
+}
+
+#[test]
+fn provider_form_default_uses_first_known_provider() {
+    let form = ProviderFormState::default();
+    assert_eq!(form.provider_idx, 0);
+    assert!(!form.model.is_empty());
+    assert_eq!(form.focused_field, 0);
+    assert!(form.error.is_none());
+}
+
+#[test]
+fn provider_form_append_char_to_api_key() {
+    let mut form = ProviderFormState::default();
+    form.focused_field = 3; // api_key field
+    form.append_char('s');
+    form.append_char('k');
+    assert_eq!(form.api_key, "sk");
+}
+
+#[test]
+fn provider_form_backspace_removes_last_char() {
+    let mut form = ProviderFormState::default();
+    form.focused_field = 4; // profile_name
+    form.profile_name = "test".to_string();
+    form.backspace();
+    assert_eq!(form.profile_name, "tes");
+}
+
+#[test]
+fn provider_form_cycle_provider_updates_defaults() {
+    let mut form = ProviderFormState::default();
+    form.cycle_provider(1); // next provider
+    assert_eq!(form.provider_idx, 1);
+}
+
+#[test]
+fn provider_form_masked_key_shows_prefix_only() {
+    let mut form = ProviderFormState::default();
+    form.api_key = "sk-ant-abc123xyz".to_string();
+    let masked = form.masked_key();
+    assert!(masked.starts_with("sk-ant"));
+    assert!(masked.contains('*'));
+}
+
+#[test]
+fn provider_form_validate_fails_on_empty_key() {
+    let form = ProviderFormState::default();
+    // api_key is empty by default
+    assert!(form.validate().is_err());
+}
+
+#[test]
+fn provider_form_validate_rejects_unsafe_profile_name() {
+    let mut form = ProviderFormState::default();
+    form.api_key = "sk-test-key-12345".to_string();
+    form.profile_name = "../evil".to_string();
+    assert!(form.validate().is_err());
+    let err = form.validate().unwrap_err().to_string();
+    assert!(err.contains("letters") || err.contains("alphanumeric") || err.contains("only"));
 }
