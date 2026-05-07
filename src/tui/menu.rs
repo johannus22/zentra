@@ -1,4 +1,5 @@
 use crate::agent::ScannerType;
+use crate::wizard::{provider_defaults, KNOWN_PROVIDER_NAMES};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
@@ -56,6 +57,139 @@ pub enum MenuScreen {
     ProviderForm,
 }
 
+#[derive(Clone)]
+pub struct ProviderFormState {
+    pub provider_idx: usize,
+    pub model: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub profile_name: String,
+    pub focused_field: usize,  // 0=provider, 1=model, 2=base_url, 3=api_key, 4=name, 5=save
+    pub error: Option<String>,
+}
+
+impl Default for ProviderFormState {
+    fn default() -> Self {
+        let name = KNOWN_PROVIDER_NAMES[0];
+        let d = provider_defaults(name);
+        Self {
+            provider_idx: 0,
+            model: d.models.first().cloned().unwrap_or_default(),
+            base_url: d.base_url,
+            api_key: String::new(),
+            profile_name: name.to_string(),
+            focused_field: 0,
+            error: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for ProviderFormState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderFormState")
+            .field("provider_idx", &self.provider_idx)
+            .field("model", &self.model)
+            .field("base_url", &self.base_url)
+            .field("api_key", &"[REDACTED]")
+            .field("profile_name", &self.profile_name)
+            .field("focused_field", &self.focused_field)
+            .field("error", &self.error)
+            .finish()
+    }
+}
+
+impl ProviderFormState {
+    pub fn cycle_provider(&mut self, delta: isize) {
+        let len = KNOWN_PROVIDER_NAMES.len() as isize;
+        let new_idx = ((self.provider_idx as isize + delta).rem_euclid(len)) as usize;
+        self.provider_idx = new_idx;
+        let name = KNOWN_PROVIDER_NAMES[new_idx];
+        let d = provider_defaults(name);
+        self.model = d.models.first().cloned().unwrap_or_default();
+        self.base_url = d.base_url;
+        self.profile_name = name.to_string();
+        self.error = None;
+    }
+
+    pub fn append_char(&mut self, c: char) {
+        match self.focused_field {
+            1 => self.model.push(c),
+            2 => self.base_url.push(c),
+            3 => self.api_key.push(c),
+            4 => self.profile_name.push(c),
+            _ => {}
+        }
+    }
+
+    pub fn backspace(&mut self) {
+        match self.focused_field {
+            1 => { self.model.pop(); }
+            2 => { self.base_url.pop(); }
+            3 => { self.api_key.pop(); }
+            4 => { self.profile_name.pop(); }
+            _ => {}
+        }
+    }
+
+    pub fn masked_key(&self) -> String {
+        if self.api_key.len() <= 6 {
+            "*".repeat(self.api_key.len())
+        } else {
+            format!("{}{}", &self.api_key[..6], "*".repeat(self.api_key.len() - 6))
+        }
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.profile_name.trim().is_empty() {
+            anyhow::bail!("Profile name cannot be empty");
+        }
+        // Prevent path traversal: only allow alphanumeric, hyphen, underscore
+        if !self.profile_name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+            anyhow::bail!("Profile name may only contain letters, numbers, hyphens, and underscores");
+        }
+        if self.model.trim().is_empty() {
+            anyhow::bail!("Model cannot be empty");
+        }
+        let d = provider_defaults(KNOWN_PROVIDER_NAMES[self.provider_idx]);
+        if !d.keyless && self.api_key.trim().is_empty() {
+            anyhow::bail!("API key cannot be empty for this provider");
+        }
+        Ok(())
+    }
+
+    pub fn save(&self) -> anyhow::Result<String> {
+        use crate::config::{keychain, AuthMethod, GlobalConfig, ProviderProfile};
+        use crate::wizard::model_context_window;
+
+        self.validate()?;
+
+        let d = provider_defaults(KNOWN_PROVIDER_NAMES[self.provider_idx]);
+        let cw = model_context_window(&self.model);
+
+        let profile = ProviderProfile {
+            kind: d.kind.clone(),
+            base_url: self.base_url.clone(),
+            model: self.model.clone(),
+            keyless: d.keyless,
+            auth_method: AuthMethod::ApiKey,
+            context_window: Some(cw),
+        };
+
+        let mut global = GlobalConfig::load()?;
+        global.profiles.insert(self.profile_name.clone(), profile);
+        if global.default_profile.is_none() {
+            global.default_profile = Some(self.profile_name.clone());
+        }
+        global.save()?;
+
+        if !d.keyless && !self.api_key.is_empty() {
+            keychain::set_key(&self.profile_name, &self.api_key)?;
+        }
+
+        Ok(self.profile_name.clone())
+    }
+}
+
 pub struct MenuState {
     pub selected_idx: usize,
     pub screen: MenuScreen,
@@ -67,6 +201,7 @@ pub struct MenuState {
     pub active_profile: String,
     pub profiles: Vec<(String, String)>,  // (profile_name, model)
     pub provider_idx: usize,
+    pub form: ProviderFormState,
 }
 
 impl MenuState {
@@ -88,6 +223,7 @@ impl MenuState {
             active_profile,
             profiles,
             provider_idx: 0,
+            form: ProviderFormState::default(),
         }
     }
 
@@ -270,10 +406,43 @@ fn run_menu_loop(
                         }
                         _ => {}
                     },
-                    MenuScreen::ProviderForm => match key.code {  // Task 6
+                    MenuScreen::ProviderForm => match key.code {
+                        KeyCode::Left => {
+                            if state.form.focused_field == 0 {
+                                state.form.cycle_provider(-1);
+                            }
+                        }
+                        KeyCode::Right => {
+                            if state.form.focused_field == 0 {
+                                state.form.cycle_provider(1);
+                            }
+                        }
+                        KeyCode::Tab | KeyCode::Down => {
+                            state.form.focused_field = (state.form.focused_field + 1) % 6;
+                        }
+                        KeyCode::BackTab | KeyCode::Up => {
+                            state.form.focused_field = state.form.focused_field.saturating_sub(1);
+                        }
+                        KeyCode::Char(c) => {
+                            state.form.append_char(c);
+                        }
+                        KeyCode::Backspace => {
+                            state.form.backspace();
+                        }
+                        KeyCode::Enter => {
+                            if state.form.focused_field == 5 {
+                                match state.form.save() {
+                                    Ok(name) => return Ok(MenuAction::ProviderAdded(name)),
+                                    Err(e) => state.form.error = Some(e.to_string()),
+                                }
+                            } else {
+                                state.form.focused_field = (state.form.focused_field + 1) % 6;
+                            }
+                        }
                         KeyCode::Esc => {
                             state.screen = MenuScreen::Main;
                             state.selected_idx = ACTION_ADD_PROVIDER;
+                            state.form = ProviderFormState::default(); // reset
                         }
                         _ => {}
                     },
@@ -291,7 +460,7 @@ fn render_menu(frame: &mut Frame, state: &MenuState) {
         MenuScreen::Main => render_main_menu(frame, area, state),
         MenuScreen::ScannerSelector => render_scanner_selector(frame, area, state),
         MenuScreen::ProviderSelector => render_provider_selector(frame, area, state),
-        MenuScreen::ProviderForm => render_main_menu(frame, area, state), // placeholder — Task 6
+        MenuScreen::ProviderForm => render_provider_form(frame, area, state),
     }
 }
 
@@ -510,4 +679,74 @@ fn render_provider_selector(frame: &mut Frame, area: ratatui::layout::Rect, stat
     let keys = Paragraph::new(" ↑↓ navigate · Enter select · Esc back")
         .style(Style::default().fg(Color::DarkGray));
     frame.render_widget(keys, chunks[3]);
+}
+
+fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
+    let form = &state.form;
+    let provider_name = KNOWN_PROVIDER_NAMES[form.provider_idx];
+
+    let field_style = |field_idx: usize| -> Style {
+        if form.focused_field == field_idx {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        }
+    };
+
+    let fields = vec![
+        Line::from(vec![
+            Span::raw("  Provider   "),
+            Span::styled(format!("◀ {:<18} ▶", provider_name), field_style(0)),
+        ]),
+        Line::from(vec![
+            Span::raw("  Model      "),
+            Span::styled(format!("[{:<20}]", form.model.chars().take(20).collect::<String>()), field_style(1)),
+        ]),
+        Line::from(vec![
+            Span::raw("  Base URL   "),
+            Span::styled(format!("[{:<20}]", form.base_url.chars().take(20).collect::<String>()), field_style(2)),
+        ]),
+        Line::from(vec![
+            Span::raw("  API Key    "),
+            Span::styled(format!("[{:<20}]", form.masked_key().chars().take(20).collect::<String>()), field_style(3)),
+        ]),
+        Line::from(vec![
+            Span::raw("  Name       "),
+            Span::styled(format!("[{:<20}]", form.profile_name.chars().take(20).collect::<String>()), field_style(4)),
+        ]),
+        Line::from(Span::raw("")),
+        Line::from(Span::styled("  ──────────────────────────────────────", Style::default().fg(Color::DarkGray))),
+        Line::from(vec![
+            Span::styled(
+                if form.focused_field == 5 { "  ▶ Save" } else { "    Save" },
+                field_style(5),
+            ),
+            Span::styled("          Esc Cancel", Style::default().fg(Color::DarkGray)),
+        ]),
+    ];
+
+    let mut all_lines = fields;
+    if let Some(ref err) = form.error {
+        all_lines.push(Line::from(Span::styled(
+            format!("  ✗ {}", err),
+            Style::default().fg(Color::Red),
+        )));
+    }
+
+    let content = Text::from(all_lines);
+    let paragraph = Paragraph::new(content)
+        .block(Block::default().borders(Borders::ALL).title(" ADD PROVIDER ").title_style(Style::default().fg(Color::Cyan)));
+
+    let form_area = Layout::horizontal([
+        Constraint::Percentage(15),
+        Constraint::Percentage(70),
+        Constraint::Percentage(15),
+    ])
+    .split(Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(14),
+        Constraint::Fill(1),
+    ]).split(area)[1])[1];
+
+    frame.render_widget(paragraph, form_area);
 }
