@@ -40,10 +40,11 @@ pub async fn run_scan_ui(
     context_window: u32,
     abort_handle: tokio::task::AbortHandle,
     profiles: Vec<String>,
+    branch: String,
 ) -> Result<ScanOutcome> {
     let mut terminal = ratatui::init();
     let result = run_loop(
-        &mut terminal, &mut rx, scanners, model_info, context_window, abort_handle, profiles,
+        &mut terminal, &mut rx, scanners, model_info, context_window, abort_handle, profiles, branch,
     ).await;
     ratatui::restore();
     result
@@ -57,8 +58,9 @@ async fn run_loop(
     context_window: u32,
     abort_handle: tokio::task::AbortHandle,
     profiles: Vec<String>,
+    branch: String,
 ) -> Result<ScanOutcome> {
-    let mut state = UiState::new(scanners, model_info, context_window, profiles);
+    let mut state = UiState::new(scanners, model_info, context_window, profiles, branch);
     let mut keys = EventStream::new();
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(80));
     let mut animation_ticker = tokio::time::interval(std::time::Duration::from_millis(80));
@@ -175,7 +177,7 @@ fn render(frame: &mut Frame, state: &mut UiState) {
 fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
     let cols = Layout::horizontal([
         Constraint::Min(40),
-        Constraint::Length(12),
+        Constraint::Length(18),
     ])
     .split(area);
 
@@ -210,8 +212,9 @@ fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
         .style(Style::default().fg(Color::Cyan));
     frame.render_widget(left, cols[0]);
 
-    let version_text = format!("v{}", env!("CARGO_PKG_VERSION"));
-    let right = Paragraph::new(version_text)
+    let branch_display = state.branch.chars().take(14).collect::<String>();
+    let right_text = format!("v{}\n⎇ {}", env!("CARGO_PKG_VERSION"), branch_display);
+    let right = Paragraph::new(right_text)
         .block(Block::default().borders(Borders::ALL))
         .style(Style::default().fg(Color::DarkGray))
         .alignment(ratatui::layout::Alignment::Right);
@@ -248,7 +251,7 @@ fn render_scanners(frame: &mut Frame, area: Rect, state: &UiState) {
                 ScanStatus::Failed => Color::Red,
                 _ => Color::DarkGray,
             };
-            let label = format!("{} {:<14}", icon, format!("{:?}", s.scanner_type));
+            let label = format!("{} {:<14}", icon, s.scanner_type.label());
             ListItem::new(label).style(Style::default().fg(color))
         })
         .collect();

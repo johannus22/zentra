@@ -322,7 +322,7 @@ async fn scanner_agent_runs_react_loop_and_completes_when_no_tool_calls() {
     let writer = Arc::new(StateWriter::new(dir.path()).unwrap());
     let (tx, _rx) = mpsc::channel(16);
 
-    let agent = ScannerAgent::new(ScannerType::Sast, provider, registry, writer, tx);
+    let agent = ScannerAgent::new(ScannerType::Sast, provider, registry, writer, tx, None);
     let result = agent.run().await;
 
     assert!(result.is_ok(), "scanner should complete without error: {:?}", result);
@@ -377,7 +377,7 @@ async fn scanner_agent_executes_tool_call_and_feeds_result_back() {
     let writer = Arc::new(StateWriter::new(dir.path()).unwrap());
     let (tx, mut rx) = mpsc::channel(16);
 
-    let agent = ScannerAgent::new(ScannerType::Sast, provider, registry, writer, tx);
+    let agent = ScannerAgent::new(ScannerType::Sast, provider, registry, writer, tx, None);
     agent.run().await.unwrap();
 
     // Should have sent ToolCall event
@@ -483,7 +483,7 @@ async fn scanner_agent_emits_tokens_used_event() {
     let writer = Arc::new(StateWriter::new(dir.path()).unwrap());
     let (tx, mut rx) = mpsc::channel(16);
 
-    ScannerAgent::new(ScannerType::Sast, provider, registry, writer, tx)
+    ScannerAgent::new(ScannerType::Sast, provider, registry, writer, tx, None)
         .run()
         .await
         .unwrap();

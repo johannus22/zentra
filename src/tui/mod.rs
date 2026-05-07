@@ -89,6 +89,7 @@ pub struct UiState {
     pub total_tokens: u32,
     pub context_window: u32,
     pub model_info: String,
+    pub branch: String,
     pub popup_open: bool,
     pub popup: PopupState,
     pub scan_done: bool,
@@ -106,6 +107,7 @@ impl UiState {
         model_info: String,
         context_window: u32,
         profiles: Vec<String>,
+        branch: String,
     ) -> Self {
         let scanners = scanner_types
             .iter()
@@ -120,6 +122,7 @@ impl UiState {
             total_tokens: 0,
             context_window,
             model_info,
+            branch,
             popup_open: false,
             popup: PopupState::new(),
             scan_done: false,

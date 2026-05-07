@@ -16,10 +16,12 @@ impl StateWriter {
         let zentra_dir = project_root.join(".zentra");
         fs::create_dir_all(&zentra_dir)?;
         fs::create_dir_all(zentra_dir.join("reports"))?;
-        // Truncate findings file so each new scan starts clean
-        let findings_path = zentra_dir.join("detailed-findings.md");
-        if findings_path.exists() {
-            OpenOptions::new().write(true).truncate(true).open(&findings_path)?;
+        // Truncate findings and context files so each new scan starts clean
+        for filename in &["detailed-findings.md", "context.md"] {
+            let p = zentra_dir.join(filename);
+            if p.exists() {
+                OpenOptions::new().write(true).truncate(true).open(&p)?;
+            }
         }
         Ok(Self { zentra_dir })
     }
@@ -59,6 +61,17 @@ impl StateWriter {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
             Err(e) => Err(e.into()),
         }
+    }
+
+    pub fn write_context(&self, content: &str) -> Result<()> {
+        let path = self.zentra_dir.join("context.md");
+        fs::write(path, content)?;
+        Ok(())
+    }
+
+    pub fn read_context(&self) -> String {
+        let path = self.zentra_dir.join("context.md");
+        std::fs::read_to_string(&path).unwrap_or_default()
     }
 
     pub fn project_root(&self) -> &std::path::Path {

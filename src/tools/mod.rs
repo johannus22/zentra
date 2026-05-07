@@ -129,6 +129,23 @@ impl ToolRegistry {
                 }),
             },
             ToolDefinition {
+                name: "write_context".to_string(),
+                description: "Write the framework and tech-stack analysis to .zentra/context.md. \
+Call once with the complete analysis. Other scanners will read this to calibrate their findings \
+and avoid false positives.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "content": {
+                            "type": "string",
+                            "description": "Full markdown analysis of the tech stack, frameworks, \
+data entry points, security middleware already present, and known safety guarantees"
+                        }
+                    },
+                    "required": ["content"]
+                }),
+            },
+            ToolDefinition {
                 name: "scan_secrets".to_string(),
                 description: "Run the deterministic secrets scanner on the codebase and git history. Returns a JSON summary of findings (max 50 active, no raw values). Use to inventory potential leaked credentials without LLM analysis.".to_string(),
                 parameters: serde_json::json!({
@@ -202,6 +219,13 @@ impl ToolRegistry {
                 git_tools::git_blame(file, line)
             }
             "git_status" => git_tools::git_status(),
+            "write_context" => {
+                let content = args["content"].as_str().unwrap_or("");
+                match state_writer.write_context(content) {
+                    Ok(_) => "Context written to .zentra/context.md.".to_string(),
+                    Err(e) => format!("Error writing context: {}", e),
+                }
+            }
             "scan_secrets" => {
                 let depth_str = args["depth"].as_str().unwrap_or("50");
                 let depth = crate::scanners::secrets::HistoryDepth::from_str(depth_str);
