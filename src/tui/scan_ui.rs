@@ -13,7 +13,8 @@ use ratatui::{
 use tokio::sync::mpsc;
 
 pub const POPUP_ITEMS: &[&str] = &[
-    "Change Model / Provider",
+    "Change Provider",
+    "Add Provider",
     "Abort Scan",
     "Exit App",
 ];
@@ -37,9 +38,13 @@ pub async fn run_scan_ui(
     scanners: Vec<ScannerType>,
     model_info: String,
     context_window: u32,
+    abort_handle: tokio::task::AbortHandle,
+    profiles: Vec<String>,
 ) -> Result<ScanOutcome> {
     let mut terminal = ratatui::init();
-    let result = run_loop(&mut terminal, &mut rx, scanners, model_info, context_window).await;
+    let result = run_loop(
+        &mut terminal, &mut rx, scanners, model_info, context_window, abort_handle, profiles,
+    ).await;
     ratatui::restore();
     result
 }
@@ -50,8 +55,10 @@ async fn run_loop(
     scanners: Vec<ScannerType>,
     model_info: String,
     context_window: u32,
+    abort_handle: tokio::task::AbortHandle,
+    profiles: Vec<String>,
 ) -> Result<ScanOutcome> {
-    let mut state = UiState::new(scanners, model_info, context_window);
+    let mut state = UiState::new(scanners, model_info, context_window, profiles);
     let mut keys = EventStream::new();
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(80));
     let mut animation_ticker = tokio::time::interval(std::time::Duration::from_millis(80));
@@ -65,6 +72,18 @@ async fn run_loop(
                 if let Event::Key(key) = evt {
                     if key.kind != KeyEventKind::Press {
                         // ignore release / repeat events to prevent double-step
+                    } else if state.provider_popup_open {
+                        match key.code {
+                            KeyCode::Esc => state.toggle_provider_popup(),
+                            KeyCode::Up => state.provider_popup.prev(),
+                            KeyCode::Down => state.provider_popup.next(state.profiles.len()),
+                            KeyCode::Enter => {
+                                if let Some(name) = state.profiles.get(state.provider_popup.selected) {
+                                    return Ok(ScanOutcome::ChangeProvider(name.clone()));
+                                }
+                            }
+                            _ => {}
+                        }
                     } else if state.popup_open {
                         match key.code {
                             KeyCode::Esc => state.toggle_popup(),
@@ -72,9 +91,24 @@ async fn run_loop(
                             KeyCode::Down => state.popup.next(POPUP_ITEMS.len()),
                             KeyCode::Enter => {
                                 match state.popup.selected {
-                                    0 => return Ok(ScanOutcome::Reconfigure),
-                                    1 => return Ok(ScanOutcome::Aborted),
-                                    2 => return Ok(ScanOutcome::ExitApp),
+                                    0 => {
+                                        // Change Provider — open in-TUI profile picker
+                                        state.toggle_popup();
+                                        state.toggle_provider_popup();
+                                    }
+                                    1 => {
+                                        // Add Provider — launch wizard
+                                        return Ok(ScanOutcome::Reconfigure);
+                                    }
+                                    2 => {
+                                        // Abort Scan — keep UI open
+                                        abort_handle.abort();
+                                        state.scan_aborted = true;
+                                        state.scan_done = true;
+                                        state.activity = "✗ Scan aborted — browse findings · q to exit".to_string();
+                                        state.toggle_popup();
+                                    }
+                                    3 => return Ok(ScanOutcome::ExitApp),
                                     _ => {}
                                 }
                             }
@@ -132,6 +166,9 @@ fn render(frame: &mut Frame, state: &mut UiState) {
 
     if state.popup_open {
         render_popup(frame, area, &state.popup);
+    }
+    if state.provider_popup_open {
+        render_provider_popup(frame, area, &state.provider_popup, &state.profiles);
     }
 }
 
@@ -332,6 +369,44 @@ fn render_popup(frame: &mut Frame, area: Rect, popup: &crate::tui::PopupState) {
 
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title("  MENU  ").title_style(Style::default().fg(Color::Cyan)));
+    frame.render_widget(list, popup_area);
+}
+
+fn render_provider_popup(
+    frame: &mut Frame,
+    area: Rect,
+    popup: &crate::tui::PopupState,
+    profiles: &[String],
+) {
+    if profiles.is_empty() {
+        return;
+    }
+    let popup_width = 40u16;
+    let popup_height = (profiles.len() as u16) + 4;
+    let popup_area = centered_rect(popup_width, popup_height, area);
+
+    frame.render_widget(Clear, popup_area);
+
+    let items: Vec<ListItem> = profiles
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let prefix = if i == popup.selected { "▶ " } else { "  " };
+            let style = if i == popup.selected {
+                Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow)
+            } else {
+                Style::default()
+            };
+            ListItem::new(format!("{}{}", prefix, name)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("  SELECT PROVIDER  ")
+            .title_style(Style::default().fg(Color::Cyan)),
+    );
     frame.render_widget(list, popup_area);
 }
 
