@@ -19,11 +19,15 @@ pub async fn run(
 ) -> Result<()> {
     let depth = HistoryDepth::from_str(&depth_str);
     let scanners = resolve_scanners(only.as_deref());
+    let mut provider_override = provider_override;
     loop {
         match run_once(provider_override.clone(), scanners.clone(), depth.clone()).await? {
             ScanOutcome::Completed | ScanOutcome::Aborted => break,
             ScanOutcome::Reconfigure => {
                 wizard::run_setup(None).await?;
+            }
+            ScanOutcome::ChangeProvider(name) => {
+                provider_override = Some(name);
             }
             ScanOutcome::ExitApp => std::process::exit(0),
         }
@@ -33,11 +37,15 @@ pub async fn run(
 
 pub async fn run_with_scanners(scanners: Vec<ScannerType>) -> Result<()> {
     let depth = HistoryDepth::default();
+    let mut provider_override: Option<String> = None;
     loop {
-        match run_once(None, scanners.clone(), depth.clone()).await? {
+        match run_once(provider_override.clone(), scanners.clone(), depth.clone()).await? {
             ScanOutcome::Completed | ScanOutcome::Aborted => break,
             ScanOutcome::Reconfigure => {
                 wizard::run_setup(None).await?;
+            }
+            ScanOutcome::ChangeProvider(name) => {
+                provider_override = Some(name);
             }
             ScanOutcome::ExitApp => std::process::exit(0),
         }
@@ -95,8 +103,10 @@ async fn run_once(
     );
     let tool_registry = Arc::new(ToolRegistry::new());
 
-    let context_window = profile.context_window.unwrap_or_else(|| provider.context_window());
+    let context_window = profile.context_window.unwrap_or(256_000);
     let model_info = format!("{} · {}", profile.model, profile_name);
+
+    let profiles: Vec<String> = global.profiles.keys().cloned().collect();
 
     let (tx, rx) = mpsc::channel(128);
     let scanners_for_agent = scanners.clone();
@@ -107,7 +117,8 @@ async fn run_once(
             .await
     });
 
-    let outcome = run_scan_ui(rx, scanners, model_info, context_window).await?;
+    let abort_handle = scan_task.abort_handle();
+    let outcome = run_scan_ui(rx, scanners, model_info, context_window, abort_handle, profiles).await?;
 
     match outcome {
         ScanOutcome::Completed => {
