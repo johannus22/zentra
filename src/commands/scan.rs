@@ -139,6 +139,7 @@ async fn run_once(
         }
         _ => {
             scan_task.abort();
+            let _ = scan_task.await; // ensure task stops before returning; returns Err(JoinError::Cancelled)
         }
     }
 
