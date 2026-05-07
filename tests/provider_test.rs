@@ -1,3 +1,4 @@
+use tokio_util::sync::CancellationToken;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use wiremock::matchers::{header, method, path};
 use zentra_cli::provider::{AgentMessage, CompletionRequest, LLMProvider, Message, ToolDefinition};
@@ -118,6 +119,7 @@ async fn openai_compat_complete_with_tools_sends_tool_call_request() {
         &[AgentMessage::User("List files.".to_string())],
         &tools,
         256,
+        None,
     ).await.unwrap();
 
     assert_eq!(resp.tool_calls.len(), 1);
@@ -153,10 +155,55 @@ async fn anthropic_complete_with_tools_parses_tool_use_block() {
         &[AgentMessage::User("List files.".to_string())],
         &tools,
         256,
+        None,
     ).await.unwrap();
 
     assert_eq!(resp.content, "I'll read that file.");
     assert_eq!(resp.tool_calls.len(), 1);
     assert_eq!(resp.tool_calls[0].name, "read_file");
     assert_eq!(resp.tool_calls[0].id, "call_1");
+}
+
+#[tokio::test]
+async fn openai_compat_cancels_on_token() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200)
+            .set_body_json(serde_json::json!({
+                "choices": [{"message": {"role": "assistant", "content": "pong"}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+            }))
+            .set_delay(std::time::Duration::from_secs(5)))
+        .mount(&server)
+        .await;
+
+    let provider = OpenAICompatProvider::new(
+        server.uri(), "gpt-4o".to_string(), "test-key".to_string(),
+    );
+    let token = CancellationToken::new();
+    let token_clone = token.clone();
+
+    let handle = tokio::spawn(async move {
+        provider.complete_with_tools(
+            "system",
+            &[AgentMessage::User("hi".to_string())],
+            &[],
+            256,
+            Some(&token_clone),
+        ).await
+    });
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    token.cancel();
+
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(2),
+        handle,
+    ).await;
+
+    assert!(result.is_ok(), "should finish quickly after cancel");
+    let inner = result.unwrap().unwrap();
+    assert!(inner.is_err(), "should return error when cancelled");
+    assert!(inner.unwrap_err().to_string().contains("cancelled"));
 }
