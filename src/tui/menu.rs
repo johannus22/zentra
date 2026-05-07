@@ -214,6 +214,7 @@ pub struct MenuState {
     pub provider_idx: usize,
     pub form: ProviderFormState,
     pub project_name: String,
+    pub branch_name: String,
 }
 
 impl MenuState {
@@ -224,6 +225,7 @@ impl MenuState {
         active_model: String,
         active_profile: String,
         project_name: String,
+        branch_name: String,
     ) -> Self {
         Self {
             selected_idx: 0,
@@ -238,6 +240,7 @@ impl MenuState {
             provider_idx: 0,
             form: ProviderFormState::default(),
             project_name,
+            branch_name,
         }
     }
 
@@ -300,9 +303,10 @@ pub async fn run_menu(
     active_model: String,
     active_profile: String,
     project_name: String,
+    branch_name: String,
 ) -> Result<MenuAction> {
     tokio::task::spawn_blocking(move || {
-        run_menu_blocking(provider_configured, project_configured, profiles, active_model, active_profile, project_name)
+        run_menu_blocking(provider_configured, project_configured, profiles, active_model, active_profile, project_name, branch_name)
     })
     .await?
 }
@@ -314,13 +318,14 @@ fn run_menu_blocking(
     active_model: String,
     active_profile: String,
     project_name: String,
+    branch_name: String,
 ) -> Result<MenuAction> {
     debug_assert!(
         MAIN_MENU_ROWS.iter().filter(|r| matches!(r, MenuRow::Item { .. })).count() == MAX_MENU_ACTION + 1,
         "MAX_MENU_ACTION out of sync with MAIN_MENU_ROWS"
     );
     let mut terminal = ratatui::init();
-    let mut state = MenuState::new(provider_configured, project_configured, profiles, active_model, active_profile, project_name);
+    let mut state = MenuState::new(provider_configured, project_configured, profiles, active_model, active_profile, project_name, branch_name);
     let result = run_menu_loop(&mut terminal, &mut state);
     ratatui::restore();
     result
@@ -519,10 +524,19 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
         ""
     };
     let project_display = state.project_name.chars().take(22).collect::<String>();
+    let branch_display = state.branch_name.chars().take(22).collect::<String>();
     let info = Text::from(vec![
         Line::from(vec![Span::styled(
             project_display,
             Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![Span::styled(
+            format!("⎇ {}", branch_display),
+            Style::default().fg(Color::DarkGray),
+        )]),
+        Line::from(vec![Span::styled(
+            format!("v{}", env!("CARGO_PKG_VERSION")),
+            Style::default().fg(Color::DarkGray),
         )]),
         Line::from(vec![Span::styled(
             state.active_model.chars().take(22).collect::<String>(),
