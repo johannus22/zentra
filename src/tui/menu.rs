@@ -205,14 +205,15 @@ pub struct MenuState {
     pub selected_idx: usize,
     pub screen: MenuScreen,
     pub scanner_idx: usize,
-    pub scanner_selected: [bool; 5], // ThreatModel, Sast, SupplyChain, ApiScan, IacScan
+    pub scanner_selected: [bool; 5],
     pub provider_configured: bool,
     pub project_configured: bool,
     pub active_model: String,
     pub active_profile: String,
-    pub profiles: Vec<(String, String)>,  // (profile_name, model)
+    pub profiles: Vec<(String, String)>,
     pub provider_idx: usize,
     pub form: ProviderFormState,
+    pub project_name: String,
 }
 
 impl MenuState {
@@ -222,6 +223,7 @@ impl MenuState {
         profiles: Vec<(String, String)>,
         active_model: String,
         active_profile: String,
+        project_name: String,
     ) -> Self {
         Self {
             selected_idx: 0,
@@ -235,6 +237,7 @@ impl MenuState {
             profiles,
             provider_idx: 0,
             form: ProviderFormState::default(),
+            project_name,
         }
     }
 
@@ -296,9 +299,10 @@ pub async fn run_menu(
     profiles: Vec<(String, String)>,
     active_model: String,
     active_profile: String,
+    project_name: String,
 ) -> Result<MenuAction> {
     tokio::task::spawn_blocking(move || {
-        run_menu_blocking(provider_configured, project_configured, profiles, active_model, active_profile)
+        run_menu_blocking(provider_configured, project_configured, profiles, active_model, active_profile, project_name)
     })
     .await?
 }
@@ -309,13 +313,14 @@ fn run_menu_blocking(
     profiles: Vec<(String, String)>,
     active_model: String,
     active_profile: String,
+    project_name: String,
 ) -> Result<MenuAction> {
     debug_assert!(
         MAIN_MENU_ROWS.iter().filter(|r| matches!(r, MenuRow::Item { .. })).count() == MAX_MENU_ACTION + 1,
         "MAX_MENU_ACTION out of sync with MAIN_MENU_ROWS"
     );
     let mut terminal = ratatui::init();
-    let mut state = MenuState::new(provider_configured, project_configured, profiles, active_model, active_profile);
+    let mut state = MenuState::new(provider_configured, project_configured, profiles, active_model, active_profile, project_name);
     let result = run_menu_loop(&mut terminal, &mut state);
     ratatui::restore();
     result
@@ -513,10 +518,11 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
     } else {
         ""
     };
+    let project_display = state.project_name.chars().take(22).collect::<String>();
     let info = Text::from(vec![
         Line::from(vec![Span::styled(
-            format!("v{}", env!("CARGO_PKG_VERSION")),
-            Style::default().fg(Color::DarkGray),
+            project_display,
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
         )]),
         Line::from(vec![Span::styled(
             state.active_model.chars().take(22).collect::<String>(),
@@ -776,19 +782,23 @@ fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &
             Span::styled(format!("◀ {:<18} ▶", provider_name), field_style(0)),
         ]),
         Line::from(vec![
-            Span::raw("  Model      "),
+            Span::raw(if form.focused_field == 1 { "▶ " } else { "  " }),
+            Span::styled("Model      ", field_style(1)),
             Span::styled(format!("{:width$}", clip_with_ellipsis(&form.model, max_field_width), width = max_field_width), field_style(1)),
         ]),
         Line::from(vec![
-            Span::raw("  Base URL   "),
+            Span::raw(if form.focused_field == 2 { "▶ " } else { "  " }),
+            Span::styled("Base URL   ", field_style(2)),
             Span::styled(format!("{:width$}", clip_with_ellipsis(&form.base_url, max_field_width), width = max_field_width), field_style(2)),
         ]),
         Line::from(vec![
-            Span::raw("  API Key    "),
+            Span::raw(if form.focused_field == 3 { "▶ " } else { "  " }),
+            Span::styled("API Key    ", field_style(3)),
             Span::styled(format!("{:width$}", clip_with_ellipsis(&form.masked_key(), max_field_width), width = max_field_width), field_style(3)),
         ]),
         Line::from(vec![
-            Span::raw("  Name       "),
+            Span::raw(if form.focused_field == 4 { "▶ " } else { "  " }),
+            Span::styled("Name       ", field_style(4)),
             Span::styled(format!("{:width$}", clip_with_ellipsis(&form.profile_name, max_field_width), width = max_field_width), field_style(4)),
         ]),
         Line::from(Span::raw("")),

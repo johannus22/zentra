@@ -19,12 +19,16 @@ async fn main() -> anyhow::Result<()> {
                 .map(|(name, p)| (name.clone(), p.model.clone()))
                 .collect();
             profiles.sort_by(|a, b| a.0.cmp(&b.0));
-            let active_profile = global.default_profile.clone().unwrap_or_default();
-            let active_model = global.profiles.get(&active_profile)
-                .map(|p| p.model.clone())
-                .unwrap_or_default();
+    let active_profile = global.default_profile.clone().unwrap_or_default();
+    let active_model = global.profiles.get(&active_profile)
+        .map(|p| p.model.clone())
+        .unwrap_or_default();
+    let project_name = std::env::current_dir()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "project".to_string());
 
-            match run_menu(provider_configured, project_configured, profiles, active_model, active_profile).await? {
+    match run_menu(provider_configured, project_configured, profiles, active_model, active_profile, project_name).await? {
                 MenuAction::RunScan(scanners) => {
                     commands::scan::run_with_scanners(scanners).await?;
                     break;

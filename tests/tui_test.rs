@@ -136,14 +136,14 @@ fn ui_state_token_pct_caps_at_100() {
 
 #[test]
 fn menu_state_starts_at_first_item() {
-    let state = MenuState::new(true, true, vec![], String::new(), String::new());
+    let state = MenuState::new(true, true, vec![], String::new(), String::new(), String::new());
     assert_eq!(state.selected_idx, 0);
     assert_eq!(state.screen, MenuScreen::Main);
 }
 
 #[test]
 fn menu_state_navigate_wraps() {
-    let mut state = MenuState::new(true, true, vec![], String::new(), String::new());
+    let mut state = MenuState::new(true, true, vec![], String::new(), String::new(), String::new());
     // 6 items: RunFull(0), SelectScanners(1), ViewResults(2), ChangeProvider(3), AddProvider(4), Exit(5)
     state.next();
     assert_eq!(state.selected_idx, 1);
@@ -157,7 +157,7 @@ fn menu_state_navigate_wraps() {
 
 #[test]
 fn menu_state_disabled_items_when_unconfigured() {
-    let state = MenuState::new(false, false, vec![], String::new(), String::new()); // no provider, no project
+    let state = MenuState::new(false, false, vec![], String::new(), String::new(), String::new()); // no provider, no project
     assert!(!state.is_item_enabled(0)); // RunFull
     assert!(!state.is_item_enabled(1)); // SelectScanners
     assert!(state.is_item_enabled(2));  // ViewResults
@@ -168,7 +168,7 @@ fn menu_state_disabled_items_when_unconfigured() {
 
 #[test]
 fn menu_state_scanner_selector_toggle() {
-    let mut state = MenuState::new(true, true, vec![], String::new(), String::new());
+    let mut state = MenuState::new(true, true, vec![], String::new(), String::new(), String::new());
     state.screen = MenuScreen::ScannerSelector;
     assert!(state.scanner_selected[0]);
     state.toggle_scanner(); // toggle ThreatModel off
@@ -179,7 +179,7 @@ fn menu_state_scanner_selector_toggle() {
 
 #[test]
 fn menu_state_scanner_selector_selected_types() {
-    let mut state = MenuState::new(true, true, vec![], String::new(), String::new());
+    let mut state = MenuState::new(true, true, vec![], String::new(), String::new(), String::new());
     state.screen = MenuScreen::ScannerSelector;
     state.scanner_idx = 1; // SAST
     state.toggle_scanner(); // disable SAST
@@ -374,6 +374,7 @@ fn menu_state_new_stores_active_profile() {
         vec![("anthropic".to_string(), "claude-opus-4-7".to_string())],
         "claude-opus-4-7".to_string(),
         "anthropic".to_string(),
+        String::new(),
     );
     assert_eq!(state.active_profile, "anthropic");
     assert_eq!(state.active_model, "claude-opus-4-7");
@@ -382,7 +383,7 @@ fn menu_state_new_stores_active_profile() {
 
 #[test]
 fn menu_state_navigate_new_max_is_5() {
-    let mut state = MenuState::new(true, true, vec![], String::new(), String::new());
+    let mut state = MenuState::new(true, true, vec![], String::new(), String::new(), String::new());
     // 6 items: 0-5
     for _ in 0..5 { state.next(); }
     assert_eq!(state.selected_idx, 5);
@@ -392,7 +393,7 @@ fn menu_state_navigate_new_max_is_5() {
 
 #[test]
 fn menu_state_change_provider_requires_provider() {
-    let state = MenuState::new(false, false, vec![], String::new(), String::new());
+    let state = MenuState::new(false, false, vec![], String::new(), String::new(), String::new());
     assert!(!state.is_item_enabled(3)); // Change Provider = index 3
 }
 
