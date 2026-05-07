@@ -488,9 +488,9 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
     // ── Header block: banner left, version/model/profile right ──────────────
     // Center header at 60% — same as the menu list
     let header_center = Layout::horizontal([
-        Constraint::Percentage(20),
-        Constraint::Percentage(60),
-        Constraint::Percentage(20),
+        Constraint::Percentage(30),
+        Constraint::Percentage(40),
+        Constraint::Percentage(30),
     ]).split(chunks[1])[1];
 
     let header_block = Block::default()
@@ -501,7 +501,7 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
 
     let header_cols = Layout::horizontal([
         Constraint::Min(28),    // was Min(36) — banner longest line is 28 chars
-        Constraint::Length(22), // was Length(26)
+        Constraint::Min(10),    // info panel (shrunk, text will clip)
     ])
     .split(inner);
 
@@ -561,9 +561,9 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
 
     let list = List::new(items).block(Block::default().borders(Borders::ALL));
     let menu_area = Layout::horizontal([
-        Constraint::Percentage(20),
-        Constraint::Percentage(60),
-        Constraint::Percentage(20),
+        Constraint::Percentage(30),
+        Constraint::Percentage(40),
+        Constraint::Percentage(30),
     ])
     .split(chunks[2])[1];
     frame.render_widget(list, menu_area);
@@ -571,9 +571,9 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
     let keys = Paragraph::new(" ↑↓ navigate · Enter select · q quit")
         .style(Style::default().fg(Color::DarkGray));
     let hints_center = Layout::horizontal([
-        Constraint::Percentage(20),
-        Constraint::Percentage(60),
-        Constraint::Percentage(20),
+        Constraint::Percentage(30),
+        Constraint::Percentage(40),
+        Constraint::Percentage(30),
     ]).split(chunks[3])[1];
     frame.render_widget(keys, hints_center);
 }
