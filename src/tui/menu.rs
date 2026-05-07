@@ -475,15 +475,22 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
     .split(area);
 
     // ── Header block: banner left, version/model/profile right ──────────────
+    // Center header at 60% — same as the menu list
+    let header_center = Layout::horizontal([
+        Constraint::Percentage(20),
+        Constraint::Percentage(60),
+        Constraint::Percentage(20),
+    ]).split(chunks[1])[1];
+
     let header_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
-    let inner = header_block.inner(chunks[1]);
-    frame.render_widget(header_block, chunks[1]);
+    let inner = header_block.inner(header_center);
+    frame.render_widget(header_block, header_center);
 
     let header_cols = Layout::horizontal([
-        Constraint::Min(36),
-        Constraint::Length(26),
+        Constraint::Min(28),    // was Min(36) — banner longest line is 28 chars
+        Constraint::Length(22), // was Length(26)
     ])
     .split(inner);
 
@@ -552,7 +559,12 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
 
     let keys = Paragraph::new(" ↑↓ navigate · Enter select · q quit")
         .style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(keys, chunks[3]);
+    let hints_center = Layout::horizontal([
+        Constraint::Percentage(20),
+        Constraint::Percentage(60),
+        Constraint::Percentage(20),
+    ]).split(chunks[3])[1];
+    frame.render_widget(keys, hints_center);
 }
 
 fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
