@@ -16,6 +16,11 @@ impl StateWriter {
         let zentra_dir = project_root.join(".zentra");
         fs::create_dir_all(&zentra_dir)?;
         fs::create_dir_all(zentra_dir.join("reports"))?;
+        // Truncate findings file so each new scan starts clean
+        let findings_path = zentra_dir.join("detailed-findings.md");
+        if findings_path.exists() {
+            OpenOptions::new().write(true).truncate(true).open(&findings_path)?;
+        }
         Ok(Self { zentra_dir })
     }
 
