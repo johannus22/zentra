@@ -173,6 +173,12 @@ fn render(frame: &mut Frame, state: &mut UiState) {
 }
 
 fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
+    let cols = Layout::horizontal([
+        Constraint::Min(40),
+        Constraint::Length(12),
+    ])
+    .split(area);
+
     let banner = if area.width >= 80 {
         " ____        _ \n|_  /___ _ _| |_ _ _ __ _\n / // -_) ' \\  _| '_/ _` |\n/___\\___|_||_\\__|_| \\__,_|"
     } else {
@@ -189,19 +195,27 @@ fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
         pct
     );
 
-    let text = format!(
-        "{}\n{} · tokens: {} / {} {}",
+    let left_text = format!(
+        "{}\n{} · peak: {} / {} {}  total: {}",
         banner,
         state.model_info,
-        state.total_tokens,
+        state.peak_input_tokens,
         state.context_window,
-        bar
+        bar,
+        state.total_tokens,
     );
 
-    let paragraph = Paragraph::new(text)
+    let left = Paragraph::new(left_text)
         .block(Block::default().borders(Borders::ALL))
         .style(Style::default().fg(Color::Cyan));
-    frame.render_widget(paragraph, area);
+    frame.render_widget(left, cols[0]);
+
+    let version_text = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let right = Paragraph::new(version_text)
+        .block(Block::default().borders(Borders::ALL))
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(ratatui::layout::Alignment::Right);
+    frame.render_widget(right, cols[1]);
 }
 
 fn render_body(frame: &mut Frame, area: Rect, state: &mut UiState) {
@@ -295,30 +309,56 @@ fn render_findings(frame: &mut Frame, area: Rect, state: &mut UiState) {
 }
 
 fn render_activity(frame: &mut Frame, area: Rect, state: &UiState) {
-    let animation_speed = 20;
-    let word_index = (state.animation_index as usize / animation_speed) % ACTIVITY_VERBS.len();
-    let current_verb = ACTIVITY_VERBS[word_index];
-        let speed = 1.676767;
+    let content = if state.scan_done {
+        let (icon, icon_color, verb) = if state.scan_aborted {
+            ("✗", Color::Red, "Aborted".to_string())
+        } else {
+            let elapsed = state.scan_start.elapsed();
+            let secs = elapsed.as_secs();
+            let duration = if secs >= 60 {
+                format!("Hacked in {}m {}s", secs / 60, secs % 60)
+            } else {
+                format!("Hacked in {}s", secs)
+            };
+            ("✓", Color::Green, duration)
+        };
+        Line::from(vec![
+            Span::styled(
+                format!("{:<2}", icon),
+                Style::default().fg(icon_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{: <22}", verb),
+                Style::default().fg(icon_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {}", state.activity),
+                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            ),
+        ])
+    } else {
+        let animation_speed = 20;
+        let word_index = (state.animation_index / animation_speed) % ACTIVITY_VERBS.len();
+        let current_verb = ACTIVITY_VERBS[word_index];
+        let speed = 1.676767_f64;
         let brightness = (state.animation_index as f64 * speed).sin();
-        let pulse = ((brightness * 60.0) + 190.0) as u8; // Ranges from 130 to 250
-        let glow_color = Color::Rgb(pulse, pulse, 255); // A "breathing" white-blue
-    // let text = format!(" ACTIVITY  {}", state.activity);
-    // let paragraph = Paragraph::new(text).style(Style::default().fg(Color::DarkGray));
-    let content = Line::from(vec![
-
-        Span::styled(
-            format!( "{:<2}", LOADING_FRAMES[state.animation_index % LOADING_FRAMES.len()],),
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD)
-        ),
-        Span::styled(
-            format!("{: <22}", current_verb), // Left-align to prevent text jumping
-            Style::default().fg(glow_color).add_modifier(Modifier::BOLD)
-        ),
-        Span::styled(
-            format!(" {}", state.activity),
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC)
-        ),
-    ]);
+        let pulse = ((brightness * 60.0) + 190.0) as u8;
+        let glow_color = Color::Rgb(pulse, pulse, 255);
+        Line::from(vec![
+            Span::styled(
+                format!("{:<2}", LOADING_FRAMES[state.animation_index % LOADING_FRAMES.len()]),
+                Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{: <22}", current_verb),
+                Style::default().fg(glow_color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" {}", state.activity),
+                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            ),
+        ])
+    };
     frame.render_widget(Paragraph::new(content), area);
 }
 
