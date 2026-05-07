@@ -12,12 +12,17 @@ use ratatui::{
 };
 use tokio::sync::mpsc;
 
-pub const POPUP_ITEMS: &[&str] = &[
-    "Change Provider",
-    "Add Provider",
-    "Abort Scan",
-    "Exit App",
-];
+pub fn popup_items(scan_done: bool) -> Vec<&'static str> {
+    let mut items = vec![
+        "Change Provider and Restart Scan",
+        "Add Provider",
+        "Exit App",
+    ];
+    if !scan_done {
+        items.insert(2, "Abort Scan");
+    }
+    items
+}
 
 pub const LOADING_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
@@ -92,27 +97,31 @@ async fn run_loop(
                         match key.code {
                             KeyCode::Esc => state.toggle_popup(),
                             KeyCode::Up => state.popup.prev(),
-                            KeyCode::Down => state.popup.next(POPUP_ITEMS.len()),
+                            KeyCode::Down => {
+                                let len = popup_items(state.scan_done).len();
+                                state.popup.next(len);
+                            }
                             KeyCode::Enter => {
-                                match state.popup.selected {
-                                    0 => {
-                                        // Change Provider — open in-TUI profile picker
+                                let items = popup_items(state.scan_done);
+                                // Clamp selected in case list shrank (e.g. scan completed while popup was open)
+                                if state.popup.selected >= items.len() {
+                                    state.popup.selected = items.len().saturating_sub(1);
+                                }
+                                match items.get(state.popup.selected).copied().unwrap_or("") {
+                                    "Change Provider and Restart Scan" => {
                                         state.toggle_popup();
                                         state.toggle_provider_popup();
                                     }
-                                    1 => {
-                                        // Add Provider — launch wizard
+                                    "Add Provider" => {
                                         return Ok(ScanOutcome::Reconfigure);
                                     }
-                                    2 => {
-                                        // Abort Scan — keep UI open
+                                    "Abort Scan" => {
                                         abort_handle.abort();
-                                        state.scan_aborted = true;
-                                        state.scan_done = true;
+                                        state.abort_scan();
                                         state.activity = "✗ Scan aborted — browse findings · q to exit".to_string();
                                         state.toggle_popup();
                                     }
-                                    3 => return Ok(ScanOutcome::ExitApp),
+                                    "Exit App" => return Ok(ScanOutcome::ExitApp),
                                     _ => {}
                                 }
                             }
@@ -169,7 +178,7 @@ fn render(frame: &mut Frame, state: &mut UiState) {
     render_keys(frame, chunks[4], state.popup_open, state.scan_done);
 
     if state.popup_open {
-        render_popup(frame, area, &state.popup);
+        render_popup(frame, area, &state.popup, state.scan_done);
     }
     if state.provider_popup_open {
         render_provider_popup(frame, area, &state.provider_popup, &state.profiles);
@@ -391,14 +400,15 @@ fn render_keys(frame: &mut Frame, area: Rect, popup_open: bool, scan_done: bool)
     frame.render_widget(paragraph, area);
 }
 
-fn render_popup(frame: &mut Frame, area: Rect, popup: &crate::tui::PopupState) {
-    let popup_width = 40u16;
-    let popup_height = (POPUP_ITEMS.len() as u16) + 4;
+fn render_popup(frame: &mut Frame, area: Rect, popup: &crate::tui::PopupState, scan_done: bool) {
+    let items_list = popup_items(scan_done);
+    let popup_width = 46u16;
+    let popup_height = (items_list.len() as u16) + 4;
     let popup_area = centered_rect(popup_width, popup_height, area);
 
     frame.render_widget(Clear, popup_area);
 
-    let items: Vec<ListItem> = POPUP_ITEMS
+    let items: Vec<ListItem> = items_list
         .iter()
         .enumerate()
         .map(|(i, label)| {

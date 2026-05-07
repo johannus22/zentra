@@ -238,6 +238,20 @@ impl UiState {
         self.scan_end = Some(std::time::Instant::now());
     }
 
+    pub fn abort_scan(&mut self) {
+        if self.scan_done {
+            return;
+        }
+        for s in &mut self.scanners {
+            if s.status == ScanStatus::Running {
+                s.status = ScanStatus::Failed;
+            }
+        }
+        self.scan_aborted = true;
+        self.scan_done = true;
+        self.scan_end = Some(std::time::Instant::now());
+    }
+
     pub fn elapsed_duration(&self) -> std::time::Duration {
         self.scan_end
             .map(|end| end.checked_duration_since(self.scan_start).unwrap_or(std::time::Duration::ZERO))
