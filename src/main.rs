@@ -28,7 +28,14 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_else(|| "project".to_string());
 
-    match run_menu(provider_configured, project_configured, profiles, active_model, active_profile, project_name).await? {
+    let branch_name = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| if o.status.success() { Some(String::from_utf8_lossy(&o.stdout).trim().to_string()) } else { None })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    match run_menu(provider_configured, project_configured, profiles, active_model, active_profile, project_name, branch_name).await? {
                 MenuAction::RunScan(scanners) => {
                     commands::scan::run_with_scanners(scanners).await?;
                     break;
