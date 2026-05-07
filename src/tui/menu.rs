@@ -12,7 +12,7 @@ use ratatui::{
 use ratatui::layout::Alignment;
 use std::time::Duration;
 
-fn clip_with_ellipsis(s: &str, max_width: usize) -> String {
+pub fn clip_with_ellipsis(s: &str, max_width: usize) -> String {
     let count = s.chars().count();
     if count > max_width && max_width > 0 {
         let take = max_width.saturating_sub(1);
