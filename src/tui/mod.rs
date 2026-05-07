@@ -10,6 +10,7 @@ pub enum ScanOutcome {
     Completed,
     Aborted,
     Reconfigure,
+    ChangeProvider(String),
     ExitApp,
 }
 
@@ -84,17 +85,28 @@ pub struct UiState {
     pub findings: Vec<Finding>,
     pub activity: String,
     pub selected_idx: usize,
+    pub peak_input_tokens: u32,
     pub total_tokens: u32,
     pub context_window: u32,
     pub model_info: String,
     pub popup_open: bool,
     pub popup: PopupState,
     pub scan_done: bool,
+    pub scan_aborted: bool,
     pub animation_index: usize,
+    pub scan_start: std::time::Instant,
+    pub profiles: Vec<String>,
+    pub provider_popup_open: bool,
+    pub provider_popup: PopupState,
 }
 
 impl UiState {
-    pub fn new(scanner_types: Vec<ScannerType>, model_info: String, context_window: u32) -> Self {
+    pub fn new(
+        scanner_types: Vec<ScannerType>,
+        model_info: String,
+        context_window: u32,
+        profiles: Vec<String>,
+    ) -> Self {
         let scanners = scanner_types
             .iter()
             .map(|&t| UiScanner::new(t, t == ScannerType::Report))
@@ -104,13 +116,19 @@ impl UiState {
             findings: Vec::new(),
             activity: String::new(),
             selected_idx: 0,
+            peak_input_tokens: 0,
             total_tokens: 0,
             context_window,
             model_info,
             popup_open: false,
             popup: PopupState::new(),
             scan_done: false,
+            scan_aborted: false,
             animation_index: 0,
+            scan_start: std::time::Instant::now(),
+            profiles,
+            provider_popup_open: false,
+            provider_popup: PopupState::new(),
         }
     }
 
@@ -133,6 +151,8 @@ impl UiState {
                     s.add_finding(&f.severity);
                 }
                 self.findings.push(f);
+                self.findings.sort_by_key(|f| f.severity.order());
+                self.selected_idx = self.selected_idx.min(self.findings.len().saturating_sub(1));
             }
             ScanEvent::ToolCall { tool, arg, .. } => {
                 self.activity = if arg.is_empty() {
@@ -148,6 +168,9 @@ impl UiState {
             }
             ScanEvent::TokensUsed { input, output } => {
                 self.total_tokens += input + output;
+                if input > self.peak_input_tokens {
+                    self.peak_input_tokens = input;
+                }
             }
         }
     }
@@ -182,13 +205,20 @@ impl UiState {
         if self.context_window == 0 {
             return 0;
         }
-        ((self.total_tokens as f64 / self.context_window as f64) * 100.0).min(100.0) as u16
+        ((self.peak_input_tokens as f64 / self.context_window as f64) * 100.0).min(100.0) as u16
     }
 
     pub fn toggle_popup(&mut self) {
         self.popup_open = !self.popup_open;
         if self.popup_open {
             self.popup = PopupState::new();
+        }
+    }
+
+    pub fn toggle_provider_popup(&mut self) {
+        self.provider_popup_open = !self.provider_popup_open;
+        if self.provider_popup_open {
+            self.provider_popup = PopupState::new();
         }
     }
 }
