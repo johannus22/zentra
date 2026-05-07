@@ -2,7 +2,7 @@ use crate::agent::ScannerType;
 use crate::state::{Finding, Severity};
 use crate::tui::{ScanStatus, UiState};
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
@@ -14,6 +14,7 @@ use std::time::Duration;
 
 pub fn parse_findings(raw: &str) -> Vec<Finding> {
     raw.split("\n\n---\n")
+        .map(|b| b.trim())
         .filter(|block| block.contains("## ["))
         .filter_map(parse_finding_block)
         .collect()
@@ -113,6 +114,9 @@ fn run_results_loop(terminal: &mut ratatui::DefaultTerminal, state: &mut UiState
         terminal.draw(|f| render_results(f, state))?;
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
                 match key.code {
                     KeyCode::Char('q') | KeyCode::Esc => break,
                     KeyCode::Down => state.select_next(),
@@ -130,7 +134,7 @@ fn render_results(frame: &mut Frame, state: &mut UiState) {
     let chunks = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(6),
-        Constraint::Length(3),
+        Constraint::Length(8),   // detail: 6 inner rows
         Constraint::Length(1),
     ])
     .split(area);
@@ -177,6 +181,7 @@ fn render_scanners_read_only(frame: &mut Frame, area: ratatui::layout::Rect, sta
 }
 
 fn render_findings_list(frame: &mut Frame, area: ratatui::layout::Rect, state: &mut UiState) {
+    let inner_width = area.width.saturating_sub(2) as usize;
     let items: Vec<ListItem> = state.findings.iter().enumerate().map(|(i, f)| {
         let sev_color = match f.severity {
             Severity::Critical => Color::Red,
@@ -186,11 +191,13 @@ fn render_findings_list(frame: &mut Frame, area: ratatui::layout::Rect, state: &
             Severity::Info => Color::DarkGray,
         };
         let loc = f.location.as_deref().unwrap_or("").chars().take(20).collect::<String>();
-        let title = f.title.chars().take(30).collect::<String>();
+        let fixed = 8 + 8 + loc.len();
+        let title_width = inner_width.saturating_sub(fixed).max(10);
+        let title = f.title.chars().take(title_width).collect::<String>();
         let line = Line::from(vec![
             Span::styled(format!("{:<8}", format!("{}", f.severity)), Style::default().fg(sev_color).add_modifier(Modifier::BOLD)),
             Span::raw(format!("{:<8}", f.scanner.chars().take(6).collect::<String>())),
-            Span::raw(format!("{:<32}", title)),
+            Span::raw(format!("{:<width$}", title, width = title_width)),
             Span::styled(loc, Style::default().fg(Color::DarkGray)),
         ]);
         let style = if i == state.selected_idx {
