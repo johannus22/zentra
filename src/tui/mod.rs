@@ -60,6 +60,7 @@ pub struct UiScanner {
     pub medium_count: u32,
     pub low_count: u32,
     pub info_count: u32,
+    pub error: Option<String>,
 }
 
 impl UiScanner {
@@ -72,6 +73,7 @@ impl UiScanner {
             medium_count: 0,
             low_count: 0,
             info_count: 0,
+            error: None,
         }
     }
 
@@ -175,9 +177,10 @@ impl UiState {
                     format!("→ {}({})", tool, arg)
                 };
             }
-            ScanEvent::Error { scanner, .. } => {
+            ScanEvent::Error { scanner, message } => {
                 if let Some(s) = self.scanners.iter_mut().find(|s| s.scanner_type == scanner) {
                     s.status = ScanStatus::Failed;
+                    s.error = Some(message);
                 }
             }
             ScanEvent::TokensUsed { input, output } => {

@@ -266,12 +266,12 @@ fn render_body(frame: &mut Frame, area: Rect, state: &mut UiState) {
 }
 
 fn render_scanners(frame: &mut Frame, area: Rect, state: &UiState) {
+    use ratatui::text::Text;
+
     let items: Vec<ListItem> = state
         .scanners
         .iter()
         .map(|s| {
-            
-
             let icon = match s.status {
                 ScanStatus::Running => LOADING_FRAMES[state.animation_index % LOADING_FRAMES.len()],
                 ScanStatus::Done => '✓',
@@ -285,7 +285,26 @@ fn render_scanners(frame: &mut Frame, area: Rect, state: &UiState) {
                 _ => Color::DarkGray,
             };
             let label = format!("{} {:<14}", icon, s.scanner_type.label());
-            ListItem::new(label).style(Style::default().fg(color))
+            let style = Style::default().fg(color);
+
+            // Build item — two lines for failed scanners with an error message
+            let item_text = if s.status == ScanStatus::Failed {
+                if let Some(ref err) = s.error {
+                    let truncated: String = err.chars().take(20).collect();
+                    Text::from(vec![
+                        Line::from(vec![Span::styled(label, Style::default().fg(Color::Red))]),
+                        Line::from(vec![Span::styled(
+                            format!("  └ {}", truncated),
+                            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                        )]),
+                    ])
+                } else {
+                    Text::from(Line::from(vec![Span::styled(label, Style::default().fg(Color::Red))]))
+                }
+            } else {
+                Text::from(Line::from(vec![Span::styled(label, style)]))
+            };
+            ListItem::new(item_text)
         })
         .collect();
 
