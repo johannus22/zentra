@@ -256,7 +256,8 @@ fn popup_state_starts_at_zero() {
 #[test]
 fn popup_state_next_clamps_at_max() {
     let mut p = PopupState::new();
-    // 3 items: 0=Change Model/Provider, 1=Abort Scan, 2=Exit App
+    // popup_items(scan_done=false) → 4 items: 0=Change Provider and Restart Scan, 1=Add Provider, 2=Abort Scan, 3=Exit App
+    // popup_items(scan_done=true)  → 3 items: 0=Change Provider and Restart Scan, 1=Add Provider, 2=Exit App
     p.next(3);
     assert_eq!(p.selected, 1);
     p.next(3);
@@ -362,4 +363,38 @@ fn parse_findings_returns_all_findings() {
     assert_eq!(findings[0].title, "SQL Injection");
     assert_eq!(findings[1].title, "Hardcoded API key");
     assert_eq!(findings[1].location.as_deref(), Some("src/config/auth.rs:42"));
+}
+
+use zentra_cli::tui::scan_ui::popup_items;
+
+#[test]
+fn popup_items_includes_abort_when_not_done() {
+    let items = popup_items(false);
+    assert!(items.contains(&"Abort Scan"));
+}
+
+#[test]
+fn popup_items_excludes_abort_when_scan_done() {
+    let items = popup_items(true);
+    assert!(!items.contains(&"Abort Scan"));
+}
+
+#[test]
+fn ui_state_abort_scan_marks_running_as_failed() {
+    let mut state = UiState::new(
+        vec![ScannerType::Sast, ScannerType::ThreatModel],
+        "m".to_string(),
+        200_000,
+        vec![],
+        String::new(),
+        String::new(),
+    );
+    state.apply_event(ScanEvent::ScannerStarted(ScannerType::Sast));
+    // ThreatModel stays Queued
+    state.abort_scan();
+    assert_eq!(state.scanners[0].status, ScanStatus::Failed); // was Running
+    assert_eq!(state.scanners[1].status, ScanStatus::Queued); // untouched
+    assert!(state.scan_aborted);
+    assert!(state.scan_done);
+    assert!(state.scan_end.is_some());
 }
