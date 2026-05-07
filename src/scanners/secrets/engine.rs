@@ -147,7 +147,7 @@ fn scan_filesystem(
         }
 
         file_count += 1;
-        if file_count % 100 == 0 {
+        if file_count.is_multiple_of(100) {
             let _ = tx.try_send(ScanEvent::ToolCall {
                 scanner: ScannerType::SecretsScan,
                 tool: "scan_files".to_string(),
