@@ -1,6 +1,6 @@
 use crate::agent::ScannerType;
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
@@ -116,6 +116,9 @@ fn run_menu_loop(
 
         if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
                 match state.screen {
                     MenuScreen::Main => match key.code {
                         KeyCode::Up => state.prev(),
@@ -236,7 +239,13 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
 
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL));
-    frame.render_widget(list, chunks[1]);
+    let menu_area = Layout::horizontal([
+        Constraint::Percentage(20),
+        Constraint::Percentage(60),
+        Constraint::Percentage(20),
+    ])
+    .split(chunks[1])[1];
+    frame.render_widget(list, menu_area);
 
     let keys = Paragraph::new(" ↑↓ navigate · Enter select · q quit");
     frame.render_widget(keys, chunks[2]);
