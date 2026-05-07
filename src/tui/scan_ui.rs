@@ -188,7 +188,7 @@ fn render(frame: &mut Frame, state: &mut UiState) {
 fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
     let cols = Layout::horizontal([
         Constraint::Min(40),
-        Constraint::Length(18),
+        Constraint::Length(22),
     ])
     .split(area);
 
@@ -223,11 +223,31 @@ fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
         .style(Style::default().fg(Color::Cyan));
     frame.render_widget(left, cols[0]);
 
+    // Right panel: project name (green bold), branch (dark gray), version (dim)
+    let project_display = state.project_name.chars().take(16).collect::<String>();
     let branch_display = state.branch.chars().take(14).collect::<String>();
-    let right_text = format!("v{}\n⎇ {}", env!("CARGO_PKG_VERSION"), branch_display);
-    let right = Paragraph::new(right_text)
+    let right_content = ratatui::text::Text::from(vec![
+        ratatui::text::Line::from(vec![
+            ratatui::text::Span::styled(
+                project_display,
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        ratatui::text::Line::from(vec![
+            ratatui::text::Span::styled(
+                format!("⎇ {}", branch_display),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
+        ratatui::text::Line::from(vec![
+            ratatui::text::Span::styled(
+                format!("v{}", env!("CARGO_PKG_VERSION")),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]),
+    ]);
+    let right = Paragraph::new(right_content)
         .block(Block::default().borders(Borders::ALL))
-        .style(Style::default().fg(Color::DarkGray))
         .alignment(ratatui::layout::Alignment::Right);
     frame.render_widget(right, cols[1]);
 }

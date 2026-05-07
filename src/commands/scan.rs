@@ -106,6 +106,7 @@ async fn run_once(
     let context_window = profile.context_window.unwrap_or(256_000);
     let model_info = format!("{} · {}", profile.model, profile_name);
     let branch = current_branch();
+    let project_name = current_project_name();
     let profiles: Vec<String> = global.profiles.keys().cloned().collect();
 
     // FrameworkAnalysis runs only when .zentra/architecture.md doesn't exist yet.
@@ -128,7 +129,7 @@ async fn run_once(
 
     let abort_handle = scan_task.abort_handle();
     let outcome = run_scan_ui(
-        rx, scanners_with_framework, model_info, context_window, abort_handle, profiles, branch, String::new(),
+        rx, scanners_with_framework, model_info, context_window, abort_handle, profiles, branch, project_name,
     ).await?;
 
     match outcome {
@@ -174,4 +175,11 @@ fn current_branch() -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "detached".to_string())
+}
+
+fn current_project_name() -> String {
+    std::env::current_dir()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| "project".to_string())
 }
