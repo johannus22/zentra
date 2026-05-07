@@ -105,11 +105,17 @@ async fn run_once(
 
     let context_window = profile.context_window.unwrap_or(256_000);
     let model_info = format!("{} · {}", profile.model, profile_name);
-
+    let branch = current_branch();
     let profiles: Vec<String> = global.profiles.keys().cloned().collect();
 
+    // FrameworkAnalysis always runs first — prepend it if not already in the list
+    let mut scanners_with_framework = scanners.clone();
+    if !scanners_with_framework.contains(&ScannerType::FrameworkAnalysis) {
+        scanners_with_framework.insert(0, ScannerType::FrameworkAnalysis);
+    }
+
     let (tx, rx) = mpsc::channel(128);
-    let scanners_for_agent = scanners.clone();
+    let scanners_for_agent = scanners_with_framework.clone();
 
     let scan_task = tokio::spawn(async move {
         OrchestratorAgent::new(provider, tool_registry, state_writer, tx, depth)
@@ -118,7 +124,9 @@ async fn run_once(
     });
 
     let abort_handle = scan_task.abort_handle();
-    let outcome = run_scan_ui(rx, scanners, model_info, context_window, abort_handle, profiles).await?;
+    let outcome = run_scan_ui(
+        rx, scanners_with_framework, model_info, context_window, abort_handle, profiles, branch,
+    ).await?;
 
     match outcome {
         ScanOutcome::Completed => {
@@ -152,4 +160,15 @@ fn resolve_scanners(only: Option<&str>) -> Vec<ScannerType> {
             ScannerType::Report,
         ],
     }
+}
+
+fn current_branch() -> String {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "detached".to_string())
 }

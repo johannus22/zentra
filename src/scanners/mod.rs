@@ -1,4 +1,5 @@
 pub mod api_scan;
+pub mod framework_analysis;
 pub mod iac_scan;
 pub mod report;
 pub mod sast;
@@ -10,6 +11,7 @@ use crate::agent::ScannerType;
 
 pub fn system_prompt(scanner: ScannerType) -> &'static str {
     match scanner {
+        ScannerType::FrameworkAnalysis => framework_analysis::system_prompt(),
         ScannerType::ThreatModel => threat_model::system_prompt(),
         ScannerType::Sast => sast::system_prompt(),
         ScannerType::SupplyChain => supply_chain::system_prompt(),
@@ -22,6 +24,7 @@ pub fn system_prompt(scanner: ScannerType) -> &'static str {
 
 pub fn allowed_tools(scanner: ScannerType) -> &'static [&'static str] {
     match scanner {
+        ScannerType::FrameworkAnalysis => framework_analysis::allowed_tools(),
         ScannerType::ThreatModel => threat_model::allowed_tools(),
         ScannerType::Sast => sast::allowed_tools(),
         ScannerType::SupplyChain => supply_chain::allowed_tools(),

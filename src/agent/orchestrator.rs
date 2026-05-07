@@ -37,9 +37,18 @@ impl OrchestratorAgent {
     }
 
     pub async fn run(self, scanners: &[ScannerType]) -> Result<()> {
-        // Phase 1: ThreatModel — sequential, runs first
+        // Phase 0: FrameworkAnalysis — builds .zentra/context.md for all subsequent scanners
+        if scanners.contains(&ScannerType::FrameworkAnalysis) {
+            self.run_llm_scanner(ScannerType::FrameworkAnalysis, None).await?;
+        }
+
+        // Read the produced context; inject into every LLM scanner that follows
+        let context = self.state_writer.read_context();
+        let context_opt: Option<String> = if context.is_empty() { None } else { Some(context) };
+
+        // Phase 1: ThreatModel — sequential
         if scanners.contains(&ScannerType::ThreatModel) {
-            self.run_llm_scanner(ScannerType::ThreatModel).await?;
+            self.run_llm_scanner(ScannerType::ThreatModel, context_opt.as_deref()).await?;
         }
 
         // Phase 2: parallel scanners (SAST, SCA, API, IaC, Secrets)
@@ -53,6 +62,7 @@ impl OrchestratorAgent {
             let mut handles = Vec::new();
             for scanner_type in parallel {
                 if scanner_type == ScannerType::SecretsScan {
+                    // Secrets scanner is deterministic — no context injection needed
                     let writer = Arc::clone(&self.state_writer);
                     let tx = self.tx.clone();
                     let depth = self.depth.clone();
@@ -68,8 +78,9 @@ impl OrchestratorAgent {
                     let registry = Arc::clone(&self.tool_registry);
                     let writer = Arc::clone(&self.state_writer);
                     let tx = self.tx.clone();
+                    let ctx = context_opt.clone();
                     handles.push(tokio::spawn(async move {
-                        ScannerAgent::new(scanner_type, provider, registry, writer, tx)
+                        ScannerAgent::new(scanner_type, provider, registry, writer, tx, ctx)
                             .run()
                             .await
                     }));
@@ -82,19 +93,20 @@ impl OrchestratorAgent {
 
         // Phase 3: Report — sequential, runs last
         if scanners.contains(&ScannerType::Report) {
-            self.run_llm_scanner(ScannerType::Report).await?;
+            self.run_llm_scanner(ScannerType::Report, context_opt.as_deref()).await?;
         }
 
         Ok(())
     }
 
-    async fn run_llm_scanner(&self, scanner_type: ScannerType) -> Result<()> {
+    async fn run_llm_scanner(&self, scanner_type: ScannerType, context: Option<&str>) -> Result<()> {
         ScannerAgent::new(
             scanner_type,
             Arc::clone(&self.provider),
             Arc::clone(&self.tool_registry),
             Arc::clone(&self.state_writer),
             self.tx.clone(),
+            context.map(str::to_string),
         )
         .run()
         .await

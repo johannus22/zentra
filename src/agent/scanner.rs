@@ -15,6 +15,7 @@ pub struct ScannerAgent {
     tool_registry: Arc<ToolRegistry>,
     state_writer: Arc<StateWriter>,
     tx: mpsc::Sender<ScanEvent>,
+    context: Option<String>,
 }
 
 impl ScannerAgent {
@@ -24,23 +25,35 @@ impl ScannerAgent {
         tool_registry: Arc<ToolRegistry>,
         state_writer: Arc<StateWriter>,
         tx: mpsc::Sender<ScanEvent>,
+        context: Option<String>,
     ) -> Self {
-        Self { scanner_type, provider, tool_registry, state_writer, tx }
+        Self { scanner_type, provider, tool_registry, state_writer, tx, context }
     }
 
     pub async fn run(self) -> Result<()> {
-        let system = scanners::system_prompt(self.scanner_type);
+        let base_system = scanners::system_prompt(self.scanner_type);
+        let effective_system: String = match &self.context {
+            Some(ctx) => format!(
+                "{}\n\n## Project Framework Context\n\n\
+This context was produced by a prior framework analysis pass. Use it to avoid false positives — \
+for example, do not flag SQL injection if the ORM listed here auto-parameterises all queries.\n\n{}",
+                base_system, ctx
+            ),
+            None => base_system.to_string(),
+        };
+        let system = effective_system.as_str();
         let all_tools = self.tool_registry.definitions();
         let allowed = scanners::allowed_tools(self.scanner_type);
         let tools: Vec<_> = all_tools
             .into_iter()
             .filter(|t| allowed.contains(&t.name.as_str()))
             .collect();
-        let mut messages: Vec<AgentMessage> = vec![
-            AgentMessage::User(
-                "Begin your security scan. Start by listing the project files.".to_string()
-            ),
-        ];
+        let initial_prompt = if self.scanner_type == ScannerType::FrameworkAnalysis {
+            "Begin the framework analysis. Start by listing the project files and reading the package manifest.".to_string()
+        } else {
+            "Begin your security scan. Start by listing the project files.".to_string()
+        };
+        let mut messages: Vec<AgentMessage> = vec![AgentMessage::User(initial_prompt)];
 
         self.tx.send(ScanEvent::ScannerStarted(self.scanner_type)).await.ok();
 

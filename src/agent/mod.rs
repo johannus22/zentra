@@ -5,6 +5,7 @@ use crate::state::Finding;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScannerType {
+    FrameworkAnalysis,
     ThreatModel,
     Sast,
     SupplyChain,
@@ -17,6 +18,7 @@ pub enum ScannerType {
 impl ScannerType {
     pub fn name(&self) -> &'static str {
         match self {
+            ScannerType::FrameworkAnalysis => "framework",
             ScannerType::ThreatModel => "threat_model",
             ScannerType::Sast => "sast",
             ScannerType::SupplyChain => "supply_chain",
@@ -24,6 +26,20 @@ impl ScannerType {
             ScannerType::IacScan => "iac_scan",
             ScannerType::SecretsScan => "secrets",
             ScannerType::Report => "report",
+        }
+    }
+
+    /// Short label for TUI display (≤14 chars).
+    pub fn label(&self) -> &'static str {
+        match self {
+            ScannerType::FrameworkAnalysis => "Framework",
+            ScannerType::ThreatModel => "ThreatModel",
+            ScannerType::Sast => "SAST",
+            ScannerType::SupplyChain => "SupplyChain",
+            ScannerType::ApiScan => "ApiScan",
+            ScannerType::IacScan => "IacScan",
+            ScannerType::SecretsScan => "Secrets",
+            ScannerType::Report => "Report",
         }
     }
 }
