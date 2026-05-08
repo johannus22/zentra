@@ -1,4 +1,5 @@
 pub mod allowlist;
+pub mod cache;
 pub mod engine;
 pub mod entropy;
 pub mod git_history;
