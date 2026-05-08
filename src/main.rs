@@ -38,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
     match run_menu(provider_configured, project_configured, profiles, active_model, active_profile, project_name, branch_name).await? {
                 MenuAction::RunScan(scanners) => {
                     commands::scan::run_with_scanners(scanners).await?;
-                    break;
+                    // loop continues so scan UI q/Esc returns here
                 }
                 MenuAction::ViewLastResults => {
                     zentra_cli::tui::results::run_results().await?;

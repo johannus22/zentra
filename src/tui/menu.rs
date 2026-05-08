@@ -485,33 +485,16 @@ fn render_menu(frame: &mut Frame, state: &MenuState) {
     }
 }
 
-fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
-    let chunks = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(6),   // header block
-        Constraint::Min(12),     // menu list
-        Constraint::Length(1),   // key hints
-        Constraint::Fill(1),
-    ])
-    .split(area);
-
-    // ── Header block: banner left, version/model/profile right ──────────────
-    // Center header at 60% — same as the menu list
-    let header_center = Layout::horizontal([
-        Constraint::Percentage(30),
-        Constraint::Percentage(40),
-        Constraint::Percentage(30),
-    ]).split(chunks[1])[1];
-
+fn render_banner_header(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
     let header_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
-    let inner = header_block.inner(header_center);
-    frame.render_widget(header_block, header_center);
+    let inner = header_block.inner(area);
+    frame.render_widget(header_block, area);
 
     let header_cols = Layout::horizontal([
-        Constraint::Min(28),    // was Min(36) — banner longest line is 28 chars
-        Constraint::Min(10),    // info panel (shrunk, text will clip)
+        Constraint::Min(28),
+        Constraint::Min(10),
     ])
     .split(inner);
 
@@ -525,6 +508,14 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
     };
     let project_display = state.project_name.chars().take(22).collect::<String>();
     let branch_display = state.branch_name.chars().take(22).collect::<String>();
+    let provider_model = if state.provider_configured {
+        format!("{} · {}",
+            state.active_profile.chars().take(10).collect::<String>(),
+            state.active_model.chars().take(10).collect::<String>()
+        )
+    } else {
+        String::new()
+    };
     let info = Text::from(vec![
         Line::from(vec![Span::styled(
             project_display,
@@ -535,11 +526,7 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
             Style::default().fg(Color::DarkGray),
         )]),
         Line::from(vec![Span::styled(
-            format!("v{}", env!("CARGO_PKG_VERSION")),
-            Style::default().fg(Color::DarkGray),
-        )]),
-        Line::from(vec![Span::styled(
-            state.active_model.chars().take(22).collect::<String>(),
+            provider_model,
             Style::default().fg(Color::Green),
         )]),
         Line::from(vec![Span::styled(
@@ -555,8 +542,26 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
         Paragraph::new(info).alignment(Alignment::Right),
         header_cols[1],
     );
+}
 
-    // ── Menu list with grouped sections ─────────────────────────────────────
+fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
+    let chunks = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(6),   // header block
+        Constraint::Min(12),     // menu list
+        Constraint::Length(1),   // key hints
+        Constraint::Fill(1),
+    ])
+    .split(area);
+
+    let header_center = Layout::horizontal([
+        Constraint::Percentage(30),
+        Constraint::Percentage(40),
+        Constraint::Percentage(30),
+    ]).split(chunks[1])[1];
+
+    render_banner_header(frame, header_center, state);
+
     let items: Vec<ListItem> = MAIN_MENU_ROWS.iter().map(|row| {
         match row {
             MenuRow::Section(label) => {
@@ -608,10 +613,12 @@ fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state
     ])
     .split(area);
 
-    let header = Paragraph::new(BANNER)
-        .block(Block::default().borders(Borders::ALL))
-        .style(Style::default().fg(Color::Cyan));
-    frame.render_widget(header, chunks[1]);
+    let header_center = Layout::horizontal([
+        Constraint::Percentage(30),
+        Constraint::Percentage(40),
+        Constraint::Percentage(30),
+    ]).split(chunks[1])[1];
+    render_banner_header(frame, header_center, state);
 
     let scanner_names = [
         ("Threat Model", "STRIDE · attack surface · trust boundaries"),
@@ -688,15 +695,7 @@ fn render_provider_selector(frame: &mut Frame, area: ratatui::layout::Rect, stat
         Constraint::Percentage(40),
         Constraint::Percentage(30),
     ]).split(chunks[1])[1];
-
-    let header_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
-    let inner = header_block.inner(header_center);
-    frame.render_widget(header_block, header_center);
-
-    let banner_para = Paragraph::new(BANNER).style(Style::default().fg(Color::Cyan));
-    frame.render_widget(banner_para, inner);
+    render_banner_header(frame, header_center, state);
 
     // ── Provider list ───────────────────────────────────────────────────────
     let items: Vec<ListItem> = state.profiles.iter().enumerate().map(|(i, (name, model))| {
@@ -762,21 +761,13 @@ fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &
     ])
     .split(area);
 
-    // Header block (same style as main menu)
+    // Header block
     let header_center = Layout::horizontal([
         Constraint::Percentage(30),
         Constraint::Percentage(40),
         Constraint::Percentage(30),
     ]).split(outer_chunks[1])[1];
-
-    let header_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
-    let header_inner = header_block.inner(header_center);
-    frame.render_widget(header_block, header_center);
-
-    let banner_para = Paragraph::new(BANNER).style(Style::default().fg(Color::Cyan));
-    frame.render_widget(banner_para, header_inner);
+    render_banner_header(frame, header_center, state);
 
     // ── Form block ──────────────────────────────────────────────────────────
     let form_area = Layout::horizontal([
