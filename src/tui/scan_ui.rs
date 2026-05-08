@@ -17,7 +17,7 @@ pub fn popup_items(scan_done: bool) -> Vec<&'static str> {
     let mut items = vec![
         "Change Provider and Restart Scan",
         "Add Provider",
-        "Exit App",
+        "Back to Menu",
     ];
     if !scan_done {
         items.insert(2, "Abort Scan");
@@ -126,9 +126,9 @@ async fn run_loop(
                                         state.activity = "✗ Scan aborted — browse findings · q to exit".to_string();
                                         state.toggle_popup();
                                     }
-                                    "Exit App" => {
+                                    "Back to Menu" => {
                                         cancel_token.cancel();
-                                        return Ok(ScanOutcome::ExitApp);
+                                        return Ok(ScanOutcome::BackToMenu);
                                     }
                                     _ => {}
                                 }
@@ -138,11 +138,8 @@ async fn run_loop(
                     } else {
                         match key.code {
                             KeyCode::Char('q') | KeyCode::Esc => {
-                                return Ok(if state.scan_done {
-                                    ScanOutcome::Completed
-                                } else {
-                                    ScanOutcome::Aborted
-                                });
+                                cancel_token.cancel();
+                                return Ok(ScanOutcome::BackToMenu);
                             }
                             KeyCode::Char('p') | KeyCode::Char('?') => state.toggle_popup(),
                             KeyCode::Down => state.select_next(),
@@ -439,9 +436,9 @@ fn render_keys(frame: &mut Frame, area: Rect, popup_open: bool, scan_done: bool)
     let text = if popup_open {
         " ↑↓ navigate · Enter select · Esc close"
     } else if scan_done {
-        " ↑↓ select finding · q exit"
+        " ↑↓ select finding · p menu · q menu"
     } else {
-        " ↑↓ navigate · p menu · q quit"
+        " ↑↓ navigate · p menu · q menu"
     };
     let paragraph = Paragraph::new(text).style(Style::default().fg(Color::DarkGray));
     frame.render_widget(paragraph, area);

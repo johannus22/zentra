@@ -23,14 +23,13 @@ pub async fn run(
     let mut provider_override = provider_override;
     loop {
         match run_once(provider_override.clone(), scanners.clone(), depth.clone()).await? {
-            ScanOutcome::Completed | ScanOutcome::Aborted => break,
+            ScanOutcome::Completed | ScanOutcome::Aborted | ScanOutcome::BackToMenu => break,
             ScanOutcome::Reconfigure => {
                 wizard::run_setup(None).await?;
             }
             ScanOutcome::ChangeProvider(name) => {
                 provider_override = Some(name);
             }
-            ScanOutcome::ExitApp => std::process::exit(0),
         }
     }
     Ok(())
@@ -41,14 +40,13 @@ pub async fn run_with_scanners(scanners: Vec<ScannerType>) -> Result<()> {
     let mut provider_override: Option<String> = None;
     loop {
         match run_once(provider_override.clone(), scanners.clone(), depth.clone()).await? {
-            ScanOutcome::Completed | ScanOutcome::Aborted => break,
+            ScanOutcome::Completed | ScanOutcome::Aborted | ScanOutcome::BackToMenu => break,
             ScanOutcome::Reconfigure => {
                 wizard::run_setup(None).await?;
             }
             ScanOutcome::ChangeProvider(name) => {
                 provider_override = Some(name);
             }
-            ScanOutcome::ExitApp => std::process::exit(0),
         }
     }
     Ok(())

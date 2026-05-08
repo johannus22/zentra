@@ -11,7 +11,7 @@ pub enum ScanOutcome {
     Aborted,
     Reconfigure,
     ChangeProvider(String),
-    ExitApp,
+    BackToMenu,
 }
 
 pub struct PopupState {
