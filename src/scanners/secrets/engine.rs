@@ -20,6 +20,11 @@ use super::{
     HistoryDepth, SecretsMatch,
 };
 
+const _: fn() = || {
+    fn _assert_sync<T: Sync>() {}
+    _assert_sync::<ContextValidator<'static>>();
+};
+
 pub struct SecretScanner {
     root: PathBuf,
     depth: HistoryDepth,
@@ -73,8 +78,8 @@ impl SecretScanner {
         cache.save(&self.root);
 
         all_matches.sort_by(|a, b| {
-            (&a.file, a.line, &a.detector)
-                .cmp(&(&b.file, b.line, &b.detector))
+            (&a.file, a.line, &a.detector, a.suppressed)
+                .cmp(&(&b.file, b.line, &b.detector, b.suppressed))
         });
         all_matches.dedup_by(|a, b| {
             a.file == b.file && a.line == b.line && a.detector == b.detector
@@ -174,11 +179,10 @@ fn scan_filesystem(
     let mut to_scan: Vec<(PathBuf, String, std::time::SystemTime)> = Vec::new();
 
     for entry in entries {
-        let rel = entry
-            .path()
-            .strip_prefix(root)
-            .map(|p| p.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_default();
+        let rel = match entry.path().strip_prefix(root) {
+            Ok(p) => p.to_string_lossy().replace('\\', "/"),
+            Err(_) => continue,
+        };
 
         if let Ok(meta) = entry.metadata() {
             if let Ok(mtime) = meta.modified() {
@@ -245,9 +249,9 @@ fn scan_file(
     }
 
     let mut content = String::from_utf8_lossy(&buf[..n]).into_owned();
-    let mut remainder = String::new();
-    if file.read_to_string(&mut remainder).is_ok() {
-        content.push_str(&remainder);
+    let mut rest = Vec::new();
+    if file.read_to_end(&mut rest).is_ok() {
+        content.push_str(&String::from_utf8_lossy(&rest));
     }
 
     let content_lines: Vec<&str> = content.lines().collect();
@@ -337,6 +341,7 @@ fn patterns_hash(patterns: &[patterns::DetectorPattern]) -> String {
     for p in patterns {
         hasher.update(p.name.as_bytes());
         hasher.update(p.re.as_str().as_bytes());
+        hasher.update(p.secret_group.to_ne_bytes());
     }
     format!("{:x}", hasher.finalize())
 }
