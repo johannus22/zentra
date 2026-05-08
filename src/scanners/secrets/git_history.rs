@@ -10,6 +10,33 @@ use super::{
     HistoryDepth, SecretsMatch,
 };
 
+const MAX_LINE_LEN: usize = 10_000;
+
+const SKIP_NAMES: &[&str] = &[
+    "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+    "Cargo.lock", "go.sum", "Gemfile.lock", "composer.lock", "poetry.lock",
+];
+
+const SKIP_EXTENSIONS: &[&str] = &[
+    ".min.js", ".min.css", ".map", ".woff", ".woff2", ".ttf", ".eot", ".otf",
+];
+
+const SKIP_DIR_PREFIXES: &[&str] = &[
+    "node_modules/", "vendor/", "dist/", "build/", ".git/",
+    "__pycache__/", ".next/", ".nuxt/", "coverage/", "bower_components/",
+];
+
+fn should_skip_git_file(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    if SKIP_NAMES.contains(&name) {
+        return true;
+    }
+    if SKIP_EXTENSIONS.iter().any(|ext| name.ends_with(ext)) {
+        return true;
+    }
+    SKIP_DIR_PREFIXES.iter().any(|prefix| path.starts_with(prefix))
+}
+
 fn push_match(
     results: &mut Vec<SecretsMatch>,
     m: SecretsMatch,
@@ -72,7 +99,11 @@ pub async fn scan_history(
         }
 
         if let Some(stripped) = raw.strip_prefix("+++ b/") {
-            current_file = Some(stripped.to_string());
+            if should_skip_git_file(stripped) {
+                current_file = None;
+            } else {
+                current_file = Some(stripped.to_string());
+            }
             line_no = 0;
             prev_content_line = None;
             continue;
@@ -113,6 +144,9 @@ pub async fn scan_history(
         if raw.starts_with('+') && !raw.starts_with("+++") {
             line_no += 1;
             let line = &raw[1..];
+            if line.len() > MAX_LINE_LEN {
+                continue;
+            }
             let file = current_file.as_deref().unwrap_or("");
             let prev = prev_content_line.as_deref();
 
