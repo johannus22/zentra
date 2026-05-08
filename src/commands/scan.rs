@@ -155,7 +155,7 @@ fn resolve_scanners(only: Option<&str>) -> Vec<ScannerType> {
         Some("supply-chain") => vec![ScannerType::SupplyChain, ScannerType::Report],
         Some("api") => vec![ScannerType::ApiScan, ScannerType::Report],
         Some("iac") => vec![ScannerType::IacScan, ScannerType::Report],
-        Some("secrets") => vec![ScannerType::SecretsScan],
+        Some("secrets") => vec![],
         Some("report") => vec![ScannerType::Report],
         _ => vec![
             ScannerType::ThreatModel,
@@ -163,7 +163,6 @@ fn resolve_scanners(only: Option<&str>) -> Vec<ScannerType> {
             ScannerType::SupplyChain,
             ScannerType::ApiScan,
             ScannerType::IacScan,
-            ScannerType::SecretsScan,
             ScannerType::Report,
         ],
     }
