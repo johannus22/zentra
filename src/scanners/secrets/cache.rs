@@ -13,8 +13,6 @@ struct FileCacheEntry {
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ScanCache {
     #[serde(default)]
-    pub cache_version: u32,
-    #[serde(default)]
     pub patterns_hash: String,
     #[serde(default)]
     fs_entries: std::collections::HashMap<String, FileCacheEntry>,
@@ -65,8 +63,8 @@ impl ScanCache {
         !self.git_head.is_empty() && self.git_head == head
     }
 
-    pub fn get_git_findings(&self) -> Vec<SecretsMatch> {
-        self.git_findings.clone()
+    pub fn get_git_findings(&self) -> &[SecretsMatch] {
+        &self.git_findings
     }
 
     pub fn set_git(&mut self, head: String, findings: Vec<SecretsMatch>) {
