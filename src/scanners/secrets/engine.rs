@@ -62,7 +62,6 @@ impl SecretScanner {
         all_matches.extend(fs_matches);
 
         // ── Git history scan ─────────────────────────────────────────────────
-        eprintln!("[secrets] phase 3: git history scan...");
         let allowlist2 = Allowlist::load(&self.root);
         let validator2 = ContextValidator::new(&allowlist2);
         let head = git_head(&self.root);
@@ -82,7 +81,6 @@ impl SecretScanner {
             }
             matches
         };
-        eprintln!("[secrets] phase 3: git history done ({} findings)", git_matches.len());
         all_matches.extend(git_matches);
 
         // ── Save cache ───────────────────────────────────────────────────────
@@ -167,7 +165,6 @@ fn scan_filesystem(
     tx: &mpsc::Sender<ScanEvent>,
     cache: &mut ScanCache,
 ) -> Vec<SecretsMatch> {
-    eprintln!("[secrets] phase 1: collecting files...");
     // Phase 1: collect all eligible file entries sequentially
     let entries: Vec<_> = WalkBuilder::new(root)
         .standard_filters(true)
@@ -180,7 +177,6 @@ fn scan_filesystem(
         .collect();
 
     let total = entries.len();
-    eprintln!("[secrets] phase 1: {} files collected", total);
     let _ = tx.try_send(ScanEvent::ToolCall {
         scanner: ScannerType::SecretsScan,
         tool: "scan_files".to_string(),
@@ -211,7 +207,6 @@ fn scan_filesystem(
     }
 
     let missed_count = to_scan.len();
-    eprintln!("[secrets] phase 2: {} cached hits, {} files to scan", total - missed_count, missed_count);
     if missed_count > 0 {
         let _ = tx.try_send(ScanEvent::ToolCall {
             scanner: ScannerType::SecretsScan,

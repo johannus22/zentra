@@ -2,3 +2,6 @@
 .zentra/
 .env
 .worktrees/
+docs
+.superpowers
+AGENTS.md
