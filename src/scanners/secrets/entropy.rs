@@ -49,6 +49,10 @@ fn alphanum_re() -> &'static Regex {
 }
 
 pub fn scan_line_for_high_entropy(line: &str) -> Vec<EntropyHit> {
+    // Skip lines with no run of 20+ consecutive non-whitespace bytes — they can't match any entropy threshold
+    if !line.as_bytes().windows(20).any(|w| w.iter().all(|&b| b > b' ')) {
+        return Vec::new();
+    }
     let mut results: Vec<EntropyHit> = Vec::new();
     let mut covered: Vec<(usize, usize)> = Vec::new();
 
@@ -137,6 +141,21 @@ mod tests {
         let hits = scan_line_for_high_entropy(line);
         let hex_hits: Vec<_> = hits.iter().filter(|h| h.detector.contains("hex")).collect();
         assert!(hex_hits.is_empty(), "all-zero hex should not be flagged");
+    }
+
+    #[test]
+    fn short_line_skipped_by_guard() {
+        // All tokens < 20 chars — guard returns early
+        let line = "let x = 5; // short";
+        let hits = scan_line_for_high_entropy(line);
+        assert!(hits.is_empty(), "short line should produce no entropy hits");
+    }
+
+    #[test]
+    fn line_with_only_spaces_skipped() {
+        let line = "    ";
+        let hits = scan_line_for_high_entropy(line);
+        assert!(hits.is_empty());
     }
 
     #[test]
