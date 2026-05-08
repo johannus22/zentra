@@ -41,7 +41,6 @@ impl SecretScanner {
 
         let detector_patterns = patterns::all_patterns();
         let allowlist = Allowlist::load(&self.root);
-        let validator = ContextValidator::new(&allowlist);
 
         // ── Incremental cache ────────────────────────────────────────────────
         let mut cache = ScanCache::load(&self.root);
@@ -51,10 +50,21 @@ impl SecretScanner {
         let mut all_matches = Vec::new();
 
         // ── Filesystem scan ──────────────────────────────────────────────────
-        let fs_matches = scan_filesystem(&self.root, detector_patterns, &validator, &self.tx, &mut cache);
+        // spawn_blocking: moves CPU-bound rayon work off the tokio thread pool so the TUI
+        // and other async tasks (LLM scanners) stay responsive during the scan.
+        let root = self.root.clone();
+        let tx = self.tx.clone();
+        let (fs_matches, mut cache) = tokio::task::spawn_blocking(move || {
+            let validator = ContextValidator::new(&allowlist);
+            let results = scan_filesystem(&root, detector_patterns, &validator, &tx, &mut cache);
+            (results, cache)
+        }).await?;
         all_matches.extend(fs_matches);
 
         // ── Git history scan ─────────────────────────────────────────────────
+        eprintln!("[secrets] phase 3: git history scan...");
+        let allowlist2 = Allowlist::load(&self.root);
+        let validator2 = ContextValidator::new(&allowlist2);
         let head = git_head(&self.root);
         let git_matches = if head.as_deref().map(|h| cache.git_head_matches(h)).unwrap_or(false) {
             cache.get_git_findings().to_vec()
@@ -63,7 +73,7 @@ impl SecretScanner {
                 &self.root,
                 &self.depth,
                 detector_patterns,
-                &validator,
+                &validator2,
             )
             .await
             .unwrap_or_default();
@@ -72,6 +82,7 @@ impl SecretScanner {
             }
             matches
         };
+        eprintln!("[secrets] phase 3: git history done ({} findings)", git_matches.len());
         all_matches.extend(git_matches);
 
         // ── Save cache ───────────────────────────────────────────────────────
@@ -156,6 +167,7 @@ fn scan_filesystem(
     tx: &mpsc::Sender<ScanEvent>,
     cache: &mut ScanCache,
 ) -> Vec<SecretsMatch> {
+    eprintln!("[secrets] phase 1: collecting files...");
     // Phase 1: collect all eligible file entries sequentially
     let entries: Vec<_> = WalkBuilder::new(root)
         .standard_filters(true)
@@ -168,6 +180,7 @@ fn scan_filesystem(
         .collect();
 
     let total = entries.len();
+    eprintln!("[secrets] phase 1: {} files collected", total);
     let _ = tx.try_send(ScanEvent::ToolCall {
         scanner: ScannerType::SecretsScan,
         tool: "scan_files".to_string(),
@@ -198,6 +211,7 @@ fn scan_filesystem(
     }
 
     let missed_count = to_scan.len();
+    eprintln!("[secrets] phase 2: {} cached hits, {} files to scan", total - missed_count, missed_count);
     if missed_count > 0 {
         let _ = tx.try_send(ScanEvent::ToolCall {
             scanner: ScannerType::SecretsScan,
@@ -257,8 +271,9 @@ fn scan_file(
     let content_lines: Vec<&str> = content.lines().collect();
 
     for (i, line) in content_lines.iter().enumerate() {
-        // Length guard: no pattern can match less than 16 chars
-        if line.len() < 16 {
+        // Skip very short lines (no pattern matches < 16 chars) and
+        // very long lines (minified JS, data URIs — not useful for secret detection)
+        if line.len() < 16 || line.len() > 10_000 {
             continue;
         }
 
