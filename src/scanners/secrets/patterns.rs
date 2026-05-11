@@ -55,7 +55,7 @@ pub fn scan_line(line: &str, patterns: &[DetectorPattern]) -> Vec<PatternMatch> 
             if let Some(secret) = caps.get(p.secret_group) {
                 let s = secret.as_str();
                 // Skip generic_secret_assign hits that fail quality validation
-                if p.name == "generic_secret_assign" && !validate_secret_value(s) {
+                if (p.name == "generic_secret_assign" || p.name == "env_password" || p.name == "env_api_key" || p.name == "env_secret" || p.name == "env_token") && !validate_secret_value(s) {
                     continue;
                 }
                 results.push(PatternMatch {
