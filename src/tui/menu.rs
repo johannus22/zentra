@@ -359,7 +359,6 @@ fn run_menu_loop(
                                         ScannerType::SupplyChain,
                                         ScannerType::ApiScan,
                                         ScannerType::IacScan,
-                                        ScannerType::SecretsScan,
                                         ScannerType::Report,
                                     ]));
                                 }

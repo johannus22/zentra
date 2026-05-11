@@ -6,7 +6,6 @@ use tokio::sync::mpsc;
 use crate::agent::{orchestrator::OrchestratorAgent, ScannerType};
 use crate::config::{keychain, GlobalConfig, ProjectConfig};
 use crate::provider::{anthropic::AnthropicProvider, openai_compat::OpenAICompatProvider, LLMProvider};
-use crate::scanners::secrets::HistoryDepth;
 use crate::state::StateWriter;
 use crate::tools::ToolRegistry;
 use crate::tui::{scan_ui::run_scan_ui, ScanOutcome};
@@ -16,13 +15,11 @@ use tokio_util::sync::CancellationToken;
 pub async fn run(
     provider_override: Option<String>,
     only: Option<String>,
-    depth_str: String,
 ) -> Result<()> {
-    let depth = depth_str.parse::<HistoryDepth>().unwrap_or(HistoryDepth::Last(50));
     let scanners = resolve_scanners(only.as_deref());
     let mut provider_override = provider_override;
     loop {
-        match run_once(provider_override.clone(), scanners.clone(), depth.clone()).await? {
+        match run_once(provider_override.clone(), scanners.clone()).await? {
             ScanOutcome::Completed | ScanOutcome::Aborted | ScanOutcome::BackToMenu => break,
             ScanOutcome::Reconfigure => {
                 wizard::run_setup(None).await?;
@@ -36,10 +33,9 @@ pub async fn run(
 }
 
 pub async fn run_with_scanners(scanners: Vec<ScannerType>) -> Result<()> {
-    let depth = HistoryDepth::default();
     let mut provider_override: Option<String> = None;
     loop {
-        match run_once(provider_override.clone(), scanners.clone(), depth.clone()).await? {
+        match run_once(provider_override.clone(), scanners.clone()).await? {
             ScanOutcome::Completed | ScanOutcome::Aborted | ScanOutcome::BackToMenu => break,
             ScanOutcome::Reconfigure => {
                 wizard::run_setup(None).await?;
@@ -55,7 +51,6 @@ pub async fn run_with_scanners(scanners: Vec<ScannerType>) -> Result<()> {
 async fn run_once(
     provider_override: Option<String>,
     scanners: Vec<ScannerType>,
-    depth: HistoryDepth,
 ) -> Result<ScanOutcome> {
     let global = GlobalConfig::load()?;
     let profile_name = provider_override
@@ -103,7 +98,7 @@ async fn run_once(
     let tool_registry = Arc::new(ToolRegistry::new());
 
     let context_window = profile.context_window.unwrap_or(256_000);
-    let model_info = format!("{} Â· {}", profile.model, profile_name);
+    let model_info = format!("{} · {}", profile.model, profile_name);
     let branch = current_branch();
     let project_name = current_project_name();
     let profiles: Vec<String> = global.profiles.keys().cloned().collect();
@@ -125,7 +120,7 @@ async fn run_once(
     let token_for_orchestrator = cancel_token.clone();
 
     let scan_task = tokio::spawn(async move {
-        OrchestratorAgent::new(provider, tool_registry, state_writer, tx, depth, token_for_orchestrator)
+        OrchestratorAgent::new(provider, tool_registry, state_writer, tx, token_for_orchestrator)
             .run(&scanners_for_agent)
             .await
     });
@@ -137,11 +132,11 @@ async fn run_once(
     match outcome {
         ScanOutcome::Completed => {
             scan_task.await??;
-            println!("\nâœ“ Scan complete. Findings in .zentra/");
+            println!("\n✓ Scan complete. Findings in .zentra/");
         }
         _ => {
             cancel_token.cancel();
-            let _ = scan_task.await; // ensure task stops before returning; returns Err(JoinError::Cancelled)
+            let _ = scan_task.await;
         }
     }
 
@@ -155,7 +150,6 @@ fn resolve_scanners(only: Option<&str>) -> Vec<ScannerType> {
         Some("supply-chain") => vec![ScannerType::SupplyChain, ScannerType::Report],
         Some("api") => vec![ScannerType::ApiScan, ScannerType::Report],
         Some("iac") => vec![ScannerType::IacScan, ScannerType::Report],
-        Some("secrets") => vec![ScannerType::SecretsScan, ScannerType::Report],
         Some("report") => vec![ScannerType::Report],
         _ => vec![
             ScannerType::ThreatModel,
@@ -163,7 +157,6 @@ fn resolve_scanners(only: Option<&str>) -> Vec<ScannerType> {
             ScannerType::SupplyChain,
             ScannerType::ApiScan,
             ScannerType::IacScan,
-            ScannerType::SecretsScan,
             ScannerType::Report,
         ],
     }

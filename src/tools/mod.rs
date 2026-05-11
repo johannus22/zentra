@@ -151,20 +151,6 @@ data entry points, security middleware already present, and known safety guarant
                     "required": ["content"]
                 }),
             },
-            ToolDefinition {
-                name: "scan_secrets".to_string(),
-                description: "Run the deterministic secrets scanner on the codebase and git history. Returns a JSON summary of findings (max 50 active, no raw values). Use to inventory potential leaked credentials without LLM analysis.".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "depth": {
-                            "type": "string",
-                            "description": "Git history depth: a number like '50' or 'all' for full history. Default '50'."
-                        }
-                    },
-                    "required": []
-                }),
-            },
         ]
     }
 
@@ -230,20 +216,6 @@ data entry points, security middleware already present, and known safety guarant
                 match state_writer.write_architecture(content) {
                     Ok(_) => "Architecture written to .zentra/architecture.md.".to_string(),
                     Err(e) => format!("Error writing architecture: {}", e),
-                }
-            }
-            "scan_secrets" => {
-                let depth_str = args["depth"].as_str().unwrap_or("50");
-                let depth = depth_str.parse::<crate::scanners::secrets::HistoryDepth>().unwrap_or(crate::scanners::secrets::HistoryDepth::Last(50));
-                let root = state_writer.project_root().to_path_buf();
-                let (tool_tx, _rx) = mpsc::channel(128);
-                let cancel_token = tokio_util::sync::CancellationToken::new();
-                match crate::scanners::secrets::SecretScanner::new(root, depth, tool_tx, cancel_token)
-                    .run(state_writer)
-                    .await
-                {
-                    Ok(matches) => crate::scanners::secrets::report::to_tool_json(&matches).to_string(),
-                    Err(e) => format!("scan_secrets error: {}", e),
                 }
             }
             unknown => format!("Unknown tool: '{}'", unknown),
