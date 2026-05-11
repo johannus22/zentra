@@ -78,8 +78,9 @@ Delete this file and re-run the scan to retry."
                     let tx = self.tx.clone();
                     let depth = self.depth.clone();
                     let root = writer.project_root().to_path_buf();
+                    let token = self.cancel_token.clone();
                     handles.push(tokio::spawn(async move {
-                        SecretScanner::new(root, depth, tx)
+                        SecretScanner::new(root, depth, tx, token)
                             .run(&writer)
                             .await
                             .map(|_| ())

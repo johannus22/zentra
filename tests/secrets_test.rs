@@ -1,3 +1,4 @@
+use tokio_util::sync::CancellationToken;
 use std::process::Command;
 use tempfile::TempDir;
 use zentra_cli::scanners::secrets::{
@@ -102,10 +103,12 @@ async fn engine_detects_secret_in_working_tree() {
     let (tx, _rx) = tokio::sync::mpsc::channel(128);
     let writer = StateWriter::new(dir.path()).unwrap();
 
+    let cancel_token = tokio_util::sync::CancellationToken::new();
     let scanner = SecretScanner::new(
         dir.path().to_path_buf(),
         HistoryDepth::Last(0),
         tx,
+        cancel_token,
     );
 
     let matches = scanner.run(&writer).await.unwrap();
@@ -130,7 +133,7 @@ async fn engine_suppresses_secrets_in_test_dir() {
 
     let (tx, _rx) = tokio::sync::mpsc::channel(128);
     let writer = StateWriter::new(dir.path()).unwrap();
-    let scanner = SecretScanner::new(dir.path().to_path_buf(), HistoryDepth::Last(0), tx);
+    let scanner = SecretScanner::new(dir.path().to_path_buf(), HistoryDepth::Last(0), tx, CancellationToken::new());
     let matches = scanner.run(&writer).await.unwrap();
 
     let active: Vec<_> = matches.iter().filter(|m| !m.suppressed).collect();
@@ -149,7 +152,7 @@ async fn engine_writes_report_files() {
 
     let (tx, _rx) = tokio::sync::mpsc::channel(128);
     let writer = StateWriter::new(dir.path()).unwrap();
-    let scanner = SecretScanner::new(dir.path().to_path_buf(), HistoryDepth::Last(0), tx);
+    let scanner = SecretScanner::new(dir.path().to_path_buf(), HistoryDepth::Last(0), tx, CancellationToken::new());
     scanner.run(&writer).await.unwrap();
 
     assert!(
@@ -187,7 +190,7 @@ async fn engine_skips_node_modules_and_target() {
 
     let (tx, _rx) = tokio::sync::mpsc::channel(128);
     let writer = StateWriter::new(dir.path()).unwrap();
-    let scanner = SecretScanner::new(dir.path().to_path_buf(), HistoryDepth::Last(0), tx);
+    let scanner = SecretScanner::new(dir.path().to_path_buf(), HistoryDepth::Last(0), tx, CancellationToken::new());
     let matches = scanner.run(&writer).await.unwrap();
 
     assert!(

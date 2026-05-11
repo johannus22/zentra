@@ -1,4 +1,4 @@
-pub mod audit;
+﻿pub mod audit;
 pub mod fs_tools;
 pub mod git_tools;
 
@@ -237,7 +237,8 @@ data entry points, security middleware already present, and known safety guarant
                 let depth = depth_str.parse::<crate::scanners::secrets::HistoryDepth>().unwrap_or(crate::scanners::secrets::HistoryDepth::Last(50));
                 let root = state_writer.project_root().to_path_buf();
                 let (tool_tx, _rx) = mpsc::channel(128);
-                match crate::scanners::secrets::SecretScanner::new(root, depth, tool_tx)
+                let cancel_token = tokio_util::sync::CancellationToken::new();
+                match crate::scanners::secrets::SecretScanner::new(root, depth, tool_tx, cancel_token)
                     .run(state_writer)
                     .await
                 {
@@ -259,3 +260,4 @@ fn parse_severity(s: &str) -> Severity {
         _ => Severity::Info,
     }
 }
+
