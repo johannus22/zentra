@@ -1,4 +1,4 @@
-// tests/agent_test.rs
+﻿// tests/agent_test.rs
 use zentra_cli::{agent, state, tools};
 use zentra_cli::tools::fs_tools::{grep_code, list_files, read_file};
 use zentra_cli::tools::git_tools::{git_log, git_status};
@@ -185,7 +185,7 @@ use zentra_cli::tools::audit::run_audit;
 #[test]
 fn run_audit_returns_string_when_tool_not_installed() {
     // Run in a temp dir where audit tools are unlikely to be configured
-    // The function must not panic — it returns a graceful message
+    // The function must not panic â€” it returns a graceful message
     let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().unwrap();
     let original = std::env::current_dir().unwrap();
@@ -336,7 +336,7 @@ async fn scanner_agent_executes_tool_call_and_feeds_result_back() {
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("main.rs"), "fn main() {}").unwrap();
 
-    // First response: agent calls list_files — consumed once (up_to_n_times),
+    // First response: agent calls list_files â€” consumed once (up_to_n_times),
     // then falls through to the fallback mock below for all subsequent requests.
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
@@ -394,7 +394,7 @@ async fn scanner_agent_executes_tool_call_and_feeds_result_back() {
 
 #[test]
 fn git_log_returns_string_outside_git_repo() {
-    // Run from a temp dir with no .git — should not panic, just return graceful message
+    // Run from a temp dir with no .git â€” should not panic, just return graceful message
     let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().unwrap();
     let original = std::env::current_dir().unwrap();
@@ -403,7 +403,7 @@ fn git_log_returns_string_outside_git_repo() {
     let result = git_log(5);
 
     std::env::set_current_dir(&original).unwrap();
-    // Either returns commits or a graceful "not a git repo" message — must not panic
+    // Either returns commits or a graceful "not a git repo" message â€” must not panic
     assert!(!result.is_empty());
 }
 
@@ -443,7 +443,7 @@ async fn orchestrator_runs_selected_scanners_in_order() {
     let (tx, mut rx) = mpsc::channel(32);
 
     let orchestrator = OrchestratorAgent::new(
-        provider, registry, writer, tx, zentra_cli::scanners::secrets::HistoryDepth::default(), CancellationToken::new(),
+        provider, registry, writer, tx, CancellationToken::new(),
     );
 
     orchestrator.run(&[ScannerType::ThreatModel, ScannerType::Sast, ScannerType::Report]).await.unwrap();
@@ -498,3 +498,4 @@ async fn scanner_agent_emits_tokens_used_event() {
     }
     assert!(found_tokens, "should have emitted TokensUsed event");
 }
+

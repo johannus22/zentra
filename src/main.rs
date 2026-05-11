@@ -1,4 +1,4 @@
-use clap::Parser;
+﻿use clap::Parser;
 use zentra_cli::{
     cli, commands,
     config::{GlobalConfig, ProjectConfig},
@@ -65,13 +65,14 @@ async fn main() -> anyhow::Result<()> {
             cli::ConfigAction::Show => commands::config::show().await?,
             cli::ConfigAction::Remove { name } => commands::config::remove(&name).await?,
         },
-        Some(cli::Commands::Scan { provider, only, depth }) => {
-            commands::scan::run(provider, only, depth).await?
+        Some(cli::Commands::Scan { provider, only }) => {
+            commands::scan::run(provider, only).await?
         }
         Some(cli::Commands::Update) => {
-            eprintln!("zentra update — available in Plan 4 (install + CI)");
+            eprintln!("zentra update â€” available in Plan 4 (install + CI)");
             std::process::exit(1);
         }
     }
     Ok(())
 }
+

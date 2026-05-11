@@ -6,7 +6,6 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::{ScanEvent, ScannerType};
 use crate::agent::scanner::ScannerAgent;
 use crate::provider::LLMProvider;
-use crate::scanners::secrets::{HistoryDepth, SecretScanner};
 use crate::state::StateWriter;
 use crate::tools::ToolRegistry;
 
@@ -15,7 +14,6 @@ const PARALLEL_SCANNERS: &[ScannerType] = &[
     ScannerType::SupplyChain,
     ScannerType::ApiScan,
     ScannerType::IacScan,
-    ScannerType::SecretsScan,
 ];
 
 pub struct OrchestratorAgent {
@@ -23,7 +21,6 @@ pub struct OrchestratorAgent {
     tool_registry: Arc<ToolRegistry>,
     state_writer: Arc<StateWriter>,
     tx: mpsc::Sender<ScanEvent>,
-    depth: HistoryDepth,
     cancel_token: CancellationToken,
 }
 
@@ -33,10 +30,9 @@ impl OrchestratorAgent {
         tool_registry: Arc<ToolRegistry>,
         state_writer: Arc<StateWriter>,
         tx: mpsc::Sender<ScanEvent>,
-        depth: HistoryDepth,
         cancel_token: CancellationToken,
     ) -> Self {
-        Self { provider, tool_registry, state_writer, tx, depth, cancel_token }
+        Self { provider, tool_registry, state_writer, tx, cancel_token }
     }
 
     pub async fn run(self, scanners: &[ScannerType]) -> Result<()> {
@@ -63,7 +59,7 @@ Delete this file and re-run the scan to retry."
             self.run_llm_scanner(ScannerType::ThreatModel, context_opt.as_deref()).await?;
         }
 
-        // Phase 2: parallel scanners (SAST, SCA, API, IaC, Secrets)
+        // Phase 2: parallel scanners (SAST, SCA, API, IaC)
         let parallel: Vec<ScannerType> = PARALLEL_SCANNERS
             .iter()
             .filter(|s| scanners.contains(s))
@@ -72,33 +68,19 @@ Delete this file and re-run the scan to retry."
 
         if !parallel.is_empty() {
             let mut handles = Vec::new();
+            let cancel_token = self.cancel_token.clone();
             for scanner_type in parallel {
-                if scanner_type == ScannerType::SecretsScan {
-                    // Secrets scanner is deterministic — no context injection needed
-                    let writer = Arc::clone(&self.state_writer);
-                    let tx = self.tx.clone();
-                    let depth = self.depth.clone();
-                    let root = writer.project_root().to_path_buf();
-                    let token = self.cancel_token.clone();
-                    handles.push(tokio::spawn(async move {
-                        SecretScanner::new(root, depth, tx, token)
-                            .run(&writer)
-                            .await
-                            .map(|_| ())
-                    }));
-                } else {
-                    let provider = Arc::clone(&self.provider);
-                    let registry = Arc::clone(&self.tool_registry);
-                    let writer = Arc::clone(&self.state_writer);
-                    let tx = self.tx.clone();
-                    let ctx = context_opt.clone();
-                    let token = self.cancel_token.clone();
-                    handles.push(tokio::spawn(async move {
-                        ScannerAgent::new(scanner_type, provider, registry, writer, tx, ctx, token)
-                            .run()
-                            .await
-                    }));
-                }
+                let provider = Arc::clone(&self.provider);
+                let registry = Arc::clone(&self.tool_registry);
+                let writer = Arc::clone(&self.state_writer);
+                let tx = self.tx.clone();
+                let ctx = context_opt.clone();
+                let token = cancel_token.clone();
+                handles.push(tokio::spawn(async move {
+                    ScannerAgent::new(scanner_type, provider, registry, writer, tx, ctx, token)
+                        .run()
+                        .await
+                }));
             }
             for handle in handles {
                 handle.await??;
