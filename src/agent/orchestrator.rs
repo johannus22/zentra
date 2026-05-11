@@ -15,6 +15,7 @@ const PARALLEL_SCANNERS: &[ScannerType] = &[
     ScannerType::SupplyChain,
     ScannerType::ApiScan,
     ScannerType::IacScan,
+    ScannerType::SecretsScan,
 ];
 
 pub struct OrchestratorAgent {

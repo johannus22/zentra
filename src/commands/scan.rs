@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+﻿use anyhow::{Context, Result};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -103,7 +103,7 @@ async fn run_once(
     let tool_registry = Arc::new(ToolRegistry::new());
 
     let context_window = profile.context_window.unwrap_or(256_000);
-    let model_info = format!("{} · {}", profile.model, profile_name);
+    let model_info = format!("{} Â· {}", profile.model, profile_name);
     let branch = current_branch();
     let project_name = current_project_name();
     let profiles: Vec<String> = global.profiles.keys().cloned().collect();
@@ -137,7 +137,7 @@ async fn run_once(
     match outcome {
         ScanOutcome::Completed => {
             scan_task.await??;
-            println!("\n✓ Scan complete. Findings in .zentra/");
+            println!("\nâœ“ Scan complete. Findings in .zentra/");
         }
         _ => {
             cancel_token.cancel();
@@ -155,7 +155,7 @@ fn resolve_scanners(only: Option<&str>) -> Vec<ScannerType> {
         Some("supply-chain") => vec![ScannerType::SupplyChain, ScannerType::Report],
         Some("api") => vec![ScannerType::ApiScan, ScannerType::Report],
         Some("iac") => vec![ScannerType::IacScan, ScannerType::Report],
-        Some("secrets") => vec![],
+        Some("secrets") => vec![ScannerType::SecretsScan, ScannerType::Report],
         Some("report") => vec![ScannerType::Report],
         _ => vec![
             ScannerType::ThreatModel,
@@ -163,6 +163,7 @@ fn resolve_scanners(only: Option<&str>) -> Vec<ScannerType> {
             ScannerType::SupplyChain,
             ScannerType::ApiScan,
             ScannerType::IacScan,
+            ScannerType::SecretsScan,
             ScannerType::Report,
         ],
     }
