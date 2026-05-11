@@ -73,6 +73,7 @@ impl SecretScanner {
                 &self.depth,
                 detector_patterns,
                 &validator2,
+                &tokio_util::sync::CancellationToken::new(),
             )
             .await
             .unwrap_or_default();
