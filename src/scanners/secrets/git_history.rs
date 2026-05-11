@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::path::Path;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+use tokio_util::sync::CancellationToken;
 
 use super::{
     entropy,
@@ -58,6 +59,7 @@ pub async fn scan_history(
     depth: &HistoryDepth,
     detector_patterns: &[DetectorPattern],
     validator: &ContextValidator<'_>,
+    cancel_token: &CancellationToken,
 ) -> Result<Vec<SecretsMatch>> {
     if matches!(depth, HistoryDepth::Last(0)) {
         return Ok(Vec::new());
@@ -88,8 +90,13 @@ pub async fn scan_history(
     let mut line_no: u32 = 0;
     let mut prev_content_line: Option<String> = None;
     let mut results: Vec<SecretsMatch> = Vec::new();
+    let mut line_counter: u64 = 0;
 
     while let Ok(Some(raw)) = lines.next_line().await {
+        line_counter += 1;
+        if line_counter % 1000 == 0 && cancel_token.is_cancelled() {
+            break;
+        }
         if raw.starts_with("commit ") {
             current_commit = raw.split_whitespace().nth(1).map(|s| s.to_string());
             current_file = None;

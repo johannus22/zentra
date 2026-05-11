@@ -49,7 +49,7 @@ async fn git_history_detects_planted_secret_in_past_commit() {
     let validator = ContextValidator::new(&al);
     let pats = patterns::all_patterns();
 
-    let hits = git_history::scan_history(dir.path(), &HistoryDepth::All, pats, &validator)
+    let hits = git_history::scan_history(dir.path(), &HistoryDepth::All, pats, &validator, &tokio_util::sync::CancellationToken::new())
         .await
         .unwrap();
 
@@ -69,7 +69,7 @@ async fn git_history_depth_zero_returns_empty() {
     let validator = ContextValidator::new(&al);
     let pats = patterns::all_patterns();
 
-    let hits = git_history::scan_history(dir.path(), &HistoryDepth::Last(0), pats, &validator)
+    let hits = git_history::scan_history(dir.path(), &HistoryDepth::Last(0), pats, &validator, &tokio_util::sync::CancellationToken::new())
         .await
         .unwrap();
 
@@ -84,7 +84,7 @@ async fn git_not_available_returns_empty_gracefully() {
     let pats = patterns::all_patterns();
 
     let result =
-        git_history::scan_history(dir.path(), &HistoryDepth::Last(10), pats, &validator).await;
+        git_history::scan_history(dir.path(), &HistoryDepth::Last(10), pats, &validator, &tokio_util::sync::CancellationToken::new()).await;
 
     assert!(result.is_ok(), "expected Ok([]) when git is unavailable, got {:?}", result);
     assert!(result.unwrap().is_empty());
