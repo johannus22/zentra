@@ -202,3 +202,139 @@ async fn engine_skips_node_modules_and_target() {
         "should skip node_modules and target"
     );
 }
+
+
+#[tokio::test]
+async fn engine_filters_short_generic_secret_assign() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("config.rs"),
+        r#"token = "demo_value_123""#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join(".zentra")).unwrap();
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(128);
+    let writer = StateWriter::new(dir.path()).unwrap();
+    let cancel_token = CancellationToken::new();
+    let scanner = SecretScanner::new(
+        dir.path().to_path_buf(),
+        HistoryDepth::Last(0),
+        tx,
+        cancel_token,
+    );
+    let matches = scanner.run(&writer).await.unwrap();
+
+    assert!(
+        !matches.iter().any(|m| m.detector == "generic_secret_assign"),
+        "short generic_secret_assign should be filtered"
+    );
+}
+
+#[tokio::test]
+async fn engine_filters_weak_generic_secret_assign() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("config.rs"),
+        r#"token = "this_is_a_very_long_demo_value_123""#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join(".zentra")).unwrap();
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(128);
+    let writer = StateWriter::new(dir.path()).unwrap();
+    let cancel_token = CancellationToken::new();
+    let scanner = SecretScanner::new(
+        dir.path().to_path_buf(),
+        HistoryDepth::Last(0),
+        tx,
+        cancel_token,
+    );
+    let matches = scanner.run(&writer).await.unwrap();
+
+    assert!(
+        !matches.iter().any(|m| m.detector == "generic_secret_assign"),
+        "weak generic_secret_assign (too few digits) should be filtered"
+    );
+}
+
+#[tokio::test]
+async fn engine_allows_strong_generic_secret_assign() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("config.rs"),
+        r#"token = "this_is_a_very_long_demo_value_1234567890_abc""#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join(".zentra")).unwrap();
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(128);
+    let writer = StateWriter::new(dir.path()).unwrap();
+    let cancel_token = CancellationToken::new();
+    let scanner = SecretScanner::new(
+        dir.path().to_path_buf(),
+        HistoryDepth::Last(0),
+        tx,
+        cancel_token,
+    );
+    let matches = scanner.run(&writer).await.unwrap();
+
+    assert!(
+        matches.iter().any(|m| m.detector == "generic_secret_assign"),
+        "strong generic_secret_assign (24+ chars, 4+ digits) should be kept"
+    );
+}
+
+#[tokio::test]
+async fn engine_suppresses_date_formats() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("config.rs"),
+        r#"date = "MM-DD-YYYY""#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join(".zentra")).unwrap();
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(128);
+    let writer = StateWriter::new(dir.path()).unwrap();
+    let cancel_token = CancellationToken::new();
+    let scanner = SecretScanner::new(
+        dir.path().to_path_buf(),
+        HistoryDepth::Last(0),
+        tx,
+        cancel_token,
+    );
+    let matches = scanner.run(&writer).await.unwrap();
+
+    assert!(
+        !matches.iter().any(|m| !m.suppressed && m.detector == "generic_secret_assign"),
+        "date format should be suppressed"
+    );
+}
+
+#[tokio::test]
+async fn engine_suppresses_common_non_secrets() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("config.rs"),
+        r#"host = "localhost""#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join(".zentra")).unwrap();
+
+    let (tx, _rx) = tokio::sync::mpsc::channel(128);
+    let writer = StateWriter::new(dir.path()).unwrap();
+    let cancel_token = CancellationToken::new();
+    let scanner = SecretScanner::new(
+        dir.path().to_path_buf(),
+        HistoryDepth::Last(0),
+        tx,
+        cancel_token,
+    );
+    let matches = scanner.run(&writer).await.unwrap();
+
+    assert!(
+        !matches.iter().any(|m| !m.suppressed && m.detector == "generic_secret_assign"),
+        "common non-secret values should be suppressed"
+    );
+}
