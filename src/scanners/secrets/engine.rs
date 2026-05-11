@@ -146,6 +146,7 @@ const EXCLUDED_NAMES: &[&str] = &[
 const EXCLUDED_EXTENSIONS: &[&str] = &[
     ".min.js", ".min.css", ".map",
     ".woff", ".woff2", ".ttf", ".eot", ".otf",
+    ".md", ".rst", ".txt", ".adoc", ".markdown",
 ];
 
 fn is_excluded_entry(entry: &ignore::DirEntry) -> bool {
@@ -153,6 +154,11 @@ fn is_excluded_entry(entry: &ignore::DirEntry) -> bool {
     if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
         return EXCLUDED_DIRS.contains(&name.as_ref())
             || name.ends_with(".egg-info");
+    }
+    // Skip documentation and license files by name prefix
+    let doc_prefixes = ["readme", "changelog", "contributing", "license", "code_of_conduct"];
+    if doc_prefixes.iter().any(|p| name.to_lowercase().starts_with(p)) {
+        return true;
     }
     if EXCLUDED_NAMES.contains(&name.as_ref()) {
         return true;
@@ -242,6 +248,7 @@ fn scan_filesystem(
     cached_results
 }
 
+
 fn scan_file(
     path: &Path,
     rel: &str,
@@ -274,7 +281,16 @@ fn scan_file(
 
     let content_lines: Vec<&str> = content.lines().collect();
 
+    let mut inside_code_block = false;
     for (i, line) in content_lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            inside_code_block = !inside_code_block;
+            continue;
+        }
+        if inside_code_block {
+            continue;
+        }
         // Skip very short lines (no pattern matches < 16 chars) and
         // very long lines (minified JS, data URIs â€” not useful for secret detection)
         if line.len() < 16 || line.len() > 10_000 {

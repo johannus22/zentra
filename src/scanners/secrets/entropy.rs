@@ -75,7 +75,7 @@ pub fn scan_line_for_high_entropy(line: &str) -> Vec<EntropyHit> {
         }
         let s = m.as_str();
         let e = shannon_entropy(s);
-        if e > 3.0 {
+        if e > 3.5 {
             covered.push((m.start(), m.end()));
             results.push(EntropyHit {
                 token: s.to_string(),
@@ -91,7 +91,7 @@ pub fn scan_line_for_high_entropy(line: &str) -> Vec<EntropyHit> {
         }
         let s = m.as_str();
         let e = shannon_entropy(s);
-        if e > 3.5 {
+        if e > 4.0 {
             covered.push((m.start(), m.end()));
             results.push(EntropyHit {
                 token: s.to_string(),
