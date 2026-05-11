@@ -74,6 +74,21 @@ impl<'a> ContextValidator<'a> {
             return Some("allowlist_entry".to_string());
         }
 
+        // Rule 8: Common non-secret values (localhost, booleans, common identifiers)
+        if is_common_non_secret(&m.redacted) {
+            return Some("common_non_secret".to_string());
+        }
+
+        // Rule 9: Date formats (MM-DD-YYYY, YYYY-MM-DD, etc.)
+        if is_date_format(&m.redacted) {
+            return Some("date_format".to_string());
+        }
+
+        // Rule 10: Version strings (v1.2.3, 1.0.0-beta, etc.)
+        if is_version_string(&m.redacted) {
+            return Some("version_string".to_string());
+        }
+
         None
     }
 }
@@ -101,6 +116,49 @@ fn is_identifier_like(s: &str) -> bool {
     // If fewer than 3 digits, treat as identifier (real secrets have more digits)
     let digit_count = s.chars().filter(|c| c.is_ascii_digit()).count();
     digit_count < 3
+}
+
+fn is_common_non_secret(s: &str) -> bool {
+    let lower = s.to_lowercase();
+    // Common non-secret values that appear in code literals
+    let non_secrets = [
+        "localhost", "127.0.0.1", "0.0.0.0", "::1",
+        "true", "false", "yes", "no", "on", "off", "null", "undefined", "none",
+        "admin", "root", "guest", "user", "test", "demo", "example", "default",
+        "password", "changeme", "pass", "secret",
+        "date", "version", "name", "id", "title", "description", "label",
+        "path", "url", "host", "port", "protocol", "scheme",
+        "get", "post", "put", "delete", "patch", "head", "options",
+        "application", "json", "xml", "html", "text", "csv",
+    ];
+    non_secrets.iter().any(|ns| lower == *ns)
+}
+
+fn is_date_format(s: &str) -> bool {
+    // Match patterns like MM-DD-YYYY, YYYY-MM-DD, dd/mm/yyyy, ISO dates
+    let date_patterns = [
+        r"^\d{2}-\d{2}-\d{4}$",      // MM-DD-YYYY or DD-MM-YYYY
+        r"^\d{4}-\d{2}-\d{2}$",      // YYYY-MM-DD
+        r"^\d{2}/\d{2}/\d{4}$",      // MM/DD/YYYY or DD/MM/YYYY
+        r"^\d{4}/\d{2}/\d{2}$",      // YYYY/MM/DD
+        r"^\d{2}\.\d{2}\.\d{4}$",    // DD.MM.YYYY
+        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", // ISO 8601
+        r"^\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}", // 1 Jan 2024
+    ];
+    date_patterns.iter().any(|pat| {
+        regex::Regex::new(pat).map(|re| re.is_match(s)).unwrap_or(false)
+    })
+}
+
+fn is_version_string(s: &str) -> bool {
+    // Match semantic version patterns: v1.2.3, 1.0.0, 1.0.0-beta, 2024.1.0, etc.
+    let version_patterns = [
+        r"^v?\d+\.\d+(?:\.\d+)?(?:-[a-zA-Z0-9.]+)?$",  // v1.2.3, 1.0.0-beta
+        r"^\d{4}\.\d+\.\d+$",                           // 2024.1.0
+    ];
+    version_patterns.iter().any(|pat| {
+        regex::Regex::new(pat).map(|re| re.is_match(s)).unwrap_or(false)
+    })
 }
 
 #[cfg(test)]

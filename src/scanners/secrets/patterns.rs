@@ -22,6 +22,27 @@ pub fn redact(s: &str) -> String {
     format!("{}...{}", &s[..4], &s[s.len() - 4..])
 }
 
+
+/// Returns true if the captured secret value looks like a real secret
+/// (has mixed character classes and sufficient complexity).
+pub fn validate_secret_value(s: &str) -> bool {
+    if s.len() < 24 {
+        return false;
+    }
+    // Require at least 4 digits (real secrets have digits)
+    let digit_count = s.chars().filter(|c| c.is_ascii_digit()).count();
+    if digit_count < 4 {
+        return false;
+    }
+    // Require at least 2 character classes among: lower, upper, digit, special
+    let mut classes = 0u8;
+    if s.chars().any(|c| c.is_ascii_lowercase()) { classes += 1; }
+    if s.chars().any(|c| c.is_ascii_uppercase()) { classes += 1; }
+    if s.chars().any(|c| c.is_ascii_digit()) { classes += 1; }
+    if s.chars().any(|c| !c.is_alphanumeric() && c != '_') { classes += 1; }
+    classes >= 2
+}
+
 pub fn all_patterns() -> &'static [DetectorPattern] {
     static PATTERNS: OnceLock<Vec<DetectorPattern>> = OnceLock::new();
     PATTERNS.get_or_init(build_patterns)
@@ -33,6 +54,10 @@ pub fn scan_line(line: &str, patterns: &[DetectorPattern]) -> Vec<PatternMatch> 
         for caps in p.re.captures_iter(line) {
             if let Some(secret) = caps.get(p.secret_group) {
                 let s = secret.as_str();
+                // Skip generic_secret_assign hits that fail quality validation
+                if p.name == "generic_secret_assign" && !validate_secret_value(s) {
+                    continue;
+                }
                 results.push(PatternMatch {
                     detector: p.name.to_string(),
                     secret: s.to_string(),
@@ -113,7 +138,7 @@ fn build_patterns() -> Vec<DetectorPattern> {
         det("digitalocean_pat", r"(dop_v1_[a-zA-Z0-9]{64})"),
         det("shopify_secret", r"(shpss_[a-fA-F0-9]{32})"),
         // Generic credential assignments
-        det("generic_secret_assign", r#"(?i)(?:secret|password|passwd|token|api_?key|auth|credential)\s*[:=]\s*['"]([a-zA-Z0-9/+_.!@#$%^&*-]{12,})['"]"#),
+        det("generic_secret_assign", r#"(?i)(?:secret|password|passwd|token|api_?key|auth|credential)\s*[:=]\s*['"]([a-zA-Z0-9/+_.!@#$%^&*-]{24,})['"]"#),
         // HTTP basic auth in URLs
         det("http_basic_auth", r"https?://[^:@\s]+:([^@\s]{8,})@[^\s]+"),
     ]
