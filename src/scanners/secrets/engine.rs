@@ -1,10 +1,11 @@
-use anyhow::Result;
+﻿use anyhow::Result;
 use ignore::WalkBuilder;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use crate::agent::{ScanEvent, ScannerType};
 use crate::state::{Finding, Severity, StateWriter};
@@ -29,11 +30,12 @@ pub struct SecretScanner {
     root: PathBuf,
     depth: HistoryDepth,
     tx: mpsc::Sender<ScanEvent>,
+    cancel_token: CancellationToken,
 }
 
 impl SecretScanner {
-    pub fn new(root: PathBuf, depth: HistoryDepth, tx: mpsc::Sender<ScanEvent>) -> Self {
-        Self { root, depth, tx }
+    pub fn new(root: PathBuf, depth: HistoryDepth, tx: mpsc::Sender<ScanEvent>, cancel_token: CancellationToken) -> Self {
+        Self { root, depth, tx, cancel_token }
     }
 
     pub async fn run(self, state_writer: &StateWriter) -> Result<Vec<SecretsMatch>> {
@@ -42,26 +44,27 @@ impl SecretScanner {
         let detector_patterns = patterns::all_patterns();
         let allowlist = Allowlist::load(&self.root);
 
-        // ── Incremental cache ────────────────────────────────────────────────
+        // â”€â”€ Incremental cache â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         let mut cache = ScanCache::load(&self.root);
         let phash = patterns_hash(detector_patterns);
         cache.invalidate_if_hash_mismatch(&phash);
 
         let mut all_matches = Vec::new();
 
-        // ── Filesystem scan ──────────────────────────────────────────────────
+        // â”€â”€ Filesystem scan â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // spawn_blocking: moves CPU-bound rayon work off the tokio thread pool so the TUI
         // and other async tasks (LLM scanners) stay responsive during the scan.
         let root = self.root.clone();
         let tx = self.tx.clone();
+        let cancel_token = self.cancel_token.clone();
         let (fs_matches, mut cache) = tokio::task::spawn_blocking(move || {
             let validator = ContextValidator::new(&allowlist);
-            let results = scan_filesystem(&root, detector_patterns, &validator, &tx, &mut cache);
+            let results = scan_filesystem(&root, detector_patterns, &validator, &tx, &mut cache, &cancel_token);
             (results, cache)
         }).await?;
         all_matches.extend(fs_matches);
 
-        // ── Git history scan ─────────────────────────────────────────────────
+        // â”€â”€ Git history scan â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         let allowlist2 = Allowlist::load(&self.root);
         let validator2 = ContextValidator::new(&allowlist2);
         let head = git_head(&self.root);
@@ -73,7 +76,7 @@ impl SecretScanner {
                 &self.depth,
                 detector_patterns,
                 &validator2,
-                &tokio_util::sync::CancellationToken::new(),
+                &self.cancel_token,
             )
             .await
             .unwrap_or_default();
@@ -84,7 +87,7 @@ impl SecretScanner {
         };
         all_matches.extend(git_matches);
 
-        // ── Save cache ───────────────────────────────────────────────────────
+        // â”€â”€ Save cache â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         cache.save(&self.root);
 
         all_matches.sort_by(|a, b| {
@@ -126,7 +129,7 @@ impl SecretScanner {
     }
 }
 
-// ── Directory/file exclusion lists ──────────────────────────────────────────
+// â”€â”€ Directory/file exclusion lists â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const EXCLUDED_DIRS: &[&str] = &[
     "node_modules", "target", "dist", "build", ".git",
@@ -157,7 +160,7 @@ fn is_excluded_entry(entry: &ignore::DirEntry) -> bool {
     EXCLUDED_EXTENSIONS.iter().any(|ext| name.ends_with(ext))
 }
 
-// ── Filesystem scan (collect → parallel scan) ───────────────────────────────
+// â”€â”€ Filesystem scan (collect â†’ parallel scan) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn scan_filesystem(
     root: &Path,
@@ -165,6 +168,7 @@ fn scan_filesystem(
     validator: &ContextValidator<'_>,
     tx: &mpsc::Sender<ScanEvent>,
     cache: &mut ScanCache,
+    cancel_token: &CancellationToken,
 ) -> Vec<SecretsMatch> {
     // Phase 1: collect all eligible file entries sequentially
     let entries: Vec<_> = WalkBuilder::new(root)
@@ -177,14 +181,18 @@ fn scan_filesystem(
         .filter(|e| e.metadata().map(|m| m.len() <= 1_048_576).unwrap_or(false))
         .collect();
 
-    let total = entries.len();
+    if cancel_token.is_cancelled() {
+            return Vec::new();
+        }
+
+        let total = entries.len();
     let _ = tx.try_send(ScanEvent::ToolCall {
         scanner: ScannerType::SecretsScan,
         tool: "scan_files".to_string(),
         arg: format!("{} files to scan", total),
     });
 
-    // Phase 2: check mtime cache — split into hits (cached) and misses (need scanning)
+    // Phase 2: check mtime cache â€” split into hits (cached) and misses (need scanning)
     let mut cached_results: Vec<SecretsMatch> = Vec::new();
     let mut to_scan: Vec<(PathBuf, String, std::time::SystemTime)> = Vec::new();
 
@@ -268,7 +276,7 @@ fn scan_file(
 
     for (i, line) in content_lines.iter().enumerate() {
         // Skip very short lines (no pattern matches < 16 chars) and
-        // very long lines (minified JS, data URIs — not useful for secret detection)
+        // very long lines (minified JS, data URIs â€” not useful for secret detection)
         if line.len() < 16 || line.len() > 10_000 {
             continue;
         }
@@ -335,7 +343,7 @@ fn push_match_fs(
     results.push(m);
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn git_head(root: &Path) -> Option<String> {
     std::process::Command::new("git")
@@ -356,3 +364,5 @@ fn patterns_hash(patterns: &[patterns::DetectorPattern]) -> String {
     }
     format!("{:x}", hasher.finalize())
 }
+
+
