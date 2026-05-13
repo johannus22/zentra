@@ -64,6 +64,8 @@ async fn run_once(
         .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found", profile_name))?
         .clone();
 
+    ensure_supported_scan_auth(&profile_name, &profile)?;
+
     let api_key = match profile.auth_method {
         crate::config::AuthMethod::OAuth => crate::auth::ensure_fresh_token(&profile_name).await?,
         crate::config::AuthMethod::ApiKey => {
@@ -162,6 +164,20 @@ async fn run_once(
     Ok(outcome)
 }
 
+fn ensure_supported_scan_auth(
+    profile_name: &str,
+    profile: &crate::config::ProviderProfile,
+) -> Result<()> {
+    if matches!(profile.auth_method, crate::config::AuthMethod::OAuth) {
+        anyhow::bail!(
+            "Profile '{}' uses legacy OpenAI browser login. OpenAI profiles now require an API key. Run 'zentra config setup' and reconfigure this profile with an API key.",
+            profile_name
+        );
+    }
+
+    Ok(())
+}
+
 fn resolve_scanners(only: Option<&str>) -> Vec<ScannerType> {
     match only {
         Some("threat-model") => vec![ScannerType::ThreatModel, ScannerType::Report],
@@ -197,4 +213,30 @@ fn current_project_name() -> String {
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_else(|| "project".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{AuthMethod, ProviderProfile};
+
+    #[test]
+    fn rejects_saved_oauth_profiles_at_scan_startup() {
+        let profile = ProviderProfile {
+            kind: "openai_compat".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4o".to_string(),
+            keyless: false,
+            auth_method: AuthMethod::OAuth,
+            context_window: None,
+        };
+
+        let err = ensure_supported_scan_auth("openai", &profile).unwrap_err();
+        let msg = err.to_string();
+
+        assert!(msg.contains("legacy OpenAI browser login"), "got: {msg}");
+        assert!(msg.contains("now require an API key"), "got: {msg}");
+        assert!(msg.contains("zentra config setup"), "got: {msg}");
+        assert!(msg.contains("API key"), "got: {msg}");
+    }
 }

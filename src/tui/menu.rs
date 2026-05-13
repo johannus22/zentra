@@ -101,6 +101,7 @@ pub struct OAuthModalState {
     pub error: Option<String>,
 }
 
+#[allow(dead_code)]
 enum OAuthModalEvent {
     BrowserLaunchFailed(String),
     Phase(OAuthModalPhase),
@@ -152,36 +153,20 @@ impl std::fmt::Debug for ProviderFormState {
 }
 
 impl ProviderFormState {
-    fn is_openai_provider(&self) -> bool {
-        KNOWN_PROVIDER_NAMES[self.provider_idx] == "openai"
-    }
-
     fn auth_field_idx(&self) -> Option<usize> {
-        self.is_openai_provider().then_some(3)
+        None
     }
 
     fn api_key_field_idx(&self) -> usize {
-        if self.is_openai_provider() {
-            4
-        } else {
-            3
-        }
+        3
     }
 
     fn profile_name_field_idx(&self) -> usize {
-        if self.is_openai_provider() {
-            5
-        } else {
-            4
-        }
+        4
     }
 
     fn save_field_idx(&self) -> usize {
-        if self.is_openai_provider() {
-            6
-        } else {
-            5
-        }
+        5
     }
 
     fn field_count(&self) -> usize {
@@ -190,7 +175,7 @@ impl ProviderFormState {
 
     fn requires_api_key(&self) -> bool {
         let d = provider_defaults(KNOWN_PROVIDER_NAMES[self.provider_idx]);
-        !d.keyless && !(self.is_openai_provider() && self.auth_method == AuthMethod::OAuth)
+        !d.keyless
     }
 
     pub fn cycle_provider(&mut self, delta: isize) {
@@ -208,14 +193,9 @@ impl ProviderFormState {
     }
 
     pub fn cycle_auth_method(&mut self, delta: isize) {
-        if !self.is_openai_provider() || delta == 0 {
+        if delta == 0 {
             return;
         }
-
-        self.auth_method = match self.auth_method {
-            AuthMethod::ApiKey => AuthMethod::OAuth,
-            AuthMethod::OAuth => AuthMethod::ApiKey,
-        };
         self.error = None;
     }
 
@@ -319,7 +299,7 @@ impl ProviderFormState {
     pub fn save_with_oauth_to_path<RunOAuth, StoreOAuth>(
         &self,
         config_path: &std::path::Path,
-        run_oauth: RunOAuth,
+        _run_oauth: RunOAuth,
         store_oauth: StoreOAuth,
     ) -> anyhow::Result<String>
     where
@@ -330,7 +310,7 @@ impl ProviderFormState {
 
         self.save_with_oauth_to_path_using(
             config_path,
-            run_oauth,
+            _run_oauth,
             store_oauth,
             |profile_name| keychain::delete_oauth_tokens(profile_name),
             |profile_name, api_key| keychain::set_key(profile_name, api_key).map(|_| ()),
@@ -347,7 +327,7 @@ impl ProviderFormState {
     >(
         &self,
         config_path: &std::path::Path,
-        run_oauth: RunOAuth,
+        _run_oauth: RunOAuth,
         store_oauth: StoreOAuth,
         delete_oauth: DeleteOAuth,
         store_key: StoreKey,
@@ -367,22 +347,14 @@ impl ProviderFormState {
 
         let d = provider_defaults(KNOWN_PROVIDER_NAMES[self.provider_idx]);
         let cw = model_context_window(&self.model);
-        let oauth_tokens = if self.is_openai_provider() && self.auth_method == AuthMethod::OAuth {
-            Some(run_oauth()?)
-        } else {
-            None
-        };
+        let oauth_tokens = None;
 
         let profile = ProviderProfile {
             kind: d.kind.clone(),
             base_url: self.base_url.clone(),
             model: self.model.clone(),
             keyless: d.keyless,
-            auth_method: if self.is_openai_provider() {
-                self.auth_method.clone()
-            } else {
-                AuthMethod::ApiKey
-            },
+            auth_method: AuthMethod::ApiKey,
             context_window: Some(cw),
         };
 
@@ -612,6 +584,7 @@ impl MenuState {
         self.screen = MenuScreen::ProviderForm;
     }
 
+    #[allow(dead_code)]
     fn start_oauth_modal_save(&mut self) -> Result<()> {
         self.form.validate()?;
 
@@ -862,16 +835,14 @@ fn run_menu_loop(
                         KeyCode::Left => {
                             if state.form.focused_field == 0 {
                                 state.form.cycle_provider(-1);
-                            } else if state.form.auth_field_idx() == Some(state.form.focused_field)
-                            {
+                            } else if state.form.auth_field_idx() == Some(state.form.focused_field) {
                                 state.form.cycle_auth_method(-1);
                             }
                         }
                         KeyCode::Right => {
                             if state.form.focused_field == 0 {
                                 state.form.cycle_provider(1);
-                            } else if state.form.auth_field_idx() == Some(state.form.focused_field)
-                            {
+                            } else if state.form.auth_field_idx() == Some(state.form.focused_field) {
                                 state.form.cycle_auth_method(1);
                             }
                         }
@@ -889,17 +860,9 @@ fn run_menu_loop(
                         }
                         KeyCode::Enter => {
                             if state.form.focused_field == state.form.save_field_idx() {
-                                if state.form.is_openai_provider()
-                                    && state.form.auth_method == AuthMethod::OAuth
-                                {
-                                    if let Err(err) = state.start_oauth_modal_save() {
-                                        state.form.error = Some(err.to_string());
-                                    }
-                                } else {
-                                    match state.form.save() {
-                                        Ok(name) => return Ok(MenuAction::ProviderAdded(name)),
-                                        Err(e) => state.form.error = Some(e.to_string()),
-                                    }
+                                match state.form.save() {
+                                    Ok(name) => return Ok(MenuAction::ProviderAdded(name)),
+                                    Err(e) => state.form.error = Some(e.to_string()),
                                 }
                             } else {
                                 state.form.next_field();
@@ -1197,7 +1160,7 @@ fn render_provider_selector(frame: &mut Frame, area: ratatui::layout::Rect, stat
 fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
     let form = &state.form;
     let provider_name = KNOWN_PROVIDER_NAMES[form.provider_idx];
-    let form_height = if form.is_openai_provider() { 14 } else { 13 };
+    let form_height = 13;
 
     let field_style = |field_idx: usize| -> Style {
         if form.focused_field == field_idx {
@@ -1281,31 +1244,7 @@ fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &
         ]),
     ];
 
-    if let Some(auth_field_idx) = form.auth_field_idx() {
-        let auth_label = match form.auth_method {
-            AuthMethod::ApiKey => "◀ API Key ▶",
-            AuthMethod::OAuth => "◀ OAuth Login ▶",
-        };
-        fields.push(Line::from(vec![
-            Span::raw(if form.focused_field == auth_field_idx {
-                "▶ "
-            } else {
-                "  "
-            }),
-            Span::styled("Auth       ", field_style(auth_field_idx)),
-            Span::styled(
-                format!("{auth_label:<width$}", width = max_field_width),
-                field_style(auth_field_idx),
-            ),
-        ]));
-    }
-
     let api_key_field_idx = form.api_key_field_idx();
-    let api_key_value = if form.is_openai_provider() && form.auth_method == AuthMethod::OAuth {
-        "(not used with OAuth)".to_string()
-    } else {
-        form.masked_key()
-    };
     fields.push(Line::from(vec![
         Span::raw(if form.focused_field == api_key_field_idx {
             "▶ "
@@ -1316,7 +1255,7 @@ fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &
         Span::styled(
             format!(
                 "{:width$}",
-                clip_with_ellipsis(&api_key_value, max_field_width),
+                clip_with_ellipsis(&form.masked_key(), max_field_width),
                 width = max_field_width
             ),
             field_style(api_key_field_idx),

@@ -104,7 +104,6 @@ impl From<&CustomProvider> for ProviderDefaults {
 
 pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     use crate::{
-        auth,
         config::{keychain, AuthMethod, GlobalConfig, ProviderProfile},
         provider,
     };
@@ -160,13 +159,13 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     io::stdin().read_line(&mut input)?;
     let idx = input.trim().parse::<usize>().unwrap_or(1).saturating_sub(1);
 
-    let (defaults, is_openai, default_profile_name) = if idx < PROVIDERS.len() {
+    let (defaults, default_profile_name) = if idx < PROVIDERS.len() {
         let key = PROVIDERS[idx];
-        (provider_defaults(key), key == "openai", key.to_string())
+        (provider_defaults(key), key.to_string())
     } else {
         match valid_customs.get(idx - PROVIDERS.len()) {
-            Some(cp) => (ProviderDefaults::from(*cp), false, cp.name.clone()),
-            None => (provider_defaults("openai"), false, "openai".to_string()),
+            Some(cp) => (ProviderDefaults::from(*cp), cp.name.clone()),
+            None => (provider_defaults("openai"), "openai".to_string()),
         }
     };
 
@@ -209,32 +208,8 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     io::stdin().read_line(&mut cw_input)?;
     let context_window: Option<u32> = cw_input.trim().parse().ok();
 
-    // Auth method — only for OpenAI
-    let (auth_method, api_key_opt) = if is_openai {
-        println!("\nAuth method:");
-        println!("  1. API Key");
-        println!("  2. Login with browser (ChatGPT / OpenAI subscription)");
-        print!("Selection [1]: ");
-        io::stdout().flush()?;
-        let mut am_input = String::new();
-        io::stdin().read_line(&mut am_input)?;
-        let am_idx = am_input.trim().parse::<usize>().unwrap_or(1);
-
-        if am_idx == 2 {
-            (AuthMethod::OAuth, None)
-        } else {
-            print!("API Key (hidden): ");
-            io::stdout().flush()?;
-            let key = rpassword::read_password()?;
-            if key.is_empty() {
-                println!("\n✗ API key cannot be empty.");
-                println!("Aborted.");
-                return Ok(());
-            }
-            (AuthMethod::ApiKey, Some(key))
-        }
-    } else if defaults.keyless {
-        (AuthMethod::ApiKey, None)
+    let api_key_opt = if defaults.keyless {
+        None
     } else {
         print!("API Key (hidden): ");
         io::stdout().flush()?;
@@ -244,24 +219,12 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
             println!("Aborted.");
             return Ok(());
         }
-        (AuthMethod::ApiKey, Some(key))
+        Some(key)
     };
+    let auth_method = AuthMethod::ApiKey;
 
     let name = profile_name.unwrap_or(default_profile_name);
-
-    // For OAuth: run browser flow now, before saving profile
-    let oauth_tokens = if auth_method == AuthMethod::OAuth {
-        Some(auth::run_oauth_flow().await?)
-    } else {
-        None
-    };
-
-    // Connection test using resolved credential
-    let test_key = match (&oauth_tokens, &api_key_opt) {
-        (Some(t), _) => t.access_token.clone(),
-        (_, Some(k)) => k.clone(),
-        _ => String::new(),
-    };
+    let test_key = api_key_opt.clone().unwrap_or_default();
 
     println!("\nTesting connection...");
     let test_provider: Box<dyn provider::LLMProvider> = if defaults.kind == "anthropic" {
@@ -333,10 +296,7 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
         global.default_profile = Some(name.clone());
     }
 
-    if let Some(ref tokens) = oauth_tokens {
-        keychain::set_oauth_tokens(&name, tokens)?;
-        println!("✓ OAuth tokens saved to OS keychain");
-    } else if let Some(ref key) = api_key_opt {
+    if let Some(ref key) = api_key_opt {
         match keychain::set_key(&name, key)? {
             keychain::KeyStorage::Keychain => {
                 println!("✓ API key saved to OS keychain (never written to disk)");
