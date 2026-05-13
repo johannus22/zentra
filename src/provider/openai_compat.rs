@@ -15,12 +15,16 @@ impl OpenAICompatProvider {
         Self { base_url, model, api_key, client: reqwest::Client::new() }
     }
 
+    fn chat_completions_url(&self) -> String {
+        chat_completions_url(&self.base_url)
+    }
+
     async fn post_chat(
         &self,
         body: serde_json::Value,
         cancel_token: Option<&CancellationToken>,
     ) -> Result<serde_json::Value> {
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let url = self.chat_completions_url();
         let request = self.client.post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
@@ -49,6 +53,15 @@ impl OpenAICompatProvider {
         }
 
         Ok(resp.json().await?)
+    }
+}
+
+pub(crate) fn chat_completions_url(base_url: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    if trimmed.ends_with("/chat/completions") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/chat/completions")
     }
 }
 
