@@ -48,5 +48,11 @@ Be precise — if you cannot determine something, write \"Not identified\" rathe
 }
 
 pub fn allowed_tools() -> &'static [&'static str] {
-    &["read_file", "list_files", "grep_code", "write_architecture", "write_finding"]
+    &[
+        "read_file",
+        "list_files",
+        "grep_code",
+        "write_architecture",
+        "write_finding",
+    ]
 }

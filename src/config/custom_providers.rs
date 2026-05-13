@@ -57,23 +57,35 @@ impl CustomProvidersFile {
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("⚠ {}: read error — skipping custom providers ({})", path.display(), e);
+                eprintln!(
+                    "⚠ {}: read error — skipping custom providers ({})",
+                    path.display(),
+                    e
+                );
                 return Self::default();
             }
         };
         let mut file: Self = match toml::from_str(&content) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("⚠ {}: parse error — skipping custom providers ({})", path.display(), e);
+                eprintln!(
+                    "⚠ {}: parse error — skipping custom providers ({})",
+                    path.display(),
+                    e
+                );
                 return Self::default();
             }
         };
         file.providers.retain(|p| {
-            let ok = !p.name.is_empty() && !p.base_url.is_empty() && !p.default_model.is_empty() && !p.kind.is_empty();
+            let ok = !p.name.is_empty()
+                && !p.base_url.is_empty()
+                && !p.default_model.is_empty()
+                && !p.kind.is_empty();
             if !ok {
                 eprintln!(
                     "⚠ {}: provider '{}' missing required field — skipped",
-                    path.display(), p.name
+                    path.display(),
+                    p.name
                 );
             }
             ok
@@ -82,7 +94,9 @@ impl CustomProvidersFile {
             if p.kind != "openai_compat" && p.kind != "anthropic" {
                 eprintln!(
                     "⚠ {}: provider '{}' has unrecognized kind '{}', treating as openai_compat",
-                    path.display(), p.name, p.kind
+                    path.display(),
+                    p.name,
+                    p.kind
                 );
                 p.kind = "openai_compat".to_string();
             }

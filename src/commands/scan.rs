@@ -1,21 +1,20 @@
-﻿use anyhow::{Context, Result};
+use anyhow::{Context, Result};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::agent::{orchestrator::OrchestratorAgent, ScannerType};
 use crate::config::{keychain, GlobalConfig, ProjectConfig};
-use crate::provider::{anthropic::AnthropicProvider, openai_compat::OpenAICompatProvider, LLMProvider};
+use crate::provider::{
+    anthropic::AnthropicProvider, openai_compat::OpenAICompatProvider, LLMProvider,
+};
 use crate::state::StateWriter;
 use crate::tools::ToolRegistry;
 use crate::tui::{scan_ui::run_scan_ui, ScanOutcome};
 use crate::wizard;
 use tokio_util::sync::CancellationToken;
 
-pub async fn run(
-    provider_override: Option<String>,
-    only: Option<String>,
-) -> Result<()> {
+pub async fn run(provider_override: Option<String>, only: Option<String>) -> Result<()> {
     let scanners = resolve_scanners(only.as_deref());
     let mut provider_override = provider_override;
     loop {
@@ -55,36 +54,42 @@ async fn run_once(
     let global = GlobalConfig::load()?;
     let profile_name = provider_override
         .or_else(|| global.default_profile.clone())
-        .ok_or_else(|| anyhow::anyhow!(
-            "No provider configured. Run 'zentra config setup' first."
-        ))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("No provider configured. Run 'zentra config setup' first.")
+        })?;
 
-    let profile = global.profiles.get(&profile_name)
+    let profile = global
+        .profiles
+        .get(&profile_name)
         .ok_or_else(|| anyhow::anyhow!("Profile '{}' not found", profile_name))?
         .clone();
 
     let api_key = match profile.auth_method {
-        crate::config::AuthMethod::OAuth => {
-            crate::auth::ensure_fresh_token(&profile_name).await?
-        }
+        crate::config::AuthMethod::OAuth => crate::auth::ensure_fresh_token(&profile_name).await?,
         crate::config::AuthMethod::ApiKey => {
             if profile.keyless {
                 keychain::get_key(&profile_name)?.unwrap_or_default()
             } else {
-                keychain::get_key(&profile_name)?.ok_or_else(|| anyhow::anyhow!(
+                keychain::get_key(&profile_name)?.ok_or_else(|| {
+                    anyhow::anyhow!(
                     "No API key found for profile '{}'. Run 'zentra config setup' to configure it.",
                     profile_name
-                ))?
+                )
+                })?
             }
         }
     };
 
     let provider: Arc<dyn LLMProvider> = match profile.kind.as_str() {
         "anthropic" => Arc::new(AnthropicProvider::new(
-            profile.base_url.clone(), profile.model.clone(), api_key,
+            profile.base_url.clone(),
+            profile.model.clone(),
+            api_key,
         )),
         _ => Arc::new(OpenAICompatProvider::new(
-            profile.base_url.clone(), profile.model.clone(), api_key,
+            profile.base_url.clone(),
+            profile.model.clone(),
+            api_key,
         )),
     };
 
@@ -93,7 +98,7 @@ async fn run_once(
 
     let state_writer = Arc::new(
         StateWriter::new(Path::new(&project_config.target_path))
-            .context("Failed to initialize .zentra/ directory")?
+            .context("Failed to initialize .zentra/ directory")?,
     );
     let tool_registry = Arc::new(ToolRegistry::new());
 
@@ -120,14 +125,28 @@ async fn run_once(
     let token_for_orchestrator = cancel_token.clone();
 
     let scan_task = tokio::spawn(async move {
-        OrchestratorAgent::new(provider, tool_registry, state_writer, tx, token_for_orchestrator)
-            .run(&scanners_for_agent)
-            .await
+        OrchestratorAgent::new(
+            provider,
+            tool_registry,
+            state_writer,
+            tx,
+            token_for_orchestrator,
+        )
+        .run(&scanners_for_agent)
+        .await
     });
 
     let outcome = run_scan_ui(
-        rx, scanners_with_framework, model_info, context_window, token_for_ui, profiles, branch, project_name,
-    ).await?;
+        rx,
+        scanners_with_framework,
+        model_info,
+        context_window,
+        token_for_ui,
+        profiles,
+        branch,
+        project_name,
+    )
+    .await?;
 
     match outcome {
         ScanOutcome::Completed => {

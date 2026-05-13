@@ -6,7 +6,9 @@ pub async fn run() -> Result<()> {
     let cwd = std::env::current_dir()?;
 
     if !ProjectConfig::looks_like_codebase(&cwd) {
-        eprint!("⚠ This directory doesn't look like a project codebase. Initialize anyway? [y/N]: ");
+        eprint!(
+            "⚠ This directory doesn't look like a project codebase. Initialize anyway? [y/N]: "
+        );
         let mut input = String::new();
         std::io::stdin().read_line(&mut input)?;
         if !input.trim().eq_ignore_ascii_case("y") {

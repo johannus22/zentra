@@ -12,7 +12,12 @@ pub struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(base_url: String, model: String, api_key: String) -> Self {
-        Self { base_url, model, api_key, client: reqwest::Client::new() }
+        Self {
+            base_url,
+            model,
+            api_key,
+            client: reqwest::Client::new(),
+        }
     }
 
     async fn post_messages(
@@ -21,7 +26,9 @@ impl AnthropicProvider {
         cancel_token: Option<&CancellationToken>,
     ) -> Result<serde_json::Value> {
         let url = format!("{}/messages", self.base_url.trim_end_matches('/'));
-        let request = self.client.post(&url)
+        let request = self
+            .client
+            .post(&url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
@@ -40,7 +47,9 @@ impl AnthropicProvider {
                 }
             }
         } else {
-            self.client.execute(request).await
+            self.client
+                .execute(request)
+                .await
                 .context("HTTP request to Anthropic failed")?
         };
 
@@ -55,22 +64,29 @@ impl AnthropicProvider {
 }
 
 fn parse_anthropic_response(json: &serde_json::Value) -> Result<CompletionResponse> {
-    let blocks = json["content"].as_array()
+    let blocks = json["content"]
+        .as_array()
         .ok_or_else(|| anyhow::anyhow!("Anthropic response missing content array"))?;
 
-    let content = blocks.iter()
+    let content = blocks
+        .iter()
         .find(|b| b["type"] == "text")
         .and_then(|b| b["text"].as_str())
         .unwrap_or("")
         .to_string();
 
-    let tool_calls: Vec<ToolCall> = blocks.iter()
+    let tool_calls: Vec<ToolCall> = blocks
+        .iter()
         .filter(|b| b["type"] == "tool_use")
         .filter_map(|b| {
             let id = b["id"].as_str()?.to_string();
             let name = b["name"].as_str()?.to_string();
             let arguments = b["input"].clone();
-            Some(ToolCall { id, name, arguments })
+            Some(ToolCall {
+                id,
+                name,
+                arguments,
+            })
         })
         .collect();
 
@@ -79,7 +95,11 @@ fn parse_anthropic_response(json: &serde_json::Value) -> Result<CompletionRespon
     Ok(CompletionResponse {
         content,
         tool_calls,
-        usage: TokenUsage { input_tokens: input, output_tokens: output, total_tokens: input + output },
+        usage: TokenUsage {
+            input_tokens: input,
+            output_tokens: output,
+            total_tokens: input + output,
+        },
     })
 }
 
@@ -109,7 +129,10 @@ impl LLMProvider for AnthropicProvider {
         for msg in messages {
             let entry = match msg {
                 AgentMessage::User(s) => serde_json::json!({"role": "user", "content": s}),
-                AgentMessage::Assistant { content, tool_calls } => {
+                AgentMessage::Assistant {
+                    content,
+                    tool_calls,
+                } => {
                     let mut blocks: Vec<serde_json::Value> = Vec::new();
                     if !content.is_empty() {
                         blocks.push(serde_json::json!({"type": "text", "text": content}));
@@ -142,13 +165,16 @@ impl LLMProvider for AnthropicProvider {
             wire_messages.push(entry);
         }
 
-        let wire_tools: Vec<serde_json::Value> = tools.iter().map(|t| {
-            serde_json::json!({
-                "name": t.name,
-                "description": t.description,
-                "input_schema": t.parameters
+        let wire_tools: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name,
+                    "description": t.description,
+                    "input_schema": t.parameters
+                })
             })
-        }).collect();
+            .collect();
 
         let mut body = serde_json::json!({
             "model": self.model,
@@ -174,5 +200,7 @@ impl LLMProvider for AnthropicProvider {
             200_000
         }
     }
-    fn model_name(&self) -> &str { &self.model }
+    fn model_name(&self) -> &str {
+        &self.model
+    }
 }

@@ -1,15 +1,16 @@
 use crate::agent::ScannerType;
+use crate::config::AuthMethod;
 use crate::wizard::{provider_defaults, KNOWN_PROVIDER_NAMES};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use ratatui::layout::Alignment;
 use ratatui::{
-    layout::{Constraint, Layout},
+    layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, List, ListItem, Paragraph},
     Frame,
 };
-use ratatui::layout::Alignment;
 use std::time::Duration;
 
 pub fn clip_with_ellipsis(s: &str, max_width: usize) -> String {
@@ -23,12 +24,6 @@ pub fn clip_with_ellipsis(s: &str, max_width: usize) -> String {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum MenuRow {
-    Section(&'static str),
-    Item { label: &'static str, action: usize },
-}
-
 const ACTION_RUN_FULL_SCAN: usize = 0;
 const ACTION_SELECT_SCANNERS: usize = 1;
 const ACTION_VIEW_RESULTS: usize = 2;
@@ -39,24 +34,44 @@ const ACTION_EXIT: usize = 5;
 /// Highest selectable action index in the main menu (6 items: 0–5).
 const MAX_MENU_ACTION: usize = 5;
 
-const MAIN_MENU_ROWS: &[MenuRow] = &[
-    MenuRow::Section("SCAN"),
-    MenuRow::Item { label: "Run Full Scan",      action: ACTION_RUN_FULL_SCAN },
-    MenuRow::Item { label: "Select Scanners",    action: ACTION_SELECT_SCANNERS },
-    MenuRow::Item { label: "View Last Results",  action: ACTION_VIEW_RESULTS },
-    MenuRow::Section("PROVIDER"),
-    MenuRow::Item { label: "Change Provider",    action: ACTION_CHANGE_PROVIDER },
-    MenuRow::Item { label: "Add Provider",       action: ACTION_ADD_PROVIDER },
-    MenuRow::Section("APP"),
-    MenuRow::Item { label: "Exit",               action: ACTION_EXIT },
-];
+pub fn main_menu_actions() -> &'static [&'static str] {
+    &[
+        "Run Full Scan",
+        "Select Scanners",
+        "View Last Results",
+        "Change Provider",
+        "Add Provider",
+        "Exit",
+    ]
+}
+
+pub fn centered_middle_column(area: Rect) -> Rect {
+    Layout::horizontal([
+        Constraint::Percentage(30),
+        Constraint::Percentage(40),
+        Constraint::Percentage(30),
+    ])
+    .split(area)[1]
+}
+
+pub fn scanner_selector_footer_hint() -> &'static str {
+    " Space toggle · Enter run · Esc back"
+}
+
+pub fn provider_selector_footer_hint(state: &MenuState) -> &'static str {
+    if state.pending_delete_profile.is_some() {
+        " d again confirm delete · ↑↓ move cancel · Esc back"
+    } else {
+        " ↑↓ navigate · Enter select · d delete · Esc back"
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum MenuAction {
     RunScan(Vec<ScannerType>),
     ViewLastResults,
-    ChangeProvider(String),   // profile name — from ProviderSelector
-    ProviderAdded(String),    // newly created profile name — from ProviderForm
+    ChangeProvider(String), // profile name — from ProviderSelector
+    ProviderAdded(String),  // newly created profile name — from ProviderForm
     Exit,
 }
 
@@ -73,9 +88,10 @@ pub struct ProviderFormState {
     pub provider_idx: usize,
     pub model: String,
     pub base_url: String,
+    pub auth_method: AuthMethod,
     pub api_key: String,
     pub profile_name: String,
-    pub focused_field: usize,  // 0=provider, 1=model, 2=base_url, 3=api_key, 4=name, 5=save
+    pub focused_field: usize,
     pub error: Option<String>,
 }
 
@@ -87,6 +103,7 @@ impl Default for ProviderFormState {
             provider_idx: 0,
             model: d.models.first().cloned().unwrap_or_default(),
             base_url: d.base_url,
+            auth_method: AuthMethod::ApiKey,
             api_key: String::new(),
             profile_name: name.to_string(),
             focused_field: 0,
@@ -101,6 +118,7 @@ impl std::fmt::Debug for ProviderFormState {
             .field("provider_idx", &self.provider_idx)
             .field("model", &self.model)
             .field("base_url", &self.base_url)
+            .field("auth_method", &self.auth_method)
             .field("api_key", &"[REDACTED]")
             .field("profile_name", &self.profile_name)
             .field("focused_field", &self.focused_field)
@@ -110,6 +128,47 @@ impl std::fmt::Debug for ProviderFormState {
 }
 
 impl ProviderFormState {
+    fn is_openai_provider(&self) -> bool {
+        KNOWN_PROVIDER_NAMES[self.provider_idx] == "openai"
+    }
+
+    fn auth_field_idx(&self) -> Option<usize> {
+        self.is_openai_provider().then_some(3)
+    }
+
+    fn api_key_field_idx(&self) -> usize {
+        if self.is_openai_provider() {
+            4
+        } else {
+            3
+        }
+    }
+
+    fn profile_name_field_idx(&self) -> usize {
+        if self.is_openai_provider() {
+            5
+        } else {
+            4
+        }
+    }
+
+    fn save_field_idx(&self) -> usize {
+        if self.is_openai_provider() {
+            6
+        } else {
+            5
+        }
+    }
+
+    fn field_count(&self) -> usize {
+        self.save_field_idx() + 1
+    }
+
+    fn requires_api_key(&self) -> bool {
+        let d = provider_defaults(KNOWN_PROVIDER_NAMES[self.provider_idx]);
+        !d.keyless && !(self.is_openai_provider() && self.auth_method == AuthMethod::OAuth)
+    }
+
     pub fn cycle_provider(&mut self, delta: isize) {
         let len = KNOWN_PROVIDER_NAMES.len() as isize;
         let new_idx = ((self.provider_idx as isize + delta).rem_euclid(len)) as usize;
@@ -118,26 +177,56 @@ impl ProviderFormState {
         let d = provider_defaults(name);
         self.model = d.models.first().cloned().unwrap_or_default();
         self.base_url = d.base_url;
+        self.auth_method = AuthMethod::ApiKey;
         self.profile_name = name.to_string();
+        self.focused_field = self.focused_field.min(self.save_field_idx());
         self.error = None;
+    }
+
+    pub fn cycle_auth_method(&mut self, delta: isize) {
+        if !self.is_openai_provider() || delta == 0 {
+            return;
+        }
+
+        self.auth_method = match self.auth_method {
+            AuthMethod::ApiKey => AuthMethod::OAuth,
+            AuthMethod::OAuth => AuthMethod::ApiKey,
+        };
+        self.error = None;
+    }
+
+    pub fn next_field(&mut self) {
+        self.focused_field = (self.focused_field + 1) % self.field_count();
+    }
+
+    pub fn prev_field(&mut self) {
+        self.focused_field = self.focused_field.saturating_sub(1);
     }
 
     pub fn append_char(&mut self, c: char) {
         match self.focused_field {
             1 => self.model.push(c),
             2 => self.base_url.push(c),
-            3 => self.api_key.push(c),
-            4 => self.profile_name.push(c),
+            field if field == self.api_key_field_idx() => self.api_key.push(c),
+            field if field == self.profile_name_field_idx() => self.profile_name.push(c),
             _ => {}
         }
     }
 
     pub fn backspace(&mut self) {
         match self.focused_field {
-            1 => { self.model.pop(); }
-            2 => { self.base_url.pop(); }
-            3 => { self.api_key.pop(); }
-            4 => { self.profile_name.pop(); }
+            1 => {
+                self.model.pop();
+            }
+            2 => {
+                self.base_url.pop();
+            }
+            field if field == self.api_key_field_idx() => {
+                self.api_key.pop();
+            }
+            field if field == self.profile_name_field_idx() => {
+                self.profile_name.pop();
+            }
             _ => {}
         }
     }
@@ -146,7 +235,11 @@ impl ProviderFormState {
         if self.api_key.len() <= 6 {
             "*".repeat(self.api_key.len())
         } else {
-            format!("{}{}", &self.api_key[..6], "*".repeat(self.api_key.len() - 6))
+            format!(
+                "{}{}",
+                &self.api_key[..6],
+                "*".repeat(self.api_key.len() - 6)
+            )
         }
     }
 
@@ -155,47 +248,97 @@ impl ProviderFormState {
             anyhow::bail!("Profile name cannot be empty");
         }
         // Prevent path traversal: only allow alphanumeric, hyphen, underscore
-        if !self.profile_name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
-            anyhow::bail!("Profile name may only contain letters, numbers, hyphens, and underscores");
+        if !self
+            .profile_name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        {
+            anyhow::bail!(
+                "Profile name may only contain letters, numbers, hyphens, and underscores"
+            );
         }
         if self.model.trim().is_empty() {
             anyhow::bail!("Model cannot be empty");
         }
-        let d = provider_defaults(KNOWN_PROVIDER_NAMES[self.provider_idx]);
-        if !d.keyless && self.api_key.trim().is_empty() {
+        if self.requires_api_key() && self.api_key.trim().is_empty() {
             anyhow::bail!("API key cannot be empty for this provider");
         }
         Ok(())
     }
 
     pub fn save(&self) -> anyhow::Result<String> {
-        use crate::config::{keychain, AuthMethod, GlobalConfig, ProviderProfile};
+        use crate::config::keychain;
+
+        self.save_with_oauth(
+            || match tokio::runtime::Handle::try_current() {
+                Ok(handle) => handle.block_on(crate::auth::run_oauth_flow()),
+                Err(_) => tokio::runtime::Runtime::new()?.block_on(crate::auth::run_oauth_flow()),
+            },
+            |profile_name, tokens| keychain::set_oauth_tokens(profile_name, tokens),
+        )
+    }
+
+    pub fn save_with_oauth<RunOAuth, StoreOAuth>(
+        &self,
+        run_oauth: RunOAuth,
+        store_oauth: StoreOAuth,
+    ) -> anyhow::Result<String>
+    where
+        RunOAuth: FnOnce() -> anyhow::Result<crate::auth::OAuthTokens>,
+        StoreOAuth: FnOnce(&str, &crate::auth::OAuthTokens) -> anyhow::Result<()>,
+    {
+        let config_path = crate::config::GlobalConfig::default_path()?;
+        self.save_with_oauth_to_path(&config_path, run_oauth, store_oauth)
+    }
+
+    pub fn save_with_oauth_to_path<RunOAuth, StoreOAuth>(
+        &self,
+        config_path: &std::path::Path,
+        run_oauth: RunOAuth,
+        store_oauth: StoreOAuth,
+    ) -> anyhow::Result<String>
+    where
+        RunOAuth: FnOnce() -> anyhow::Result<crate::auth::OAuthTokens>,
+        StoreOAuth: FnOnce(&str, &crate::auth::OAuthTokens) -> anyhow::Result<()>,
+    {
+        use crate::config::{keychain, GlobalConfig, ProviderProfile};
         use crate::wizard::model_context_window;
 
         self.validate()?;
 
         let d = provider_defaults(KNOWN_PROVIDER_NAMES[self.provider_idx]);
         let cw = model_context_window(&self.model);
+        let oauth_tokens = if self.is_openai_provider() && self.auth_method == AuthMethod::OAuth {
+            Some(run_oauth()?)
+        } else {
+            None
+        };
 
         let profile = ProviderProfile {
             kind: d.kind.clone(),
             base_url: self.base_url.clone(),
             model: self.model.clone(),
             keyless: d.keyless,
-            auth_method: AuthMethod::ApiKey,
+            auth_method: if self.is_openai_provider() {
+                self.auth_method.clone()
+            } else {
+                AuthMethod::ApiKey
+            },
             context_window: Some(cw),
         };
 
-        let mut global = GlobalConfig::load()?;
+        if let Some(ref tokens) = oauth_tokens {
+            store_oauth(&self.profile_name, tokens)?;
+        } else if !d.keyless && !self.api_key.is_empty() {
+            keychain::set_key(&self.profile_name, &self.api_key)?;
+        }
+
+        let mut global = GlobalConfig::load_from(config_path)?;
         global.profiles.insert(self.profile_name.clone(), profile);
         if global.default_profile.is_none() {
             global.default_profile = Some(self.profile_name.clone());
         }
-        global.save()?;
-
-        if !d.keyless && !self.api_key.is_empty() {
-            keychain::set_key(&self.profile_name, &self.api_key)?;
-        }
+        global.save_to(config_path)?;
 
         Ok(self.profile_name.clone())
     }
@@ -210,8 +353,11 @@ pub struct MenuState {
     pub project_configured: bool,
     pub active_model: String,
     pub active_profile: String,
+    pub default_profile: String,
     pub profiles: Vec<(String, String)>,
     pub provider_idx: usize,
+    pub pending_delete_profile: Option<String>,
+    pub provider_error: Option<String>,
     pub form: ProviderFormState,
     pub project_name: String,
     pub branch_name: String,
@@ -235,9 +381,12 @@ impl MenuState {
             provider_configured,
             project_configured,
             active_model,
+            default_profile: active_profile.clone(),
             active_profile,
             profiles,
             provider_idx: 0,
+            pending_delete_profile: None,
+            provider_error: None,
             form: ProviderFormState::default(),
             project_name,
             branch_name,
@@ -264,8 +413,11 @@ impl MenuState {
     pub fn is_item_enabled(&self, idx: usize) -> bool {
         match idx {
             i if i == ACTION_RUN_FULL_SCAN
-              || i == ACTION_SELECT_SCANNERS
-              || i == ACTION_CHANGE_PROVIDER => self.provider_configured,
+                || i == ACTION_SELECT_SCANNERS
+                || i == ACTION_CHANGE_PROVIDER =>
+            {
+                self.provider_configured
+            }
             _ => true,
         }
     }
@@ -294,6 +446,59 @@ impl MenuState {
         result.push(ScannerType::Report);
         result
     }
+
+    fn clear_provider_selector_messages(&mut self) {
+        self.pending_delete_profile = None;
+        self.provider_error = None;
+    }
+
+    pub fn provider_selector_move_up(&mut self) {
+        self.clear_provider_selector_messages();
+        if self.provider_idx > 0 {
+            self.provider_idx -= 1;
+        }
+    }
+
+    pub fn provider_selector_move_down(&mut self) {
+        self.clear_provider_selector_messages();
+        if self.provider_idx + 1 < self.profiles.len() {
+            self.provider_idx += 1;
+        }
+    }
+
+    pub fn provider_selector_escape(&mut self) {
+        self.clear_provider_selector_messages();
+        self.screen = MenuScreen::Main;
+        self.selected_idx = ACTION_CHANGE_PROVIDER;
+    }
+
+    pub fn handle_provider_delete_key(&mut self) -> Result<bool> {
+        let Some((name, _)) = self.profiles.get(self.provider_idx).cloned() else {
+            self.clear_provider_selector_messages();
+            return Ok(false);
+        };
+
+        self.provider_error = None;
+
+        if name == self.active_profile || name == self.default_profile {
+            self.pending_delete_profile = None;
+            self.provider_error = Some("Cannot delete active provider".to_string());
+            return Ok(false);
+        }
+
+        if self.pending_delete_profile.as_deref() != Some(name.as_str()) {
+            self.pending_delete_profile = Some(name);
+            return Ok(false);
+        }
+
+        crate::commands::config::remove_profile(&name)?;
+        self.profiles.remove(self.provider_idx);
+        if self.provider_idx >= self.profiles.len() && self.provider_idx > 0 {
+            self.provider_idx -= 1;
+        }
+        self.clear_provider_selector_messages();
+        Ok(true)
+    }
 }
 
 pub async fn run_menu(
@@ -306,7 +511,15 @@ pub async fn run_menu(
     branch_name: String,
 ) -> Result<MenuAction> {
     tokio::task::spawn_blocking(move || {
-        run_menu_blocking(provider_configured, project_configured, profiles, active_model, active_profile, project_name, branch_name)
+        run_menu_blocking(
+            provider_configured,
+            project_configured,
+            profiles,
+            active_model,
+            active_profile,
+            project_name,
+            branch_name,
+        )
     })
     .await?
 }
@@ -321,11 +534,19 @@ fn run_menu_blocking(
     branch_name: String,
 ) -> Result<MenuAction> {
     debug_assert!(
-        MAIN_MENU_ROWS.iter().filter(|r| matches!(r, MenuRow::Item { .. })).count() == MAX_MENU_ACTION + 1,
-        "MAX_MENU_ACTION out of sync with MAIN_MENU_ROWS"
+        main_menu_actions().len() == MAX_MENU_ACTION + 1,
+        "MAX_MENU_ACTION out of sync with main_menu_actions()"
     );
     let mut terminal = ratatui::init();
-    let mut state = MenuState::new(provider_configured, project_configured, profiles, active_model, active_profile, project_name, branch_name);
+    let mut state = MenuState::new(
+        provider_configured,
+        project_configured,
+        profiles,
+        active_model,
+        active_profile,
+        project_name,
+        branch_name,
+    );
     let result = run_menu_loop(&mut terminal, &mut state);
     ratatui::restore();
     result
@@ -384,13 +605,19 @@ fn run_menu_loop(
                     },
                     MenuScreen::ScannerSelector => match key.code {
                         KeyCode::Up => {
-                            if state.scanner_idx > 0 { state.scanner_idx -= 1; }
+                            if state.scanner_idx > 0 {
+                                state.scanner_idx -= 1;
+                            }
                         }
                         KeyCode::Down => {
-                            if state.scanner_idx < 5 { state.scanner_idx += 1; }
+                            if state.scanner_idx < 5 {
+                                state.scanner_idx += 1;
+                            }
                         }
                         KeyCode::Char(' ') => {
-                            if state.scanner_idx < 5 { state.toggle_scanner(); }
+                            if state.scanner_idx < 5 {
+                                state.toggle_scanner();
+                            }
                         }
                         KeyCode::Enter => {
                             if state.scanner_idx == 5 {
@@ -405,43 +632,41 @@ fn run_menu_loop(
                         _ => {}
                     },
                     MenuScreen::ProviderSelector => match key.code {
-                        KeyCode::Up => {
-                            if state.provider_idx > 0 {
-                                state.provider_idx -= 1;
-                            }
-                        }
-                        KeyCode::Down => {
-                            if state.provider_idx + 1 < state.profiles.len() {
-                                state.provider_idx += 1;
-                            }
+                        KeyCode::Up => state.provider_selector_move_up(),
+                        KeyCode::Down => state.provider_selector_move_down(),
+                        KeyCode::Char('d') => {
+                            state.handle_provider_delete_key()?;
                         }
                         KeyCode::Enter => {
                             if let Some((name, _)) = state.profiles.get(state.provider_idx) {
                                 return Ok(MenuAction::ChangeProvider(name.clone()));
                             }
                         }
-                        KeyCode::Esc => {
-                            state.screen = MenuScreen::Main;
-                            state.selected_idx = ACTION_CHANGE_PROVIDER;
-                        }
+                        KeyCode::Esc => state.provider_selector_escape(),
                         _ => {}
                     },
                     MenuScreen::ProviderForm => match key.code {
                         KeyCode::Left => {
                             if state.form.focused_field == 0 {
                                 state.form.cycle_provider(-1);
+                            } else if state.form.auth_field_idx() == Some(state.form.focused_field)
+                            {
+                                state.form.cycle_auth_method(-1);
                             }
                         }
                         KeyCode::Right => {
                             if state.form.focused_field == 0 {
                                 state.form.cycle_provider(1);
+                            } else if state.form.auth_field_idx() == Some(state.form.focused_field)
+                            {
+                                state.form.cycle_auth_method(1);
                             }
                         }
                         KeyCode::Tab | KeyCode::Down => {
-                            state.form.focused_field = (state.form.focused_field + 1) % 6;
+                            state.form.next_field();
                         }
                         KeyCode::BackTab | KeyCode::Up => {
-                            state.form.focused_field = state.form.focused_field.saturating_sub(1);
+                            state.form.prev_field();
                         }
                         KeyCode::Char(c) => {
                             state.form.append_char(c);
@@ -450,13 +675,13 @@ fn run_menu_loop(
                             state.form.backspace();
                         }
                         KeyCode::Enter => {
-                            if state.form.focused_field == 5 {
+                            if state.form.focused_field == state.form.save_field_idx() {
                                 match state.form.save() {
                                     Ok(name) => return Ok(MenuAction::ProviderAdded(name)),
                                     Err(e) => state.form.error = Some(e.to_string()),
                                 }
                             } else {
-                                state.form.focused_field = (state.form.focused_field + 1) % 6;
+                                state.form.next_field();
                             }
                         }
                         KeyCode::Esc => {
@@ -492,11 +717,7 @@ fn render_banner_header(frame: &mut Frame, area: ratatui::layout::Rect, state: &
     let inner = header_block.inner(area);
     frame.render_widget(header_block, area);
 
-    let header_cols = Layout::horizontal([
-        Constraint::Min(28),
-        Constraint::Min(10),
-    ])
-    .split(inner);
+    let header_cols = Layout::horizontal([Constraint::Min(28), Constraint::Min(10)]).split(inner);
 
     let banner_para = Paragraph::new(BANNER).style(Style::default().fg(Color::Cyan));
     frame.render_widget(banner_para, header_cols[0]);
@@ -509,7 +730,8 @@ fn render_banner_header(frame: &mut Frame, area: ratatui::layout::Rect, state: &
     let project_display = state.project_name.chars().take(22).collect::<String>();
     let branch_display = state.branch_name.chars().take(22).collect::<String>();
     let provider_model = if state.provider_configured {
-        format!("{} · {}",
+        format!(
+            "{} · {}",
             state.active_profile.chars().take(10).collect::<String>(),
             state.active_model.chars().take(10).collect::<String>()
         )
@@ -519,7 +741,9 @@ fn render_banner_header(frame: &mut Frame, area: ratatui::layout::Rect, state: &
     let info = Text::from(vec![
         Line::from(vec![Span::styled(
             project_display,
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
         )]),
         Line::from(vec![Span::styled(
             format!("⎇ {}", branch_display),
@@ -548,8 +772,8 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
     let chunks = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(HEADER_HEIGHT),
-        Constraint::Min(12),     // menu list
-        Constraint::Length(1),   // key hints
+        Constraint::Min(12),   // menu list
+        Constraint::Length(1), // key hints
         Constraint::Fill(1),
     ])
     .split(area);
@@ -558,48 +782,38 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
         Constraint::Percentage(30),
         Constraint::Percentage(40),
         Constraint::Percentage(30),
-    ]).split(chunks[1])[1];
+    ])
+    .split(chunks[1])[1];
 
     render_banner_header(frame, header_center, state);
 
-    let items: Vec<ListItem> = MAIN_MENU_ROWS.iter().map(|row| {
-        match row {
-            MenuRow::Section(label) => {
-                ListItem::new(format!("  {}", label))
-                    .style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC))
-            }
-            MenuRow::Item { label, action } => {
-                let enabled = state.is_item_enabled(*action);
-                let selected = state.selected_idx == *action;
-                let prefix = if selected { "▶ " } else { "  " };
-                let style = if !enabled {
-                    Style::default().fg(Color::DarkGray)
-                } else if selected {
-                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
-                ListItem::new(format!("{}{}", prefix, label)).style(style)
-            }
-        }
-    }).collect();
+    let items: Vec<ListItem> = main_menu_actions()
+        .iter()
+        .enumerate()
+        .map(|(action, label)| {
+            let enabled = state.is_item_enabled(action);
+            let selected = state.selected_idx == action;
+            let prefix = if selected { "▶ " } else { "  " };
+            let style = if !enabled {
+                Style::default().fg(Color::DarkGray)
+            } else if selected {
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(format!("{}{}", prefix, label)).style(style)
+        })
+        .collect();
 
     let list = List::new(items).block(Block::default().borders(Borders::ALL));
-    let menu_area = Layout::horizontal([
-        Constraint::Percentage(30),
-        Constraint::Percentage(40),
-        Constraint::Percentage(30),
-    ])
-    .split(chunks[2])[1];
+    let menu_area = centered_middle_column(chunks[2]);
     frame.render_widget(list, menu_area);
 
     let keys = Paragraph::new(" ↑↓ navigate · Enter select · q quit")
         .style(Style::default().fg(Color::DarkGray));
-    let hints_center = Layout::horizontal([
-        Constraint::Percentage(30),
-        Constraint::Percentage(40),
-        Constraint::Percentage(30),
-    ]).split(chunks[3])[1];
+    let hints_center = centered_middle_column(chunks[3]);
     frame.render_widget(keys, hints_center);
 }
 
@@ -617,7 +831,8 @@ fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state
         Constraint::Percentage(30),
         Constraint::Percentage(40),
         Constraint::Percentage(30),
-    ]).split(chunks[1])[1];
+    ])
+    .split(chunks[1])[1];
     render_banner_header(frame, header_center, state);
 
     let scanner_names = [
@@ -632,7 +847,11 @@ fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state
         .iter()
         .enumerate()
         .map(|(i, (name, desc))| {
-            let check = if state.scanner_selected[i] { "✓" } else { " " };
+            let check = if state.scanner_selected[i] {
+                "✓"
+            } else {
+                " "
+            };
             let selected = state.scanner_idx == i;
             let prefix = if selected { "▶" } else { " " };
             let style = if selected {
@@ -640,19 +859,22 @@ fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state
             } else {
                 Style::default()
             };
-            ListItem::new(
-                Line::from(vec![
-                    Span::raw(format!("{} [{}] {:<16}", prefix, check, name)),
-                    Span::styled(desc.to_string(), Style::default().fg(Color::DarkGray)),
-                ])
-            ).style(style)
+            ListItem::new(Line::from(vec![
+                Span::raw(format!("{} [{}] {:<16}", prefix, check, name)),
+                Span::styled(desc.to_string(), Style::default().fg(Color::DarkGray)),
+            ]))
+            .style(style)
         })
         .collect();
 
-    items.push(ListItem::new("  ─────────────────────────────────────────")
-        .style(Style::default().fg(Color::DarkGray)));
-    items.push(ListItem::new("  [✓] Report              Always included   [locked]")
-        .style(Style::default().fg(Color::DarkGray)));
+    items.push(
+        ListItem::new("  ─────────────────────────────────────────")
+            .style(Style::default().fg(Color::DarkGray)),
+    );
+    items.push(
+        ListItem::new("  [✓] Report              Always included   [locked]")
+            .style(Style::default().fg(Color::DarkGray)),
+    );
     let run_label = format!(
         "▶ Run Selected ({} scanners)",
         state.scanner_selected.iter().filter(|&&b| b).count() + 1
@@ -664,19 +886,17 @@ fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state
     };
     items.push(ListItem::new(run_label).style(run_style));
 
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title("SELECT SCANNERS"));
-    let list_area = Layout::horizontal([
-        Constraint::Percentage(30),
-        Constraint::Percentage(40),
-        Constraint::Percentage(30),
-    ])
-    .split(chunks[2])[1];
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("SELECT SCANNERS"),
+    );
+    let list_area = centered_middle_column(chunks[2]);
     frame.render_widget(list, list_area);
 
-    let keys = Paragraph::new(" Space toggle · Enter run · Esc back")
-        .style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(keys, chunks[3]);
+    let keys =
+        Paragraph::new(scanner_selector_footer_hint()).style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(keys, centered_middle_column(chunks[3]));
 }
 
 fn render_provider_selector(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
@@ -684,6 +904,7 @@ fn render_provider_selector(frame: &mut Frame, area: ratatui::layout::Rect, stat
         Constraint::Fill(1),
         Constraint::Length(HEADER_HEIGHT),
         Constraint::Min(6),
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Fill(1),
     ])
@@ -694,59 +915,74 @@ fn render_provider_selector(frame: &mut Frame, area: ratatui::layout::Rect, stat
         Constraint::Percentage(30),
         Constraint::Percentage(40),
         Constraint::Percentage(30),
-    ]).split(chunks[1])[1];
+    ])
+    .split(chunks[1])[1];
     render_banner_header(frame, header_center, state);
 
     // ── Provider list ───────────────────────────────────────────────────────
-    let items: Vec<ListItem> = state.profiles.iter().enumerate().map(|(i, (name, model))| {
-        let selected = state.provider_idx == i;
-        let is_active = *name == state.active_profile;
-        let bullet = if is_active { "●" } else { " " };
-        let prefix = if selected { "▶" } else { " " };
-        let style = if selected {
-            Style::default().add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
-        let bullet_style = Style::default().fg(if is_active { Color::Green } else { Color::DarkGray });
-        ListItem::new(Line::from(vec![
-            Span::raw(format!("{} ", prefix)),
-            Span::styled(format!("{} ", bullet), bullet_style),
-            Span::styled(format!("{:<20}", name.chars().take(20).collect::<String>()), style),
-            Span::styled(
-                model.chars().take(20).collect::<String>(),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]))
-    }).collect();
+    let items: Vec<ListItem> = state
+        .profiles
+        .iter()
+        .enumerate()
+        .map(|(i, (name, model))| {
+            let selected = state.provider_idx == i;
+            let is_active = *name == state.active_profile;
+            let bullet = if is_active { "●" } else { " " };
+            let prefix = if selected { "▶" } else { " " };
+            let style = if selected {
+                Style::default().add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            let bullet_style = Style::default().fg(if is_active {
+                Color::Green
+            } else {
+                Color::DarkGray
+            });
+            ListItem::new(Line::from(vec![
+                Span::raw(format!("{} ", prefix)),
+                Span::styled(format!("{} ", bullet), bullet_style),
+                Span::styled(
+                    format!("{:<20}", name.chars().take(20).collect::<String>()),
+                    style,
+                ),
+                Span::styled(
+                    model.chars().take(20).collect::<String>(),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]))
+        })
+        .collect();
 
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title("SELECT PROVIDER"));
-    let list_area = Layout::horizontal([
-        Constraint::Percentage(30),
-        Constraint::Percentage(40),
-        Constraint::Percentage(30),
-    ])
-    .split(chunks[2])[1];
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("SELECT PROVIDER"),
+    );
+    let list_area = centered_middle_column(chunks[2]);
     frame.render_widget(list, list_area);
 
-    let keys = Paragraph::new(" ↑↓ navigate · Enter select · Esc back")
+    let keys = Paragraph::new(provider_selector_footer_hint(state))
         .style(Style::default().fg(Color::DarkGray));
-    let hints_center = Layout::horizontal([
-        Constraint::Percentage(30),
-        Constraint::Percentage(40),
-        Constraint::Percentage(30),
-    ]).split(chunks[3])[1];
+    let hints_center = centered_middle_column(chunks[3]);
     frame.render_widget(keys, hints_center);
+
+    if let Some(error) = &state.provider_error {
+        let error = Paragraph::new(format!("  ✗ {}", error)).style(Style::default().fg(Color::Red));
+        frame.render_widget(error, centered_middle_column(chunks[4]));
+    }
 }
 
 fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
     let form = &state.form;
     let provider_name = KNOWN_PROVIDER_NAMES[form.provider_idx];
+    let form_height = if form.is_openai_provider() { 14 } else { 13 };
 
     let field_style = |field_idx: usize| -> Style {
         if form.focused_field == field_idx {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::DarkGray)
         }
@@ -756,7 +992,7 @@ fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &
     let outer_chunks = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(HEADER_HEIGHT),
-        Constraint::Length(13),
+        Constraint::Length(form_height),
         Constraint::Fill(1),
     ])
     .split(area);
@@ -766,7 +1002,8 @@ fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &
         Constraint::Percentage(30),
         Constraint::Percentage(40),
         Constraint::Percentage(30),
-    ]).split(outer_chunks[1])[1];
+    ])
+    .split(outer_chunks[1])[1];
     render_banner_header(frame, header_center, state);
 
     // ── Form block ──────────────────────────────────────────────────────────
@@ -777,67 +1014,143 @@ fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &
     ])
     .split(outer_chunks[2])[1];
 
-    let block = Block::default().borders(Borders::ALL).title(" ADD PROVIDER ").title_style(Style::default().fg(Color::Cyan));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" ADD PROVIDER ")
+        .title_style(Style::default().fg(Color::Cyan));
     let inner = block.inner(form_area);
     let max_field_width = inner.width.saturating_sub(15) as usize;
 
-    let fields = vec![
+    let mut fields = vec![
         Line::from(vec![
             Span::raw("  Provider   "),
             Span::styled(format!("◀ {:<18} ▶", provider_name), field_style(0)),
         ]),
         Line::from(vec![
-            Span::raw(if form.focused_field == 1 { "▶ " } else { "  " }),
+            Span::raw(if form.focused_field == 1 {
+                "▶ "
+            } else {
+                "  "
+            }),
             Span::styled("Model      ", field_style(1)),
-            Span::styled(format!("{:width$}", clip_with_ellipsis(&form.model, max_field_width), width = max_field_width), field_style(1)),
+            Span::styled(
+                format!(
+                    "{:width$}",
+                    clip_with_ellipsis(&form.model, max_field_width),
+                    width = max_field_width
+                ),
+                field_style(1),
+            ),
         ]),
         Line::from(vec![
-            Span::raw(if form.focused_field == 2 { "▶ " } else { "  " }),
+            Span::raw(if form.focused_field == 2 {
+                "▶ "
+            } else {
+                "  "
+            }),
             Span::styled("Base URL   ", field_style(2)),
-            Span::styled(format!("{:width$}", clip_with_ellipsis(&form.base_url, max_field_width), width = max_field_width), field_style(2)),
+            Span::styled(
+                format!(
+                    "{:width$}",
+                    clip_with_ellipsis(&form.base_url, max_field_width),
+                    width = max_field_width
+                ),
+                field_style(2),
+            ),
         ]),
-        Line::from(vec![
-            Span::raw(if form.focused_field == 3 { "▶ " } else { "  " }),
-            Span::styled("API Key    ", field_style(3)),
-            Span::styled(format!("{:width$}", clip_with_ellipsis(&form.masked_key(), max_field_width), width = max_field_width), field_style(3)),
-        ]),
-        Line::from(vec![
-            Span::raw(if form.focused_field == 4 { "▶ " } else { "  " }),
-            Span::styled("Name       ", field_style(4)),
-            Span::styled(format!("{:width$}", clip_with_ellipsis(&form.profile_name, max_field_width), width = max_field_width), field_style(4)),
-        ]),
-        Line::from(Span::raw("")),
     ];
+
+    if let Some(auth_field_idx) = form.auth_field_idx() {
+        let auth_label = match form.auth_method {
+            AuthMethod::ApiKey => "◀ API Key ▶",
+            AuthMethod::OAuth => "◀ OAuth Login ▶",
+        };
+        fields.push(Line::from(vec![
+            Span::raw(if form.focused_field == auth_field_idx {
+                "▶ "
+            } else {
+                "  "
+            }),
+            Span::styled("Auth       ", field_style(auth_field_idx)),
+            Span::styled(
+                format!("{auth_label:<width$}", width = max_field_width),
+                field_style(auth_field_idx),
+            ),
+        ]));
+    }
+
+    let api_key_field_idx = form.api_key_field_idx();
+    let api_key_value = if form.is_openai_provider() && form.auth_method == AuthMethod::OAuth {
+        "(not used with OAuth)".to_string()
+    } else {
+        form.masked_key()
+    };
+    fields.push(Line::from(vec![
+        Span::raw(if form.focused_field == api_key_field_idx {
+            "▶ "
+        } else {
+            "  "
+        }),
+        Span::styled("API Key    ", field_style(api_key_field_idx)),
+        Span::styled(
+            format!(
+                "{:width$}",
+                clip_with_ellipsis(&api_key_value, max_field_width),
+                width = max_field_width
+            ),
+            field_style(api_key_field_idx),
+        ),
+    ]));
+
+    let profile_name_field_idx = form.profile_name_field_idx();
+    fields.push(Line::from(vec![
+        Span::raw(if form.focused_field == profile_name_field_idx {
+            "▶ "
+        } else {
+            "  "
+        }),
+        Span::styled("Name       ", field_style(profile_name_field_idx)),
+        Span::styled(
+            format!(
+                "{:width$}",
+                clip_with_ellipsis(&form.profile_name, max_field_width),
+                width = max_field_width
+            ),
+            field_style(profile_name_field_idx),
+        ),
+    ]));
+    fields.push(Line::from(Span::raw("")));
 
     let content = Text::from(fields);
     let paragraph = Paragraph::new(content);
 
-    let chunks = Layout::vertical([
-        Constraint::Min(1),
-        Constraint::Length(2),
-    ])
-    .split(inner);
+    let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(inner);
 
-    let bottom_rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .split(chunks[1]);
+    let bottom_rows =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(chunks[1]);
 
-    let button_chunks = Layout::horizontal([
-        Constraint::Percentage(50),
-        Constraint::Percentage(50),
-    ])
-    .split(bottom_rows[0]);
+    let button_chunks =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(bottom_rows[0]);
 
     frame.render_widget(block, form_area);
     frame.render_widget(paragraph, chunks[0]);
 
-    let save_label = if form.focused_field == 5 { "  ▶ Save" } else { "    Save" };
-    let save = Paragraph::new(Line::from(Span::styled(save_label, field_style(5))));
+    let save_label = if form.focused_field == form.save_field_idx() {
+        "  ▶ Save"
+    } else {
+        "    Save"
+    };
+    let save = Paragraph::new(Line::from(Span::styled(
+        save_label,
+        field_style(form.save_field_idx()),
+    )));
     frame.render_widget(save, button_chunks[0]);
 
-    let cancel = Paragraph::new(Line::from(Span::styled("Esc Cancel", Style::default().fg(Color::DarkGray))));
+    let cancel = Paragraph::new(Line::from(Span::styled(
+        "Esc Cancel",
+        Style::default().fg(Color::DarkGray),
+    )));
     frame.render_widget(cancel, button_chunks[1]);
 
     if let Some(ref err) = form.error {

@@ -1,7 +1,12 @@
 use std::process::Command;
 
 pub fn git_log(n: u32) -> String {
-    run_git(&["log", &format!("--max-count={}", n), "--oneline", "--no-color"])
+    run_git(&[
+        "log",
+        &format!("--max-count={}", n),
+        "--oneline",
+        "--no-color",
+    ])
 }
 
 pub fn git_diff(since: &str) -> String {

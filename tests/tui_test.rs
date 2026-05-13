@@ -1,7 +1,13 @@
+use ratatui::layout::{Constraint, Layout, Rect};
+use tempfile::TempDir;
 use zentra_cli::agent::{ScanEvent, ScannerType};
+use zentra_cli::config::{AuthMethod, GlobalConfig};
 use zentra_cli::state::{Finding, Severity};
+use zentra_cli::tui::menu::{
+    centered_middle_column, main_menu_actions, provider_selector_footer_hint,
+    scanner_selector_footer_hint, MenuScreen, MenuState,
+};
 use zentra_cli::tui::{ScanStatus, UiState};
-use zentra_cli::tui::menu::{MenuState, MenuScreen};
 
 #[test]
 fn ui_state_scanner_starts_as_queued() {
@@ -48,7 +54,14 @@ fn ui_state_apply_scanner_completed() {
 
 #[test]
 fn ui_state_apply_finding_added() {
-    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000, vec![], String::new(), String::new());
+    let mut state = UiState::new(
+        vec![ScannerType::Sast],
+        "m".to_string(),
+        200_000,
+        vec![],
+        String::new(),
+        String::new(),
+    );
     let f = Finding {
         scanner: "sast".to_string(),
         severity: Severity::High,
@@ -64,7 +77,14 @@ fn ui_state_apply_finding_added() {
 
 #[test]
 fn ui_state_apply_tool_call_updates_activity() {
-    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000, vec![], String::new(), String::new());
+    let mut state = UiState::new(
+        vec![ScannerType::Sast],
+        "m".to_string(),
+        200_000,
+        vec![],
+        String::new(),
+        String::new(),
+    );
     state.apply_event(ScanEvent::ToolCall {
         scanner: ScannerType::Sast,
         tool: "read_file".to_string(),
@@ -76,9 +96,22 @@ fn ui_state_apply_tool_call_updates_activity() {
 
 #[test]
 fn ui_state_apply_tokens_used_accumulates() {
-    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000, vec![], String::new(), String::new());
-    state.apply_event(ScanEvent::TokensUsed { input: 1000, output: 200 });
-    state.apply_event(ScanEvent::TokensUsed { input: 500, output: 100 });
+    let mut state = UiState::new(
+        vec![ScannerType::Sast],
+        "m".to_string(),
+        200_000,
+        vec![],
+        String::new(),
+        String::new(),
+    );
+    state.apply_event(ScanEvent::TokensUsed {
+        input: 1000,
+        output: 200,
+    });
+    state.apply_event(ScanEvent::TokensUsed {
+        input: 500,
+        output: 100,
+    });
     assert_eq!(state.total_tokens, 1800);
 }
 
@@ -102,7 +135,14 @@ fn ui_state_all_done_when_all_scanners_completed_or_failed() {
 
 #[test]
 fn ui_state_select_next_wraps() {
-    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000, vec![], String::new(), String::new());
+    let mut state = UiState::new(
+        vec![ScannerType::Sast],
+        "m".to_string(),
+        200_000,
+        vec![],
+        String::new(),
+        String::new(),
+    );
     let f = Finding {
         scanner: "sast".to_string(),
         severity: Severity::High,
@@ -121,33 +161,72 @@ fn ui_state_select_next_wraps() {
 
 #[test]
 fn ui_state_token_pct_is_correct() {
-    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000, vec![], String::new(), String::new());
-    state.apply_event(ScanEvent::TokensUsed { input: 10_000, output: 5_000 });
+    let mut state = UiState::new(
+        vec![ScannerType::Sast],
+        "m".to_string(),
+        200_000,
+        vec![],
+        String::new(),
+        String::new(),
+    );
+    state.apply_event(ScanEvent::TokensUsed {
+        input: 10_000,
+        output: 5_000,
+    });
     // peak_input = 10_000 / 200_000 = 5%
     assert_eq!(state.token_pct(), 5);
 }
 
 #[test]
 fn ui_state_token_pct_caps_at_100() {
-    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 1_000, vec![], String::new(), String::new());
-    state.apply_event(ScanEvent::TokensUsed { input: 2_000, output: 0 });
+    let mut state = UiState::new(
+        vec![ScannerType::Sast],
+        "m".to_string(),
+        1_000,
+        vec![],
+        String::new(),
+        String::new(),
+    );
+    state.apply_event(ScanEvent::TokensUsed {
+        input: 2_000,
+        output: 0,
+    });
     assert_eq!(state.token_pct(), 100);
 }
 
 #[test]
 fn menu_state_starts_at_first_item() {
-    let state = MenuState::new(true, true, vec![], String::new(), String::new(), String::new(), String::new());
+    let state = MenuState::new(
+        true,
+        true,
+        vec![],
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+    );
     assert_eq!(state.selected_idx, 0);
     assert_eq!(state.screen, MenuScreen::Main);
 }
 
 #[test]
 fn menu_state_navigate_wraps() {
-    let mut state = MenuState::new(true, true, vec![], String::new(), String::new(), String::new(), String::new());
+    let mut state = MenuState::new(
+        true,
+        true,
+        vec![],
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+    );
     // 6 items: RunFull(0), SelectScanners(1), ViewResults(2), ChangeProvider(3), AddProvider(4), Exit(5)
     state.next();
     assert_eq!(state.selected_idx, 1);
-    state.next(); state.next(); state.next(); state.next();
+    state.next();
+    state.next();
+    state.next();
+    state.next();
     assert_eq!(state.selected_idx, 5);
     state.next(); // clamp
     assert_eq!(state.selected_idx, 5);
@@ -157,18 +236,34 @@ fn menu_state_navigate_wraps() {
 
 #[test]
 fn menu_state_disabled_items_when_unconfigured() {
-    let state = MenuState::new(false, false, vec![], String::new(), String::new(), String::new(), String::new()); // no provider, no project
+    let state = MenuState::new(
+        false,
+        false,
+        vec![],
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+    ); // no provider, no project
     assert!(!state.is_item_enabled(0)); // RunFull
     assert!(!state.is_item_enabled(1)); // SelectScanners
-    assert!(state.is_item_enabled(2));  // ViewResults
+    assert!(state.is_item_enabled(2)); // ViewResults
     assert!(!state.is_item_enabled(3)); // ChangeProvider
-    assert!(state.is_item_enabled(4));  // AddProvider
-    assert!(state.is_item_enabled(5));  // Exit
+    assert!(state.is_item_enabled(4)); // AddProvider
+    assert!(state.is_item_enabled(5)); // Exit
 }
 
 #[test]
 fn menu_state_scanner_selector_toggle() {
-    let mut state = MenuState::new(true, true, vec![], String::new(), String::new(), String::new(), String::new());
+    let mut state = MenuState::new(
+        true,
+        true,
+        vec![],
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+    );
     state.screen = MenuScreen::ScannerSelector;
     assert!(state.scanner_selected[0]);
     state.toggle_scanner(); // toggle ThreatModel off
@@ -179,7 +274,15 @@ fn menu_state_scanner_selector_toggle() {
 
 #[test]
 fn menu_state_scanner_selector_selected_types() {
-    let mut state = MenuState::new(true, true, vec![], String::new(), String::new(), String::new(), String::new());
+    let mut state = MenuState::new(
+        true,
+        true,
+        vec![],
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+    );
     state.screen = MenuScreen::ScannerSelector;
     state.scanner_idx = 1; // SAST
     state.toggle_scanner(); // disable SAST
@@ -189,8 +292,8 @@ fn menu_state_scanner_selector_selected_types() {
     assert!(types.contains(&ScannerType::Report)); // always included
 }
 
-use zentra_cli::tui::PopupState;
 use zentra_cli::tui::results::parse_findings;
+use zentra_cli::tui::PopupState;
 
 #[test]
 fn parse_findings_extracts_critical_finding() {
@@ -204,7 +307,10 @@ fn parse_findings_extracts_critical_finding() {
     let findings = parse_findings(raw);
     assert_eq!(findings.len(), 1);
     assert_eq!(findings[0].title, "Hardcoded JWT secret");
-    assert!(matches!(findings[0].severity, zentra_cli::state::Severity::Critical));
+    assert!(matches!(
+        findings[0].severity,
+        zentra_cli::state::Severity::Critical
+    ));
     assert_eq!(findings[0].scanner, "sast");
     assert_eq!(findings[0].location.as_deref(), Some("src/config.rs:18"));
 }
@@ -276,13 +382,27 @@ fn popup_state_prev_clamps_at_zero() {
 
 #[test]
 fn ui_state_popup_starts_closed() {
-    let state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000, vec![], String::new(), String::new());
+    let state = UiState::new(
+        vec![ScannerType::Sast],
+        "m".to_string(),
+        200_000,
+        vec![],
+        String::new(),
+        String::new(),
+    );
     assert!(!state.popup_open);
 }
 
 #[test]
 fn ui_state_toggle_popup() {
-    let mut state = UiState::new(vec![ScannerType::Sast], "m".to_string(), 200_000, vec![], String::new(), String::new());
+    let mut state = UiState::new(
+        vec![ScannerType::Sast],
+        "m".to_string(),
+        200_000,
+        vec![],
+        String::new(),
+        String::new(),
+    );
     state.toggle_popup();
     assert!(state.popup_open);
     state.toggle_popup();
@@ -360,10 +480,18 @@ fn parse_findings_returns_all_findings() {
 ---\n\
 \n";
     let findings = parse_findings(raw);
-    assert_eq!(findings.len(), 2, "expected 2 findings, got {}", findings.len());
+    assert_eq!(
+        findings.len(),
+        2,
+        "expected 2 findings, got {}",
+        findings.len()
+    );
     assert_eq!(findings[0].title, "SQL Injection");
     assert_eq!(findings[1].title, "Hardcoded API key");
-    assert_eq!(findings[1].location.as_deref(), Some("src/config/auth.rs:42"));
+    assert_eq!(
+        findings[1].location.as_deref(),
+        Some("src/config/auth.rs:42")
+    );
 }
 
 #[test]
@@ -384,21 +512,79 @@ fn menu_state_new_stores_active_profile() {
 
 #[test]
 fn menu_state_navigate_new_max_is_5() {
-    let mut state = MenuState::new(true, true, vec![], String::new(), String::new(), String::new(), String::new());
-    for _ in 0..5 { state.next(); }
+    let mut state = MenuState::new(
+        true,
+        true,
+        vec![],
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+    );
+    for _ in 0..5 {
+        state.next();
+    }
     assert_eq!(state.selected_idx, 5);
     state.next(); // clamp
     assert_eq!(state.selected_idx, 5);
 }
 
 #[test]
+fn menu_state_main_menu_still_has_six_actions() {
+    assert_eq!(
+        main_menu_actions(),
+        &[
+            "Run Full Scan",
+            "Select Scanners",
+            "View Last Results",
+            "Change Provider",
+            "Add Provider",
+            "Exit",
+        ]
+    );
+}
+
+#[test]
+fn scanner_selector_hint_is_centered_like_the_list() {
+    let area = Rect::new(0, 0, 120, 40);
+    let chunks = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(7),
+        Constraint::Min(10),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .split(area);
+
+    let list_area = centered_middle_column(chunks[2]);
+    let hint_area = centered_middle_column(chunks[3]);
+
+    assert_eq!(hint_area.x, list_area.x);
+    assert_eq!(hint_area.width, list_area.width);
+    assert_eq!(
+        scanner_selector_footer_hint(),
+        " Space toggle · Enter run · Esc back"
+    );
+}
+
+#[test]
 fn menu_state_change_provider_requires_provider() {
-    let state = MenuState::new(false, false, vec![], String::new(), String::new(), String::new(), String::new());
+    let state = MenuState::new(
+        false,
+        false,
+        vec![],
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+    );
     assert!(!state.is_item_enabled(3)); // Change Provider = index 3
 }
 
 use zentra_cli::tui::menu::{clip_with_ellipsis, ProviderFormState};
-use zentra_cli::tui::scan_ui::popup_items;
+use zentra_cli::tui::scan_ui::{
+    clip_failed_error_preview, failed_error_preview_width, popup_items, scan_body_chunks,
+};
 
 #[test]
 fn popup_items_includes_abort_when_not_done() {
@@ -410,6 +596,32 @@ fn popup_items_includes_abort_when_not_done() {
 fn popup_items_excludes_abort_when_scan_done() {
     let items = popup_items(true);
     assert!(!items.contains(&"Abort Scan"));
+}
+
+#[test]
+fn scan_ui_scanner_panel_width_is_wider_than_before() {
+    let [scanner_area, findings_area] = scan_body_chunks(Rect::new(0, 0, 80, 12));
+
+    assert!(scanner_area.width > 26);
+    assert!(findings_area.width >= 20);
+}
+
+#[test]
+fn scan_ui_failed_error_preview_clips_long_messages() {
+    let preview_width = failed_error_preview_width(34);
+    let preview = clip_failed_error_preview("abcdefghijklmnopqrstuvwxyz0123456789", preview_width);
+
+    assert!(preview_width > 20);
+    assert_eq!(preview.chars().count(), preview_width);
+    assert_eq!(preview, "abcdefghijklmnopqrstuvwxyz0…");
+}
+
+#[test]
+fn scan_ui_failed_error_preview_normalizes_multiline_and_control_chars() {
+    let preview = clip_failed_error_preview("panic\r\n\u{1b}[31mboom\u{1b}[0m\tpath", 64);
+
+    assert_eq!(preview, "panic boom path");
+    assert!(!preview.contains(['\n', '\r', '\u{1b}']));
 }
 
 #[test]
@@ -443,7 +655,10 @@ fn provider_form_default_uses_first_known_provider() {
 
 #[test]
 fn provider_form_append_char_to_api_key() {
-    let mut form = ProviderFormState { focused_field: 3, ..Default::default() }; // api_key field
+    let mut form = ProviderFormState {
+        focused_field: 3,
+        ..Default::default()
+    }; // api_key field
     form.append_char('s');
     form.append_char('k');
     assert_eq!(form.api_key, "sk");
@@ -451,7 +666,11 @@ fn provider_form_append_char_to_api_key() {
 
 #[test]
 fn provider_form_backspace_removes_last_char() {
-    let mut form = ProviderFormState { focused_field: 4, profile_name: "test".to_string(), ..Default::default() }; // profile_name field
+    let mut form = ProviderFormState {
+        focused_field: 4,
+        profile_name: "test".to_string(),
+        ..Default::default()
+    }; // profile_name field
     form.backspace();
     assert_eq!(form.profile_name, "tes");
 }
@@ -465,7 +684,10 @@ fn provider_form_cycle_provider_updates_defaults() {
 
 #[test]
 fn provider_form_masked_key_shows_prefix_only() {
-    let form = ProviderFormState { api_key: "sk-ant-abc123xyz".to_string(), ..Default::default() };
+    let form = ProviderFormState {
+        api_key: "sk-ant-abc123xyz".to_string(),
+        ..Default::default()
+    };
     let masked = form.masked_key();
     assert!(masked.starts_with("sk-ant"));
     assert!(masked.contains('*'));
@@ -476,6 +698,116 @@ fn provider_form_validate_fails_on_empty_key() {
     let form = ProviderFormState::default();
     // api_key is empty by default
     assert!(form.validate().is_err());
+}
+
+#[test]
+fn provider_form_validate_allows_openai_oauth_without_api_key() {
+    let mut form = ProviderFormState::default();
+    form.cycle_provider(1);
+    form.auth_method = AuthMethod::OAuth;
+    form.profile_name = "openai_oauth".to_string();
+
+    assert!(form.validate().is_ok());
+}
+
+#[test]
+fn provider_form_validate_still_requires_api_key_for_non_openai_providers() {
+    let form = ProviderFormState {
+        auth_method: AuthMethod::OAuth,
+        profile_name: "anthropic_oauth".to_string(),
+        ..Default::default()
+    };
+
+    let err = form.validate().unwrap_err().to_string();
+    assert!(err.contains("API key cannot be empty"));
+}
+
+#[test]
+fn provider_form_save_persists_openai_oauth_auth_method_without_api_key() {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+
+    let mut form = ProviderFormState::default();
+    form.cycle_provider(1);
+    form.auth_method = AuthMethod::OAuth;
+    form.profile_name = "openai_oauth".to_string();
+
+    let saved_name = form
+        .save_with_oauth_to_path(
+            &config_path,
+            || {
+                Ok(zentra_cli::auth::OAuthTokens {
+                    access_token: "access-token".to_string(),
+                    refresh_token: "refresh-token".to_string(),
+                    expires_at: 4_102_444_800,
+                })
+            },
+            |_, _| Ok(()),
+        )
+        .unwrap();
+
+    assert_eq!(saved_name, "openai_oauth");
+
+    let cfg = GlobalConfig::load_from(&config_path).unwrap();
+    let profile = cfg.profiles.get("openai_oauth").unwrap();
+    assert_eq!(profile.auth_method, AuthMethod::OAuth);
+    assert_eq!(cfg.default_profile.as_deref(), Some("openai_oauth"));
+
+    let key_path = dir.path().join("keys").join("openai_oauth.key");
+    assert!(
+        !key_path.exists(),
+        "OAuth save should not persist an API key file"
+    );
+}
+
+#[test]
+fn provider_form_save_oauth_store_failure_leaves_existing_config_unchanged() {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+
+    let mut original = GlobalConfig::default();
+    original.default_profile = Some("work".to_string());
+    original.profiles.insert(
+        "work".to_string(),
+        zentra_cli::config::ProviderProfile {
+            kind: "anthropic".to_string(),
+            base_url: "https://api.anthropic.com".to_string(),
+            model: "claude-opus-4-1".to_string(),
+            keyless: false,
+            auth_method: AuthMethod::ApiKey,
+            context_window: Some(200_000),
+        },
+    );
+    original.save_to(&config_path).unwrap();
+
+    let mut form = ProviderFormState::default();
+    form.cycle_provider(1);
+    form.auth_method = AuthMethod::OAuth;
+    form.profile_name = "work".to_string();
+
+    let err = form
+        .save_with_oauth_to_path(
+            &config_path,
+            || {
+                Ok(zentra_cli::auth::OAuthTokens {
+                    access_token: "access-token".to_string(),
+                    refresh_token: "refresh-token".to_string(),
+                    expires_at: 4_102_444_800,
+                })
+            },
+            |_, _| anyhow::bail!("simulated oauth token store failure"),
+        )
+        .unwrap_err();
+
+    assert!(err.to_string().contains("token store failure"));
+
+    let cfg = GlobalConfig::load_from(&config_path).unwrap();
+    let profile = cfg.profiles.get("work").unwrap();
+    assert_eq!(cfg.default_profile.as_deref(), Some("work"));
+    assert_eq!(profile.kind, "anthropic");
+    assert_eq!(profile.base_url, "https://api.anthropic.com");
+    assert_eq!(profile.model, "claude-opus-4-1");
+    assert_eq!(profile.auth_method, AuthMethod::ApiKey);
 }
 
 #[test]
@@ -542,4 +874,134 @@ fn provider_form_handles_long_url() {
         ..Default::default()
     };
     assert!(form.base_url.len() > 40);
+}
+
+#[test]
+fn provider_selector_arms_delete_for_non_active_profile() {
+    let mut state = MenuState::new(
+        true,
+        true,
+        vec![
+            ("anthropic".to_string(), "claude-opus-4-1".to_string()),
+            ("openai".to_string(), "gpt-4.1".to_string()),
+        ],
+        "claude-opus-4-1".to_string(),
+        "anthropic".to_string(),
+        String::new(),
+        String::new(),
+    );
+    state.screen = MenuScreen::ProviderSelector;
+    state.provider_idx = 1;
+
+    assert_eq!(
+        provider_selector_footer_hint(&state),
+        " ↑↓ navigate · Enter select · d delete · Esc back"
+    );
+
+    let deleted = state.handle_provider_delete_key().unwrap();
+
+    assert!(!deleted);
+    assert_eq!(state.pending_delete_profile.as_deref(), Some("openai"));
+    assert!(state.provider_error.is_none());
+    assert_eq!(
+        provider_selector_footer_hint(&state),
+        " d again confirm delete · ↑↓ move cancel · Esc back"
+    );
+}
+
+#[test]
+fn provider_selector_blocks_delete_for_active_profile() {
+    let mut state = MenuState::new(
+        true,
+        true,
+        vec![
+            ("anthropic".to_string(), "claude-opus-4-1".to_string()),
+            ("openai".to_string(), "gpt-4.1".to_string()),
+        ],
+        "claude-opus-4-1".to_string(),
+        "anthropic".to_string(),
+        String::new(),
+        String::new(),
+    );
+    state.screen = MenuScreen::ProviderSelector;
+    state.provider_idx = 0;
+
+    let deleted = state.handle_provider_delete_key().unwrap();
+
+    assert!(!deleted);
+    assert_eq!(
+        state.provider_error.as_deref(),
+        Some("Cannot delete active provider")
+    );
+    assert!(state.pending_delete_profile.is_none());
+    assert_eq!(state.profiles.len(), 2);
+    assert_eq!(
+        provider_selector_footer_hint(&state),
+        " ↑↓ navigate · Enter select · d delete · Esc back"
+    );
+}
+
+#[test]
+fn provider_selector_blocks_delete_for_default_non_active_profile() {
+    let mut state = MenuState::new(
+        true,
+        true,
+        vec![
+            ("anthropic".to_string(), "claude-opus-4-1".to_string()),
+            ("openai".to_string(), "gpt-4.1".to_string()),
+        ],
+        "claude-opus-4-1".to_string(),
+        "anthropic".to_string(),
+        String::new(),
+        String::new(),
+    );
+    state.screen = MenuScreen::ProviderSelector;
+    state.default_profile = "openai".to_string();
+    state.provider_idx = 1;
+
+    let deleted = state.handle_provider_delete_key().unwrap();
+
+    assert!(!deleted);
+    assert_eq!(
+        state.provider_error.as_deref(),
+        Some("Cannot delete active provider")
+    );
+    assert!(state.pending_delete_profile.is_none());
+    assert_eq!(state.profiles.len(), 2);
+}
+
+#[test]
+fn provider_selector_navigation_clears_pending_delete() {
+    let mut state = MenuState::new(
+        true,
+        true,
+        vec![
+            ("anthropic".to_string(), "claude-opus-4-1".to_string()),
+            ("openai".to_string(), "gpt-4.1".to_string()),
+        ],
+        "anthropic-model".to_string(),
+        "anthropic".to_string(),
+        String::new(),
+        String::new(),
+    );
+    state.screen = MenuScreen::ProviderSelector;
+    state.provider_idx = 1;
+    state.handle_provider_delete_key().unwrap();
+    state.provider_error = Some("temporary".to_string());
+
+    state.provider_selector_move_up();
+    assert!(state.pending_delete_profile.is_none());
+    assert!(state.provider_error.is_none());
+
+    state.provider_idx = 1;
+    state.handle_provider_delete_key().unwrap();
+    state.provider_selector_move_down();
+    assert!(state.pending_delete_profile.is_none());
+
+    state.provider_idx = 1;
+    state.handle_provider_delete_key().unwrap();
+    state.provider_selector_escape();
+    assert!(state.pending_delete_profile.is_none());
+    assert_eq!(state.screen, MenuScreen::Main);
+    assert_eq!(state.selected_idx, 3);
 }

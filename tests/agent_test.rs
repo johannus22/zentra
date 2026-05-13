@@ -1,16 +1,16 @@
-﻿// tests/agent_test.rs
-use zentra_cli::{agent, state, tools};
+// tests/agent_test.rs
+use zentra_cli::scanners;
 use zentra_cli::tools::fs_tools::{grep_code, list_files, read_file};
 use zentra_cli::tools::git_tools::{git_log, git_status};
-use zentra_cli::scanners;
+use zentra_cli::{agent, state, tools};
 
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 use zentra_cli::agent::scanner::ScannerAgent;
 use zentra_cli::provider::openai_compat::OpenAICompatProvider;
-use wiremock::{MockServer, Mock, ResponseTemplate};
-use wiremock::matchers::{method, path};
 
 #[test]
 fn modules_exist() {
@@ -20,28 +20,33 @@ fn modules_exist() {
     let _ = std::any::type_name::<tools::ToolRegistry>();
 }
 
-use zentra_cli::state::{Finding, Severity, StateWriter};
 use tempfile::TempDir;
+use zentra_cli::state::{Finding, Severity, StateWriter};
 
 #[test]
 fn state_writer_creates_findings_file() {
     let dir = TempDir::new().unwrap();
     let writer = StateWriter::new(dir.path()).unwrap();
 
-    writer.write_finding(&Finding {
-        scanner: "sast".to_string(),
-        severity: Severity::Critical,
-        title: "SQL Injection".to_string(),
-        description: "User input concatenated into SQL".to_string(),
-        location: Some("src/db.rs:42".to_string()),
-        recommendation: "Use parameterized queries.".to_string(),
-    }).unwrap();
+    writer
+        .write_finding(&Finding {
+            scanner: "sast".to_string(),
+            severity: Severity::Critical,
+            title: "SQL Injection".to_string(),
+            description: "User input concatenated into SQL".to_string(),
+            location: Some("src/db.rs:42".to_string()),
+            recommendation: "Use parameterized queries.".to_string(),
+        })
+        .unwrap();
 
     let findings_path = dir.path().join(".zentra").join("detailed-findings.md");
     assert!(findings_path.exists(), "detailed-findings.md should exist");
 
     let content = std::fs::read_to_string(&findings_path).unwrap();
-    assert!(content.contains("SQL Injection"), "should contain finding title");
+    assert!(
+        content.contains("SQL Injection"),
+        "should contain finding title"
+    );
     assert!(content.contains("CRITICAL"), "should contain severity");
     assert!(content.contains("src/db.rs:42"), "should contain location");
 }
@@ -52,17 +57,20 @@ fn state_writer_appends_multiple_findings() {
     let writer = StateWriter::new(dir.path()).unwrap();
 
     for i in 0..3 {
-        writer.write_finding(&Finding {
-            scanner: "sast".to_string(),
-            severity: Severity::High,
-            title: format!("Finding {}", i),
-            description: "desc".to_string(),
-            location: None,
-            recommendation: "fix it".to_string(),
-        }).unwrap();
+        writer
+            .write_finding(&Finding {
+                scanner: "sast".to_string(),
+                severity: Severity::High,
+                title: format!("Finding {}", i),
+                description: "desc".to_string(),
+                location: None,
+                recommendation: "fix it".to_string(),
+            })
+            .unwrap();
     }
 
-    let content = std::fs::read_to_string(dir.path().join(".zentra").join("detailed-findings.md")).unwrap();
+    let content =
+        std::fs::read_to_string(dir.path().join(".zentra").join("detailed-findings.md")).unwrap();
     assert!(content.contains("Finding 0"));
     assert!(content.contains("Finding 1"));
     assert!(content.contains("Finding 2"));
@@ -72,20 +80,30 @@ fn state_writer_appends_multiple_findings() {
 fn state_writer_writes_report() {
     let dir = TempDir::new().unwrap();
     let writer = StateWriter::new(dir.path()).unwrap();
-    writer.write_report("# Executive Summary\n\nAll clear.").unwrap();
+    writer
+        .write_report("# Executive Summary\n\nAll clear.")
+        .unwrap();
 
     let reports_dir = dir.path().join(".zentra").join("reports");
-    let entries: Vec<_> = std::fs::read_dir(&reports_dir).unwrap()
+    let entries: Vec<_> = std::fs::read_dir(&reports_dir)
+        .unwrap()
         .filter_map(|e| e.ok())
         .collect();
     assert_eq!(entries.len(), 1, "should have one report file");
 
     let filename = entries[0].file_name();
     let name = filename.to_string_lossy();
-    assert!(name.ends_with("-report.md"), "filename should end with -report.md, got: {}", name);
+    assert!(
+        name.ends_with("-report.md"),
+        "filename should end with -report.md, got: {}",
+        name
+    );
 
     let content = std::fs::read_to_string(entries[0].path()).unwrap();
-    assert!(content.contains("Executive Summary"), "report should contain written content");
+    assert!(
+        content.contains("Executive Summary"),
+        "report should contain written content"
+    );
 }
 
 #[test]
@@ -93,24 +111,32 @@ fn read_findings_raw_returns_empty_when_no_findings() {
     let dir = TempDir::new().unwrap();
     let writer = StateWriter::new(dir.path()).unwrap();
     let result = writer.read_findings_raw().unwrap();
-    assert!(result.is_empty(), "should return empty string when no findings written");
+    assert!(
+        result.is_empty(),
+        "should return empty string when no findings written"
+    );
 }
 
 #[test]
 fn read_findings_raw_returns_written_findings() {
     let dir = TempDir::new().unwrap();
     let writer = StateWriter::new(dir.path()).unwrap();
-    writer.write_finding(&Finding {
-        scanner: "sast".to_string(),
-        severity: Severity::Low,
-        title: "Test".to_string(),
-        description: "desc".to_string(),
-        location: None,
-        recommendation: "fix".to_string(),
-    }).unwrap();
+    writer
+        .write_finding(&Finding {
+            scanner: "sast".to_string(),
+            severity: Severity::Low,
+            title: "Test".to_string(),
+            description: "desc".to_string(),
+            location: None,
+            recommendation: "fix".to_string(),
+        })
+        .unwrap();
 
     let content = writer.read_findings_raw().unwrap();
-    assert!(content.contains("Test"), "should contain the written finding title");
+    assert!(
+        content.contains("Test"),
+        "should contain the written finding title"
+    );
 }
 
 #[test]
@@ -130,13 +156,21 @@ fn read_file_returns_content() {
 #[test]
 fn read_file_returns_error_message_for_missing_file() {
     let content = read_file("/nonexistent/path/to/file.txt");
-    assert!(content.starts_with("Error:"), "should return error message, got: {}", content);
+    assert!(
+        content.starts_with("Error:"),
+        "should return error message, got: {}",
+        content
+    );
 }
 
 #[test]
 fn read_file_blocks_path_traversal() {
     let content = read_file("../../etc/passwd");
-    assert!(content.contains("path must be relative"), "got: {}", content);
+    assert!(
+        content.contains("path must be relative"),
+        "got: {}",
+        content
+    );
 }
 
 #[test]
@@ -158,13 +192,20 @@ fn list_files_filters_by_pattern() {
 
     let result = list_files(dir.path().to_str().unwrap(), Some(".rs"));
     assert!(result.contains("main.rs"), "should include .rs files");
-    assert!(!result.contains("config.toml"), "should exclude .toml files");
+    assert!(
+        !result.contains("config.toml"),
+        "should exclude .toml files"
+    );
 }
 
 #[test]
 fn grep_code_finds_pattern() {
     let dir = TempDir::new().unwrap();
-    std::fs::write(dir.path().join("main.rs"), "fn main() {\n    let secret = \"abc\";\n}\n").unwrap();
+    std::fs::write(
+        dir.path().join("main.rs"),
+        "fn main() {\n    let secret = \"abc\";\n}\n",
+    )
+    .unwrap();
 
     let result = grep_code("secret", Some(dir.path().to_str().unwrap()));
     assert!(result.contains("secret"), "should find 'secret'");
@@ -176,7 +217,10 @@ fn grep_code_returns_no_matches_message() {
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("a.rs"), "fn main() {}").unwrap();
 
-    let result = grep_code("VERY_UNLIKELY_PATTERN_XYZ123", Some(dir.path().to_str().unwrap()));
+    let result = grep_code(
+        "VERY_UNLIKELY_PATTERN_XYZ123",
+        Some(dir.path().to_str().unwrap()),
+    );
     assert!(result.contains("No matches"), "should say no matches");
 }
 
@@ -204,8 +248,8 @@ fn run_audit_rejects_unknown_tool() {
     assert!(result.contains("Unknown audit tool"));
 }
 
-use zentra_cli::agent::{ScanEvent, ScannerType};
 use zentra_cli::agent::orchestrator::OrchestratorAgent;
+use zentra_cli::agent::{ScanEvent, ScannerType};
 
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
@@ -220,13 +264,15 @@ async fn tool_registry_dispatches_read_file() {
     let writer = StateWriter::new(dir.path()).unwrap();
     let (tx, _rx) = tokio::sync::mpsc::channel(16);
 
-    let result = registry.dispatch(
-        "read_file",
-        &serde_json::json!({"path": "hello.txt"}),
-        &writer,
-        &tx,
-        ScannerType::Sast,
-    ).await;
+    let result = registry
+        .dispatch(
+            "read_file",
+            &serde_json::json!({"path": "hello.txt"}),
+            &writer,
+            &tx,
+            ScannerType::Sast,
+        )
+        .await;
 
     std::env::set_current_dir(original).unwrap();
     assert!(result.contains("hello world"), "got: {}", result);
@@ -239,19 +285,21 @@ async fn tool_registry_dispatches_write_finding() {
     let writer = StateWriter::new(dir.path()).unwrap();
     let (tx, mut rx) = tokio::sync::mpsc::channel(16);
 
-    let result = registry.dispatch(
-        "write_finding",
-        &serde_json::json!({
-            "severity": "high",
-            "title": "Test Finding",
-            "description": "A test finding",
-            "location": "src/main.rs:1",
-            "recommendation": "Fix it"
-        }),
-        &writer,
-        &tx,
-        ScannerType::Sast,
-    ).await;
+    let result = registry
+        .dispatch(
+            "write_finding",
+            &serde_json::json!({
+                "severity": "high",
+                "title": "Test Finding",
+                "description": "A test finding",
+                "location": "src/main.rs:1",
+                "recommendation": "Fix it"
+            }),
+            &writer,
+            &tx,
+            ScannerType::Sast,
+        )
+        .await;
 
     assert!(result.contains("recorded"), "got: {}", result);
     // Event should have been sent
@@ -265,8 +313,17 @@ fn tool_registry_definitions_contains_all_tools() {
     let defs = registry.definitions();
     let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
 
-    for expected in &["read_file", "list_files", "grep_code", "write_finding",
-                       "run_audit", "git_log", "git_diff", "git_blame", "git_status"] {
+    for expected in &[
+        "read_file",
+        "list_files",
+        "grep_code",
+        "write_finding",
+        "run_audit",
+        "git_log",
+        "git_diff",
+        "git_blame",
+        "git_status",
+    ] {
         assert!(names.contains(expected), "missing tool: {}", expected);
     }
 }
@@ -284,7 +341,12 @@ fn all_scanner_prompts_are_non_empty() {
     ] {
         let prompt = scanners::system_prompt(*scanner);
         assert!(!prompt.is_empty(), "{:?} has empty system prompt", scanner);
-        assert!(prompt.len() > 100, "{:?} prompt too short ({})", scanner, prompt.len());
+        assert!(
+            prompt.len() > 100,
+            "{:?} prompt too short ({})",
+            scanner,
+            prompt.len()
+        );
     }
 }
 
@@ -318,16 +380,30 @@ async fn scanner_agent_runs_react_loop_and_completes_when_no_tool_calls() {
 
     let dir = TempDir::new().unwrap();
     let provider = Arc::new(OpenAICompatProvider::new(
-        server.uri(), "gpt-4o".to_string(), "test-key".to_string(),
+        server.uri(),
+        "gpt-4o".to_string(),
+        "test-key".to_string(),
     ));
     let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
     let writer = Arc::new(StateWriter::new(dir.path()).unwrap());
     let (tx, _rx) = mpsc::channel(16);
 
-    let agent = ScannerAgent::new(ScannerType::Sast, provider, registry, writer, tx, None, CancellationToken::new());
+    let agent = ScannerAgent::new(
+        ScannerType::Sast,
+        provider,
+        registry,
+        writer,
+        tx,
+        None,
+        CancellationToken::new(),
+    );
     let result = agent.run().await;
 
-    assert!(result.is_ok(), "scanner should complete without error: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "scanner should complete without error: {:?}",
+        result
+    );
 }
 
 #[tokio::test]
@@ -373,13 +449,23 @@ async fn scanner_agent_executes_tool_call_and_feeds_result_back() {
         .await;
 
     let provider = Arc::new(OpenAICompatProvider::new(
-        server.uri(), "gpt-4o".to_string(), "test-key".to_string(),
+        server.uri(),
+        "gpt-4o".to_string(),
+        "test-key".to_string(),
     ));
     let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
     let writer = Arc::new(StateWriter::new(dir.path()).unwrap());
     let (tx, mut rx) = mpsc::channel(16);
 
-    let agent = ScannerAgent::new(ScannerType::Sast, provider, registry, writer, tx, None, CancellationToken::new());
+    let agent = ScannerAgent::new(
+        ScannerType::Sast,
+        provider,
+        registry,
+        writer,
+        tx,
+        None,
+        CancellationToken::new(),
+    );
     agent.run().await.unwrap();
 
     // Should have sent ToolCall event
@@ -435,18 +521,26 @@ async fn orchestrator_runs_selected_scanners_in_order() {
         .await;
 
     let dir = TempDir::new().unwrap();
-    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
-        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string())
-    );
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(OpenAICompatProvider::new(
+        server.uri(),
+        "gpt-4o".to_string(),
+        "key".to_string(),
+    ));
     let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
     let writer = Arc::new(zentra_cli::state::StateWriter::new(dir.path()).unwrap());
     let (tx, mut rx) = mpsc::channel(32);
 
-    let orchestrator = OrchestratorAgent::new(
-        provider, registry, writer, tx, CancellationToken::new(),
-    );
+    let orchestrator =
+        OrchestratorAgent::new(provider, registry, writer, tx, CancellationToken::new());
 
-    orchestrator.run(&[ScannerType::ThreatModel, ScannerType::Sast, ScannerType::Report]).await.unwrap();
+    orchestrator
+        .run(&[
+            ScannerType::ThreatModel,
+            ScannerType::Sast,
+            ScannerType::Report,
+        ])
+        .await
+        .unwrap();
 
     // Collect all events
     let mut started = vec![];
@@ -479,16 +573,26 @@ async fn scanner_agent_emits_tokens_used_event() {
 
     let dir = TempDir::new().unwrap();
     let provider = Arc::new(OpenAICompatProvider::new(
-        server.uri(), "gpt-4o".to_string(), "key".to_string(),
+        server.uri(),
+        "gpt-4o".to_string(),
+        "key".to_string(),
     ));
     let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
     let writer = Arc::new(StateWriter::new(dir.path()).unwrap());
     let (tx, mut rx) = mpsc::channel(16);
 
-    ScannerAgent::new(ScannerType::Sast, provider, registry, writer, tx, None, CancellationToken::new())
-        .run()
-        .await
-        .unwrap();
+    ScannerAgent::new(
+        ScannerType::Sast,
+        provider,
+        registry,
+        writer,
+        tx,
+        None,
+        CancellationToken::new(),
+    )
+    .run()
+    .await
+    .unwrap();
 
     let mut found_tokens = false;
     while let Ok(event) = rx.try_recv() {
@@ -498,4 +602,3 @@ async fn scanner_agent_emits_tokens_used_event() {
     }
     assert!(found_tokens, "should have emitted TokensUsed event");
 }
-

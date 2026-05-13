@@ -1,8 +1,14 @@
-use anyhow::Result;
 use crate::config::custom_providers::{CustomProvider, CustomProvidersFile};
+use anyhow::Result;
 
-pub const KNOWN_PROVIDER_NAMES: &[&str] =
-    &["anthropic", "openai", "cerebras", "litellm", "ollama", "zhipu"];
+pub const KNOWN_PROVIDER_NAMES: &[&str] = &[
+    "anthropic",
+    "openai",
+    "cerebras",
+    "litellm",
+    "ollama",
+    "zhipu",
+];
 
 pub struct ProviderDefaults {
     pub base_url: String,
@@ -12,7 +18,11 @@ pub struct ProviderDefaults {
 }
 
 pub fn model_context_window(model: &str) -> u32 {
-    if model.contains("gpt-4o") || model.contains("o1") || model.contains("glm-4") || model.contains("llama-3") {
+    if model.contains("gpt-4o")
+        || model.contains("o1")
+        || model.contains("glm-4")
+        || model.contains("llama-3")
+    {
         128_000
     } else if model.contains("claude") {
         200_000
@@ -27,13 +37,20 @@ pub fn provider_defaults(provider: &str) -> ProviderDefaults {
     match provider {
         "openai" => ProviderDefaults {
             base_url: "https://api.openai.com/v1".to_string(),
-            models: vec!["gpt-5.5".to_string(), "gpt-5.4".to_string(), "gpt-5.4-mini".to_string()],
+            models: vec![
+                "gpt-5.5".to_string(),
+                "gpt-5.4".to_string(),
+                "gpt-5.4-mini".to_string(),
+            ],
             kind: "openai_compat".to_string(),
             keyless: false,
         },
         "anthropic" => ProviderDefaults {
             base_url: "https://api.anthropic.com".to_string(),
-            models: vec!["claude-opus-4-7".to_string(), "claude-sonnet-4-6".to_string()],
+            models: vec![
+                "claude-opus-4-7".to_string(),
+                "claude-sonnet-4-6".to_string(),
+            ],
             kind: "anthropic".to_string(),
             keyless: false,
         },
@@ -93,7 +110,15 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     };
     use std::io::{self, Write};
 
-    const PROVIDERS: &[&str] = &["openai", "anthropic", "cerebras", "litellm", "ollama", "zhipu", "other"];
+    const PROVIDERS: &[&str] = &[
+        "openai",
+        "anthropic",
+        "cerebras",
+        "litellm",
+        "ollama",
+        "zhipu",
+        "other",
+    ];
 
     // Load user-defined provider presets from ~/.zentra/providers.toml
     let custom_file = CustomProvidersFile::load();
@@ -102,7 +127,10 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
         .iter()
         .filter(|cp| {
             if PROVIDERS.iter().any(|s| s.eq_ignore_ascii_case(&cp.name)) {
-                eprintln!("⚠ custom provider '{}' conflicts with built-in name — skipped", cp.name);
+                eprintln!(
+                    "⚠ custom provider '{}' conflicts with built-in name — skipped",
+                    cp.name
+                );
                 false
             } else {
                 true
@@ -118,7 +146,12 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     if !valid_customs.is_empty() {
         println!("  ── Custom ──");
         for (i, cp) in valid_customs.iter().enumerate() {
-            println!("  {}. {}  ({})", PROVIDERS.len() + i + 1, cp.effective_display_name(), cp.name);
+            println!(
+                "  {}. {}  ({})",
+                PROVIDERS.len() + i + 1,
+                cp.effective_display_name(),
+                cp.name
+            );
         }
     }
     print!("Selection [1]: ");
@@ -149,7 +182,11 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
         let mut url = String::new();
         io::stdin().read_line(&mut url)?;
         let trimmed = url.trim();
-        if trimmed.is_empty() { defaults.base_url.clone() } else { trimmed.to_string() }
+        if trimmed.is_empty() {
+            defaults.base_url.clone()
+        } else {
+            trimmed.to_string()
+        }
     };
 
     let default_model = defaults.models.first().cloned().unwrap_or_default();
@@ -157,7 +194,11 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     io::stdout().flush()?;
     let mut model_input = String::new();
     io::stdin().read_line(&mut model_input)?;
-    let model = if model_input.trim().is_empty() { default_model } else { model_input.trim().to_string() };
+    let model = if model_input.trim().is_empty() {
+        default_model
+    } else {
+        model_input.trim().to_string()
+    };
 
     let default_cw = model_context_window(&model);
     print!("Context window [{default_cw}] (leave blank for auto-detect): ");
@@ -223,22 +264,32 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     println!("\nTesting connection...");
     let test_provider: Box<dyn provider::LLMProvider> = if defaults.kind == "anthropic" {
         Box::new(provider::anthropic::AnthropicProvider::new(
-            base_url.clone(), model.clone(), test_key,
+            base_url.clone(),
+            model.clone(),
+            test_key,
         ))
     } else {
         Box::new(provider::openai_compat::OpenAICompatProvider::new(
-            base_url.clone(), model.clone(), test_key,
+            base_url.clone(),
+            model.clone(),
+            test_key,
         ))
     };
 
     let test_req = provider::CompletionRequest {
-        messages: vec![provider::Message { role: "user".to_string(), content: "Reply OK".to_string() }],
+        messages: vec![provider::Message {
+            role: "user".to_string(),
+            content: "Reply OK".to_string(),
+        }],
         tools: vec![],
         max_tokens: Some(5),
     };
 
     let verified = match test_provider.complete(test_req).await {
-        Ok(_) => { println!("✓ Connection verified"); true }
+        Ok(_) => {
+            println!("✓ Connection verified");
+            true
+        }
         Err(e) => {
             println!("✗ Connection failed: {}", e);
             print!("Save anyway? [y/N]: ");
@@ -265,14 +316,17 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
         }
     }
 
-    global.profiles.insert(name.clone(), ProviderProfile {
-        kind: defaults.kind.clone(),
-        base_url,
-        model,
-        keyless: defaults.keyless,
-        auth_method: auth_method.clone(),
-        context_window,
-    });
+    global.profiles.insert(
+        name.clone(),
+        ProviderProfile {
+            kind: defaults.kind.clone(),
+            base_url,
+            model,
+            keyless: defaults.keyless,
+            auth_method: auth_method.clone(),
+            context_window,
+        },
+    );
     if global.default_profile.is_none() {
         global.default_profile = Some(name.clone());
     }
@@ -293,7 +347,9 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
 
     global.save()?;
 
-    if verified { println!("✓ Profile '{}' saved", name); }
+    if verified {
+        println!("✓ Profile '{}' saved", name);
+    }
     if global.default_profile.as_deref() == Some(&name) {
         println!("  Set as default provider.");
     }

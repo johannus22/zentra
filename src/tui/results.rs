@@ -49,7 +49,14 @@ fn parse_finding_block(block: &str) -> Option<Finding> {
         return None;
     }
 
-    Some(Finding { scanner, severity, title, description, location, recommendation })
+    Some(Finding {
+        scanner,
+        severity,
+        title,
+        description,
+        location,
+        recommendation,
+    })
 }
 
 fn parse_severity(s: &str) -> Option<Severity> {
@@ -91,13 +98,24 @@ fn run_results_blocking(findings: Vec<Finding>) -> Result<()> {
         ScannerType::IacScan,
         ScannerType::Report,
     ];
-    let mut state = UiState::new(scanner_types, "Results — read-only".to_string(), 0, vec![], String::new(), String::new());
+    let mut state = UiState::new(
+        scanner_types,
+        "Results — read-only".to_string(),
+        0,
+        vec![],
+        String::new(),
+        String::new(),
+    );
 
     for s in state.scanners.iter_mut() {
         s.status = ScanStatus::Done;
     }
     for f in &findings {
-        if let Some(s) = state.scanners.iter_mut().find(|s| s.scanner_type.name() == f.scanner) {
+        if let Some(s) = state
+            .scanners
+            .iter_mut()
+            .find(|s| s.scanner_type.name() == f.scanner)
+        {
             s.add_finding(&f.severity);
         }
     }
@@ -134,7 +152,7 @@ fn render_results(frame: &mut Frame, state: &mut UiState) {
     let chunks = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(6),
-        Constraint::Length(8),   // detail: 6 inner rows
+        Constraint::Length(8), // detail: 6 inner rows
         Constraint::Length(1),
     ])
     .split(area);
@@ -147,19 +165,26 @@ fn render_results(frame: &mut Frame, state: &mut UiState) {
     .style(Style::default().fg(Color::Cyan));
     frame.render_widget(header, chunks[0]);
 
-    let body_chunks = Layout::horizontal([
-        Constraint::Length(26),
-        Constraint::Min(20),
-    ])
-    .split(chunks[1]);
+    let body_chunks =
+        Layout::horizontal([Constraint::Length(26), Constraint::Min(20)]).split(chunks[1]);
 
     render_scanners_read_only(frame, body_chunks[0], state);
     render_findings_list(frame, body_chunks[1], state);
 
-    let detail_content = state.selected_finding().map(|f| {
-        let loc = f.location.as_deref().map(|l| format!(" · {}", l)).unwrap_or_default();
-        format!("[{}] {}{}\n{}\nFIX: {}", f.severity, f.title, loc, f.description, f.recommendation)
-    }).unwrap_or_default();
+    let detail_content = state
+        .selected_finding()
+        .map(|f| {
+            let loc = f
+                .location
+                .as_deref()
+                .map(|l| format!(" · {}", l))
+                .unwrap_or_default();
+            format!(
+                "[{}] {}{}\n{}\nFIX: {}",
+                f.severity, f.title, loc, f.description, f.recommendation
+            )
+        })
+        .unwrap_or_default();
     let detail = Paragraph::new(detail_content)
         .block(Block::default().borders(Borders::ALL).title("DETAIL"))
         .wrap(ratatui::widgets::Wrap { trim: true });
@@ -170,47 +195,71 @@ fn render_results(frame: &mut Frame, state: &mut UiState) {
 }
 
 fn render_scanners_read_only(frame: &mut Frame, area: ratatui::layout::Rect, state: &UiState) {
-    let items: Vec<ListItem> = state.scanners.iter().map(|s| {
-        let total = s.critical_count + s.high_count + s.medium_count + s.low_count + s.info_count;
-        ListItem::new(format!("✓ {:<14} {}", format!("{:?}", s.scanner_type), total))
+    let items: Vec<ListItem> = state
+        .scanners
+        .iter()
+        .map(|s| {
+            let total =
+                s.critical_count + s.high_count + s.medium_count + s.low_count + s.info_count;
+            ListItem::new(format!(
+                "✓ {:<14} {}",
+                format!("{:?}", s.scanner_type),
+                total
+            ))
             .style(Style::default().fg(Color::Green))
-    }).collect();
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title("SCANNERS"));
+        })
+        .collect();
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title("SCANNERS"));
     frame.render_widget(list, area);
 }
 
 fn render_findings_list(frame: &mut Frame, area: ratatui::layout::Rect, state: &mut UiState) {
     let inner_width = area.width.saturating_sub(2) as usize;
-    let items: Vec<ListItem> = state.findings.iter().enumerate().map(|(i, f)| {
-        let sev_color = match f.severity {
-            Severity::Critical => Color::Red,
-            Severity::High => Color::LightRed,
-            Severity::Medium => Color::Yellow,
-            Severity::Low => Color::Blue,
-            Severity::Info => Color::DarkGray,
-        };
-        let loc = f.location.as_deref().unwrap_or("").chars().take(20).collect::<String>();
-        let fixed = 8 + 8 + loc.len();
-        let title_width = inner_width.saturating_sub(fixed).max(10);
-        let title = f.title.chars().take(title_width).collect::<String>();
-        let line = Line::from(vec![
-            Span::styled(format!("{:<8}", format!("{}", f.severity)), Style::default().fg(sev_color).add_modifier(Modifier::BOLD)),
-            Span::raw(format!("{:<8}", f.scanner.chars().take(6).collect::<String>())),
-            Span::raw(format!("{:<width$}", title, width = title_width)),
-            Span::styled(loc, Style::default().fg(Color::DarkGray)),
-        ]);
-        let style = if i == state.selected_idx {
-            Style::default().add_modifier(Modifier::REVERSED)
-        } else {
-            Style::default()
-        };
-        ListItem::new(line).style(style)
-    }).collect();
+    let items: Vec<ListItem> = state
+        .findings
+        .iter()
+        .enumerate()
+        .map(|(i, f)| {
+            let sev_color = match f.severity {
+                Severity::Critical => Color::Red,
+                Severity::High => Color::LightRed,
+                Severity::Medium => Color::Yellow,
+                Severity::Low => Color::Blue,
+                Severity::Info => Color::DarkGray,
+            };
+            let loc = f
+                .location
+                .as_deref()
+                .unwrap_or("")
+                .chars()
+                .take(20)
+                .collect::<String>();
+            let fixed = 8 + 8 + loc.len();
+            let title_width = inner_width.saturating_sub(fixed).max(10);
+            let title = f.title.chars().take(title_width).collect::<String>();
+            let line = Line::from(vec![
+                Span::styled(
+                    format!("{:<8}", format!("{}", f.severity)),
+                    Style::default().fg(sev_color).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(format!(
+                    "{:<8}",
+                    f.scanner.chars().take(6).collect::<String>()
+                )),
+                Span::raw(format!("{:<width$}", title, width = title_width)),
+                Span::styled(loc, Style::default().fg(Color::DarkGray)),
+            ]);
+            let style = if i == state.selected_idx {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            };
+            ListItem::new(line).style(style)
+        })
+        .collect();
 
     let title = format!("FINDINGS — ALL ({})", state.total_findings());
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title));
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
     let mut list_state = ListState::default();
     if !state.findings.is_empty() {
         list_state.select(Some(state.selected_idx));

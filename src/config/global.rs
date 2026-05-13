@@ -57,14 +57,12 @@ impl GlobalConfig {
     }
 
     pub fn default_path() -> Result<PathBuf> {
-        let home = dirs::home_dir()
-            .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+        let home =
+            dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
         Ok(home.join(".zentra").join("config.toml"))
     }
 
     pub fn is_configured() -> bool {
-        Self::default_path()
-            .map(|p| p.exists())
-            .unwrap_or(false)
+        Self::default_path().map(|p| p.exists()).unwrap_or(false)
     }
 }

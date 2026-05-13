@@ -49,11 +49,13 @@ pub fn build_auth_url(challenge: &str, state: &str) -> String {
 }
 
 fn percent_encode(s: &str) -> String {
-    s.chars().map(|c| match c {
-        ':' => "%3A".to_string(),
-        '/' => "%2F".to_string(),
-        c => c.to_string(),
-    }).collect()
+    s.chars()
+        .map(|c| match c {
+            ':' => "%3A".to_string(),
+            '/' => "%2F".to_string(),
+            c => c.to_string(),
+        })
+        .collect()
 }
 
 pub fn parse_token_response(json: &serde_json::Value) -> anyhow::Result<OAuthTokens> {
@@ -68,10 +70,18 @@ pub fn parse_token_response(json: &serde_json::Value) -> anyhow::Result<OAuthTok
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
         + expires_in;
-    Ok(OAuthTokens { access_token, refresh_token, expires_at })
+    Ok(OAuthTokens {
+        access_token,
+        refresh_token,
+        expires_at,
+    })
 }
 
-pub async fn exchange_code_with_url(code: &str, verifier: &str, token_url: &str) -> anyhow::Result<OAuthTokens> {
+pub async fn exchange_code_with_url(
+    code: &str,
+    verifier: &str,
+    token_url: &str,
+) -> anyhow::Result<OAuthTokens> {
     let redirect_uri = format!("http://localhost:{}/callback", REDIRECT_PORT);
     let url = format!("{}/oauth/token", token_url.trim_end_matches('/'));
     let client = reqwest::Client::new();
@@ -99,7 +109,10 @@ pub async fn exchange_code(code: &str, verifier: &str) -> anyhow::Result<OAuthTo
     exchange_code_with_url(code, verifier, OPENAI_TOKEN_URL).await
 }
 
-pub async fn refresh_access_token_with_url(refresh_token: &str, token_url: &str) -> anyhow::Result<OAuthTokens> {
+pub async fn refresh_access_token_with_url(
+    refresh_token: &str,
+    token_url: &str,
+) -> anyhow::Result<OAuthTokens> {
     let url = format!("{}/oauth/token", token_url.trim_end_matches('/'));
     let client = reqwest::Client::new();
     let resp = client
@@ -132,7 +145,10 @@ pub async fn run_oauth_flow() -> anyhow::Result<OAuthTokens> {
 
     let auth_url = build_auth_url(&challenge, &state);
     println!("\nOpening browser for OpenAI login...");
-    println!("If the browser doesn't open automatically, visit:\n  {}\n", auth_url);
+    println!(
+        "If the browser doesn't open automatically, visit:\n  {}\n",
+        auth_url
+    );
 
     open::that(&auth_url).context("Failed to launch browser")?;
     println!("Waiting for authentication (complete login in your browser)...");
@@ -178,7 +194,9 @@ pub async fn wait_for_callback() -> anyhow::Result<String> {
         .await
         .context("Failed to bind callback port — is port 8484 already in use?")?;
 
-    let (stream, _) = listener.accept().await
+    let (stream, _) = listener
+        .accept()
+        .await
         .context("Failed to accept OAuth callback connection")?;
 
     let (reader_half, mut writer_half) = stream.into_split();
@@ -191,13 +209,15 @@ pub async fn wait_for_callback() -> anyhow::Result<String> {
         .nth(1)
         .and_then(|path| path.split('?').nth(1))
         .and_then(|query| {
-            query.split('&')
+            query
+                .split('&')
                 .find(|p| p.starts_with("code="))
                 .map(|p| p.trim_start_matches("code=").to_string())
         })
         .ok_or_else(|| anyhow::anyhow!("OAuth callback missing 'code' parameter"))?;
 
-    let body = "<html><body><h2>&#10003; Authenticated. Return to your terminal.</h2></body></html>";
+    let body =
+        "<html><body><h2>&#10003; Authenticated. Return to your terminal.</h2></body></html>";
     let response = format!(
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n{}",
         body.len(),

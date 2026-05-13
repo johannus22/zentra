@@ -30,7 +30,15 @@ impl ScannerAgent {
         context: Option<String>,
         cancel_token: CancellationToken,
     ) -> Self {
-        Self { scanner_type, provider, tool_registry, state_writer, tx, context, cancel_token }
+        Self {
+            scanner_type,
+            provider,
+            tool_registry,
+            state_writer,
+            tx,
+            context,
+            cancel_token,
+        }
     }
 
     pub async fn run(self) -> Result<()> {
@@ -58,27 +66,41 @@ for example, do not flag SQL injection if the ORM listed here auto-parameterises
         };
         let mut messages: Vec<AgentMessage> = vec![AgentMessage::User(initial_prompt)];
 
-        self.tx.send(ScanEvent::ScannerStarted(self.scanner_type)).await.ok();
+        self.tx
+            .send(ScanEvent::ScannerStarted(self.scanner_type))
+            .await
+            .ok();
 
         for _iter in 0..MAX_ITERATIONS {
-            let resp = match self.provider.complete_with_tools(
-                system, &messages, &tools, 4096, Some(&self.cancel_token)
-            ).await {
+            let resp = match self
+                .provider
+                .complete_with_tools(system, &messages, &tools, 4096, Some(&self.cancel_token))
+                .await
+            {
                 Ok(r) => r,
                 Err(e) => {
-                    self.tx.send(ScanEvent::Error {
-                        scanner: self.scanner_type,
-                        message: e.to_string(),
-                    }).await.ok();
-                    self.tx.send(ScanEvent::ScannerCompleted(self.scanner_type)).await.ok();
+                    self.tx
+                        .send(ScanEvent::Error {
+                            scanner: self.scanner_type,
+                            message: e.to_string(),
+                        })
+                        .await
+                        .ok();
+                    self.tx
+                        .send(ScanEvent::ScannerCompleted(self.scanner_type))
+                        .await
+                        .ok();
                     return Err(e);
                 }
             };
 
-            self.tx.send(ScanEvent::TokensUsed {
-                input: resp.usage.input_tokens,
-                output: resp.usage.output_tokens,
-            }).await.ok();
+            self.tx
+                .send(ScanEvent::TokensUsed {
+                    input: resp.usage.input_tokens,
+                    output: resp.usage.output_tokens,
+                })
+                .await
+                .ok();
 
             if resp.tool_calls.is_empty() {
                 // Agent signalled it's done (no more tool calls)
@@ -87,18 +109,23 @@ for example, do not flag SQL injection if the ORM listed here auto-parameterises
 
             // Send activity event for the first tool call
             if let Some(tc) = resp.tool_calls.first() {
-                let arg = tc.arguments.get("path")
+                let arg = tc
+                    .arguments
+                    .get("path")
                     .or_else(|| tc.arguments.get("dir"))
                     .or_else(|| tc.arguments.get("pattern"))
                     .or_else(|| tc.arguments.get("tool"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                self.tx.send(ScanEvent::ToolCall {
-                    scanner: self.scanner_type,
-                    tool: tc.name.clone(),
-                    arg,
-                }).await.ok();
+                self.tx
+                    .send(ScanEvent::ToolCall {
+                        scanner: self.scanner_type,
+                        tool: tc.name.clone(),
+                        arg,
+                    })
+                    .await
+                    .ok();
             }
 
             // Append assistant message with tool calls to history
@@ -109,13 +136,16 @@ for example, do not flag SQL injection if the ORM listed here auto-parameterises
 
             // Execute each tool call and append results
             for tc in &resp.tool_calls {
-                let result = self.tool_registry.dispatch(
-                    &tc.name,
-                    &tc.arguments,
-                    &self.state_writer,
-                    &self.tx,
-                    self.scanner_type,
-                ).await;
+                let result = self
+                    .tool_registry
+                    .dispatch(
+                        &tc.name,
+                        &tc.arguments,
+                        &self.state_writer,
+                        &self.tx,
+                        self.scanner_type,
+                    )
+                    .await;
                 messages.push(AgentMessage::ToolResult {
                     id: tc.id.clone(),
                     name: tc.name.clone(),
@@ -124,7 +154,10 @@ for example, do not flag SQL injection if the ORM listed here auto-parameterises
             }
         }
 
-        self.tx.send(ScanEvent::ScannerCompleted(self.scanner_type)).await.ok();
+        self.tx
+            .send(ScanEvent::ScannerCompleted(self.scanner_type))
+            .await
+            .ok();
         Ok(())
     }
 }

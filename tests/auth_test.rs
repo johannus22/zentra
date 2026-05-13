@@ -5,7 +5,8 @@ fn oauth_tokens_not_expired_when_future() {
     let future = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .as_secs() as i64 + 3600;
+        .as_secs() as i64
+        + 3600;
     let t = OAuthTokens {
         access_token: "at".to_string(),
         refresh_token: "rt".to_string(),
@@ -19,7 +20,8 @@ fn oauth_tokens_expired_when_past() {
     let past = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .as_secs() as i64 - 1;
+        .as_secs() as i64
+        - 1;
     let t = OAuthTokens {
         access_token: "at".to_string(),
         refresh_token: "rt".to_string(),
@@ -34,7 +36,8 @@ fn oauth_tokens_expire_within_buffer() {
     let soon = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .as_secs() as i64 + 30;
+        .as_secs() as i64
+        + 30;
     let t = OAuthTokens {
         access_token: "at".to_string(),
         refresh_token: "rt".to_string(),
@@ -54,13 +57,18 @@ fn auth_method_default_is_api_key() {
     "#;
     let cfg: GlobalConfig = toml::from_str(toml).unwrap();
     let profile = cfg.profiles.get("test").unwrap();
-    assert!(matches!(profile.auth_method, zentra_cli::config::AuthMethod::ApiKey));
+    assert!(matches!(
+        profile.auth_method,
+        zentra_cli::config::AuthMethod::ApiKey
+    ));
 }
 
-use zentra_cli::auth::{build_auth_url, generate_pkce};
-use wiremock::{MockServer, Mock, ResponseTemplate};
 use wiremock::matchers::{method, path};
-use zentra_cli::auth::{exchange_code_with_url, refresh_access_token_with_url, parse_token_response};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+use zentra_cli::auth::{build_auth_url, generate_pkce};
+use zentra_cli::auth::{
+    exchange_code_with_url, parse_token_response, refresh_access_token_with_url,
+};
 
 #[test]
 fn pkce_verifier_and_challenge_differ() {
@@ -74,12 +82,18 @@ fn pkce_verifier_and_challenge_differ() {
 fn pkce_verifier_is_url_safe() {
     let (verifier, challenge) = generate_pkce();
     for ch in verifier.chars() {
-        assert!(ch.is_alphanumeric() || ch == '-' || ch == '_',
-            "verifier contains non-URL-safe char: {}", ch);
+        assert!(
+            ch.is_alphanumeric() || ch == '-' || ch == '_',
+            "verifier contains non-URL-safe char: {}",
+            ch
+        );
     }
     for ch in challenge.chars() {
-        assert!(ch.is_alphanumeric() || ch == '-' || ch == '_',
-            "challenge contains non-URL-safe char: {}", ch);
+        assert!(
+            ch.is_alphanumeric() || ch == '-' || ch == '_',
+            "challenge contains non-URL-safe char: {}",
+            ch
+        );
     }
 }
 
@@ -114,7 +128,9 @@ async fn exchange_code_parses_tokens() {
         .mount(&server)
         .await;
 
-    let tokens = exchange_code_with_url("mycode", "myverifier", &server.uri()).await.unwrap();
+    let tokens = exchange_code_with_url("mycode", "myverifier", &server.uri())
+        .await
+        .unwrap();
     assert_eq!(tokens.access_token, "tok_abc");
     assert_eq!(tokens.refresh_token, "ref_xyz");
     assert!(!tokens.is_expired());
@@ -149,7 +165,9 @@ async fn refresh_token_returns_new_tokens() {
         .mount(&server)
         .await;
 
-    let tokens = refresh_access_token_with_url("old_refresh", &server.uri()).await.unwrap();
+    let tokens = refresh_access_token_with_url("old_refresh", &server.uri())
+        .await
+        .unwrap();
     assert_eq!(tokens.access_token, "new_tok");
 }
 

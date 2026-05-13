@@ -61,7 +61,9 @@ mod tests {
         let cli = Cli::try_parse_from(["zentra", "config", "setup"]).unwrap();
         assert!(matches!(
             cli.command,
-            Some(Commands::Config { action: ConfigAction::Setup })
+            Some(Commands::Config {
+                action: ConfigAction::Setup
+            })
         ));
     }
 

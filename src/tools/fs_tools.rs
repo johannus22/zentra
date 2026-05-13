@@ -27,7 +27,12 @@ pub fn read_file(path: &str) -> String {
 
 pub fn list_files(dir: &str, pattern: Option<&str>) -> String {
     let mut entries: Vec<String> = Vec::new();
-    for entry in WalkBuilder::new(dir).hidden(false).follow_links(false).build().flatten() {
+    for entry in WalkBuilder::new(dir)
+        .hidden(false)
+        .follow_links(false)
+        .build()
+        .flatten()
+    {
         if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
             let path = entry.path().to_string_lossy().to_string();
             if pattern.map(|p| path.contains(p)).unwrap_or(true) {
@@ -51,7 +56,11 @@ pub fn grep_code(pattern: &str, path: Option<&str>) -> String {
     let search_root = path.unwrap_or(".");
     let mut results: Vec<String> = Vec::new();
 
-    for entry in WalkBuilder::new(search_root).hidden(false).build().flatten() {
+    for entry in WalkBuilder::new(search_root)
+        .hidden(false)
+        .build()
+        .flatten()
+    {
         if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
             if let Ok(content) = fs::read_to_string(entry.path()) {
                 for (i, line) in content.lines().enumerate() {
