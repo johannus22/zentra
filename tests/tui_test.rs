@@ -5,7 +5,7 @@ use zentra_cli::config::{AuthMethod, GlobalConfig};
 use zentra_cli::state::{Finding, Severity};
 use zentra_cli::tui::menu::{
     centered_middle_column, main_menu_actions, provider_selector_footer_hint,
-    scanner_selector_footer_hint, MenuScreen, MenuState,
+    scanner_selector_footer_hint, MenuScreen, MenuState, OAuthModalPhase,
 };
 use zentra_cli::tui::{ScanStatus, UiState};
 
@@ -723,6 +723,72 @@ fn provider_form_validate_still_requires_api_key_for_non_openai_providers() {
 }
 
 #[test]
+fn provider_form_validate_rejects_invalid_base_url() {
+    let form = ProviderFormState {
+        api_key: "sk-test-key-12345".to_string(),
+        profile_name: "anthropic_validated".to_string(),
+        base_url: "not-a-url".to_string(),
+        ..Default::default()
+    };
+
+    let err = form.validate().unwrap_err().to_string();
+    assert!(err.contains("relative URL without a base") || err.contains("base URL"));
+}
+
+#[test]
+fn provider_form_validate_allows_localhost_http_base_url() {
+    let form = ProviderFormState {
+        api_key: "sk-test-key-12345".to_string(),
+        profile_name: "local_ollama".to_string(),
+        base_url: "http://localhost:11434/v1".to_string(),
+        ..Default::default()
+    };
+
+    assert!(form.validate().is_ok());
+}
+
+#[test]
+fn oauth_modal_state_tracks_progress_and_launch_error() {
+    let mut state = MenuState::new(
+        true,
+        true,
+        vec![],
+        "gpt-4.1".to_string(),
+        "openai".to_string(),
+        String::new(),
+        String::new(),
+    );
+    state.screen = MenuScreen::ProviderForm;
+
+    state.open_oauth_modal("https://auth.openai.com/example".to_string());
+    let modal = state.oauth_modal.as_ref().unwrap();
+    assert_eq!(modal.phase, OAuthModalPhase::LaunchingBrowser);
+    assert_eq!(modal.auth_url, "https://auth.openai.com/example");
+    assert!(modal.error.is_none());
+
+    state.set_oauth_modal_error(Some("Failed to launch browser".to_string()));
+    state.set_oauth_modal_phase(OAuthModalPhase::WaitingForCallback);
+    let modal = state.oauth_modal.as_ref().unwrap();
+    assert_eq!(modal.phase, OAuthModalPhase::WaitingForCallback);
+    assert_eq!(
+        modal.error.as_deref(),
+        Some("Failed to launch browser")
+    );
+
+    state.set_oauth_modal_phase(OAuthModalPhase::ExchangingCode);
+    assert_eq!(
+        state.oauth_modal.as_ref().unwrap().phase,
+        OAuthModalPhase::ExchangingCode
+    );
+
+    state.set_oauth_modal_phase(OAuthModalPhase::Success);
+    assert_eq!(
+        state.oauth_modal.as_ref().unwrap().phase,
+        OAuthModalPhase::Success
+    );
+}
+
+#[test]
 fn provider_form_save_persists_openai_oauth_auth_method_without_api_key() {
     let dir = TempDir::new().unwrap();
     let config_path = dir.path().join("config.toml");
@@ -758,6 +824,60 @@ fn provider_form_save_persists_openai_oauth_auth_method_without_api_key() {
         !key_path.exists(),
         "OAuth save should not persist an API key file"
     );
+}
+
+#[test]
+fn provider_form_oauth_save_store_failure_preserves_form_and_populates_error() {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+
+    let mut state = MenuState::new(
+        true,
+        true,
+        vec![],
+        "gpt-4.1".to_string(),
+        "openai".to_string(),
+        String::new(),
+        String::new(),
+    );
+    state.screen = MenuScreen::ProviderForm;
+    state.form.cycle_provider(1);
+    state.form.auth_method = AuthMethod::OAuth;
+    state.form.profile_name = "openai_retry".to_string();
+    state.form.model = "gpt-4.1".to_string();
+    state.form.base_url = "https://api.openai.com/v1".to_string();
+
+    let expected_model = state.form.model.clone();
+    let expected_base_url = state.form.base_url.clone();
+    let expected_profile_name = state.form.profile_name.clone();
+    let expected_auth_method = state.form.auth_method.clone();
+
+    state.open_oauth_modal("https://auth.openai.com/example".to_string());
+
+    let err = state
+        .form
+        .save_with_oauth_to_path(
+            &config_path,
+            || {
+                Ok(zentra_cli::auth::OAuthTokens {
+                    access_token: "access-token".to_string(),
+                    refresh_token: "refresh-token".to_string(),
+                    expires_at: 4_102_444_800,
+                })
+            },
+            |_, _| anyhow::bail!("simulated oauth token store failure"),
+        )
+        .unwrap_err();
+
+    state.finish_oauth_modal_error(err.to_string());
+
+    assert!(state.oauth_modal.is_none());
+    assert_eq!(state.screen, MenuScreen::ProviderForm);
+    assert_eq!(state.form.model, expected_model);
+    assert_eq!(state.form.base_url, expected_base_url);
+    assert_eq!(state.form.profile_name, expected_profile_name);
+    assert_eq!(state.form.auth_method, expected_auth_method);
+    assert_eq!(state.form.error.as_deref(), Some("simulated oauth token store failure"));
 }
 
 #[test]
@@ -808,6 +928,192 @@ fn provider_form_save_oauth_store_failure_leaves_existing_config_unchanged() {
     assert_eq!(profile.base_url, "https://api.anthropic.com");
     assert_eq!(profile.model, "claude-opus-4-1");
     assert_eq!(profile.auth_method, AuthMethod::ApiKey);
+}
+
+#[test]
+fn provider_form_oauth_save_config_failure_rolls_back_stored_tokens() {
+    let dir = TempDir::new().unwrap();
+    let blocked_parent = dir.path().join("blocked-parent");
+    std::fs::write(&blocked_parent, "not a directory").unwrap();
+    let config_path = blocked_parent.join("config.toml");
+
+    let mut form = ProviderFormState::default();
+    form.cycle_provider(1);
+    form.auth_method = AuthMethod::OAuth;
+    form.profile_name = "openai_oauth".to_string();
+
+    let store_calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let delete_calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    let err = form
+        .save_with_oauth_to_path_using(
+            &config_path,
+            || {
+                Ok(zentra_cli::auth::OAuthTokens {
+                    access_token: "access-token".to_string(),
+                    refresh_token: "refresh-token".to_string(),
+                    expires_at: 4_102_444_800,
+                })
+            },
+            {
+                let store_calls = store_calls.clone();
+                move |profile_name: &str, _: &zentra_cli::auth::OAuthTokens| {
+                    store_calls.lock().unwrap().push(profile_name.to_string());
+                    Ok(())
+                }
+            },
+            {
+                let delete_calls = delete_calls.clone();
+                move |profile_name: &str| {
+                    delete_calls.lock().unwrap().push(profile_name.to_string());
+                    Ok(())
+                }
+            },
+            |_, _| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap_err();
+
+    assert_eq!(store_calls.lock().unwrap().as_slice(), ["openai_oauth"]);
+    assert_eq!(delete_calls.lock().unwrap().as_slice(), ["openai_oauth"]);
+    assert!(!err.to_string().is_empty());
+    assert!(!config_path.exists(), "config file should not be created on rollback");
+}
+
+#[test]
+fn provider_form_oauth_save_delete_key_failure_rolls_back_stored_tokens_and_keeps_config() {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+
+    let mut original = GlobalConfig::default();
+    original.default_profile = Some("work".to_string());
+    original.profiles.insert(
+        "work".to_string(),
+        zentra_cli::config::ProviderProfile {
+            kind: "anthropic".to_string(),
+            base_url: "https://api.anthropic.com".to_string(),
+            model: "claude-opus-4-1".to_string(),
+            keyless: false,
+            auth_method: AuthMethod::ApiKey,
+            context_window: Some(200_000),
+        },
+    );
+    original.save_to(&config_path).unwrap();
+
+    let mut form = ProviderFormState::default();
+    form.cycle_provider(1);
+    form.auth_method = AuthMethod::OAuth;
+    form.profile_name = "work".to_string();
+
+    let stored_oauth = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let deleted_oauth = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    let err = form
+        .save_with_oauth_to_path_using(
+            &config_path,
+            || {
+                Ok(zentra_cli::auth::OAuthTokens {
+                    access_token: "access-token".to_string(),
+                    refresh_token: "refresh-token".to_string(),
+                    expires_at: 4_102_444_800,
+                })
+            },
+            {
+                let stored_oauth = stored_oauth.clone();
+                move |profile_name: &str, _: &zentra_cli::auth::OAuthTokens| {
+                    stored_oauth.lock().unwrap().push(profile_name.to_string());
+                    Ok(())
+                }
+            },
+            {
+                let deleted_oauth = deleted_oauth.clone();
+                move |profile_name: &str| {
+                    deleted_oauth.lock().unwrap().push(profile_name.to_string());
+                    Ok(())
+                }
+            },
+            |_, _| Ok(()),
+            |_| anyhow::bail!("simulated api key delete failure"),
+        )
+        .unwrap_err();
+
+    assert!(err.to_string().contains("api key delete failure"));
+    assert_eq!(stored_oauth.lock().unwrap().as_slice(), ["work"]);
+    assert_eq!(deleted_oauth.lock().unwrap().as_slice(), ["work"]);
+
+    let cfg = GlobalConfig::load_from(&config_path).unwrap();
+    let profile = cfg.profiles.get("work").unwrap();
+    assert_eq!(cfg.default_profile.as_deref(), Some("work"));
+    assert_eq!(profile.kind, "anthropic");
+    assert_eq!(profile.base_url, "https://api.anthropic.com");
+    assert_eq!(profile.model, "claude-opus-4-1");
+    assert_eq!(profile.auth_method, AuthMethod::ApiKey);
+}
+
+#[test]
+fn provider_form_overwriting_profile_with_oauth_clears_stale_api_key() {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+
+    let mut original = GlobalConfig::default();
+    original.default_profile = Some("work".to_string());
+    original.profiles.insert(
+        "work".to_string(),
+        zentra_cli::config::ProviderProfile {
+            kind: "openai".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4.1".to_string(),
+            keyless: false,
+            auth_method: AuthMethod::ApiKey,
+            context_window: Some(1_000_000),
+        },
+    );
+    original.save_to(&config_path).unwrap();
+
+    let mut form = ProviderFormState::default();
+    form.cycle_provider(1);
+    form.auth_method = AuthMethod::OAuth;
+    form.profile_name = "work".to_string();
+
+    let cleared_keys = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let stored_oauth = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    let saved_name = form
+        .save_with_oauth_to_path_using(
+            &config_path,
+            || {
+                Ok(zentra_cli::auth::OAuthTokens {
+                    access_token: "access-token".to_string(),
+                    refresh_token: "refresh-token".to_string(),
+                    expires_at: 4_102_444_800,
+                })
+            },
+            {
+                let stored_oauth = stored_oauth.clone();
+                move |profile_name: &str, _: &zentra_cli::auth::OAuthTokens| {
+                    stored_oauth.lock().unwrap().push(profile_name.to_string());
+                    Ok(())
+                }
+            },
+            |_| Ok(()),
+            |_, _| Ok(()),
+            {
+                let cleared_keys = cleared_keys.clone();
+                move |profile_name: &str| {
+                    cleared_keys.lock().unwrap().push(profile_name.to_string());
+                    Ok(())
+                }
+            },
+        )
+        .unwrap();
+
+    assert_eq!(saved_name, "work");
+    assert_eq!(stored_oauth.lock().unwrap().as_slice(), ["work"]);
+    assert_eq!(cleared_keys.lock().unwrap().as_slice(), ["work"]);
+
+    let cfg = GlobalConfig::load_from(&config_path).unwrap();
+    let profile = cfg.profiles.get("work").unwrap();
+    assert_eq!(profile.auth_method, AuthMethod::OAuth);
 }
 
 #[test]

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use tempfile::TempDir;
 use zentra_cli::config::{GlobalConfig, ProjectConfig, ProviderProfile};
+use zentra_cli::config::validation::validate_provider_base_url;
 use zentra_cli::wizard::provider_defaults;
 
 #[test]
@@ -211,6 +212,43 @@ fn model_context_window_returns_known_values() {
     assert_eq!(model_context_window("claude-opus-4-7"), 200_000);
     assert_eq!(model_context_window("glm-4-flash"), 128_000);
     assert_eq!(model_context_window("unknown-model"), 32_000);
+}
+
+#[test]
+fn provider_base_url_validation_accepts_https_remote_url() {
+    assert!(validate_provider_base_url("https://api.openai.com/v1").is_ok());
+}
+
+#[test]
+fn provider_base_url_validation_rejects_missing_scheme() {
+    assert!(validate_provider_base_url("api.openai.com/v1").is_err());
+}
+
+#[test]
+fn provider_base_url_validation_allows_localhost_http() {
+    assert!(validate_provider_base_url("http://localhost:11434/v1").is_ok());
+    assert!(validate_provider_base_url("http://127.0.0.1:11434/v1").is_ok());
+}
+
+#[test]
+fn provider_base_url_validation_rejects_http_remote_url() {
+    assert!(validate_provider_base_url("http://api.openai.com/v1").is_err());
+}
+
+#[test]
+fn provider_base_url_validation_rejects_http_ipv6_loopback_url() {
+    assert!(validate_provider_base_url("http://[::1]:11434/v1").is_err());
+}
+
+#[test]
+fn provider_base_url_validation_rejects_empty_or_whitespace_input() {
+    assert!(validate_provider_base_url("").is_err());
+    assert!(validate_provider_base_url("   \t\n").is_err());
+}
+
+#[test]
+fn provider_base_url_validation_rejects_unsupported_scheme() {
+    assert!(validate_provider_base_url("ftp://localhost:11434/v1").is_err());
 }
 
 // ── Custom Providers ────────────────────────────────────────────────────────

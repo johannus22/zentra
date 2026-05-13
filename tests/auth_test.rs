@@ -67,8 +67,21 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use zentra_cli::auth::{build_auth_url, generate_pkce};
 use zentra_cli::auth::{
-    exchange_code_with_url, parse_token_response, refresh_access_token_with_url,
+    exchange_code_with_url, parse_callback_path, parse_token_response,
+    refresh_access_token_with_url,
 };
+
+#[tokio::test]
+async fn wait_for_callback_times_out() {
+    let err = zentra_cli::auth::wait_for_callback_with_state_and_timeout(
+        "expected-state",
+        std::time::Duration::from_millis(50),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(err.to_string().contains("timed out"), "got: {err}");
+}
 
 #[test]
 fn pkce_verifier_and_challenge_differ() {
@@ -149,6 +162,76 @@ async fn exchange_code_returns_error_on_failure() {
 
     let result = exchange_code_with_url("bad_code", "verifier", &server.uri()).await;
     assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn callback_params_token_endpoint_url_is_not_double_appended() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "tok_abc",
+            "refresh_token": "ref_xyz",
+            "expires_in": 3600,
+            "token_type": "Bearer"
+        })))
+        .mount(&server)
+        .await;
+
+    let token_url = format!("{}/oauth/token", server.uri());
+    let tokens = exchange_code_with_url("mycode", "myverifier", &token_url)
+        .await
+        .unwrap();
+
+    assert_eq!(tokens.access_token, "tok_abc");
+}
+
+#[test]
+fn callback_params_extracts_code_and_validates_state() {
+    let code = parse_callback_path("/callback?code=abc123&state=expected", "expected").unwrap();
+    assert_eq!(code, "abc123");
+}
+
+#[test]
+fn callback_params_preserves_literal_plus_in_code_and_state() {
+    let code = parse_callback_path("/callback?code=a+b+c&state=expected+state", "expected+state")
+        .unwrap();
+
+    assert_eq!(code, "a+b+c");
+}
+
+#[test]
+fn callback_params_rejects_error_response() {
+    let err = parse_callback_path(
+        "/callback?error=access_denied&error_description=user_cancelled&state=expected",
+        "expected",
+    )
+    .unwrap_err();
+
+    assert!(err.to_string().contains("access_denied"));
+}
+
+#[test]
+fn callback_params_decodes_utf8_error_description() {
+    let err = parse_callback_path(
+        "/callback?error=access_denied&error_description=Ol%C3%A1%20Mundo&state=expected",
+        "expected",
+    )
+    .unwrap_err();
+
+    assert!(err.to_string().contains("Olá Mundo"), "got: {err}");
+}
+
+#[test]
+fn callback_params_rejects_bad_state() {
+    let err = parse_callback_path("/callback?code=abc123&state=wrong", "expected").unwrap_err();
+    assert!(err.to_string().contains("state"));
+}
+
+#[test]
+fn callback_params_rejects_missing_code() {
+    let err = parse_callback_path("/callback?state=expected", "expected").unwrap_err();
+    assert!(err.to_string().contains("missing 'code' parameter"));
 }
 
 #[tokio::test]
