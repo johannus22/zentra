@@ -473,6 +473,7 @@ fn run_menu_loop(
 }
 
 const BANNER: &str = " ____        _ \n|_  /___ _ _| |_ _ _ __ _\n / // -_) ' \\  _| '_/ _` |\n/___\\___|_||_\\__|_| \\__,_|";
+pub(crate) const HEADER_HEIGHT: u16 = 7;
 
 fn render_menu(frame: &mut Frame, state: &MenuState) {
     let area = frame.area();
@@ -546,7 +547,7 @@ fn render_banner_header(frame: &mut Frame, area: ratatui::layout::Rect, state: &
 fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
     let chunks = Layout::vertical([
         Constraint::Fill(1),
-        Constraint::Length(6),   // header block
+        Constraint::Length(HEADER_HEIGHT),
         Constraint::Min(12),     // menu list
         Constraint::Length(1),   // key hints
         Constraint::Fill(1),
@@ -605,7 +606,7 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
 fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
     let chunks = Layout::vertical([
         Constraint::Fill(1),
-        Constraint::Length(6),
+        Constraint::Length(HEADER_HEIGHT),
         Constraint::Min(10),
         Constraint::Length(1),
         Constraint::Fill(1),
@@ -681,7 +682,7 @@ fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state
 fn render_provider_selector(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
     let chunks = Layout::vertical([
         Constraint::Fill(1),
-        Constraint::Length(6),
+        Constraint::Length(HEADER_HEIGHT),
         Constraint::Min(6),
         Constraint::Length(1),
         Constraint::Fill(1),
@@ -754,7 +755,7 @@ fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &
     // ── Header + form stacked vertically ────────────────────────────────────
     let outer_chunks = Layout::vertical([
         Constraint::Fill(1),
-        Constraint::Length(6),
+        Constraint::Length(HEADER_HEIGHT),
         Constraint::Length(13),
         Constraint::Fill(1),
     ])
