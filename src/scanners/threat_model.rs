@@ -26,5 +26,11 @@ Do not try to read every file — focus on security-relevant code."
 }
 
 pub fn allowed_tools() -> &'static [&'static str] {
-    &["read_file", "list_files", "grep_code", "write_finding", "git_log"]
+    &[
+        "read_file",
+        "list_files",
+        "grep_code",
+        "write_finding",
+        "git_log",
+    ]
 }

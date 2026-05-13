@@ -1,4 +1,4 @@
-﻿use clap::Parser;
+use clap::Parser;
 use zentra_cli::{
     cli, commands,
     config::{GlobalConfig, ProjectConfig},
@@ -13,29 +13,49 @@ async fn main() -> anyhow::Result<()> {
             // Reload config every iteration so menu reflects any changes
             let global = GlobalConfig::load().unwrap_or_default();
             let provider_configured = !global.profiles.is_empty();
-            let project_configured = ProjectConfig::load_from(&ProjectConfig::default_path()).is_ok();
-            let mut profiles: Vec<(String, String)> = global.profiles
+            let project_configured =
+                ProjectConfig::load_from(&ProjectConfig::default_path()).is_ok();
+            let mut profiles: Vec<(String, String)> = global
+                .profiles
                 .iter()
                 .map(|(name, p)| (name.clone(), p.model.clone()))
                 .collect();
             profiles.sort_by(|a, b| a.0.cmp(&b.0));
-    let active_profile = global.default_profile.clone().unwrap_or_default();
-    let active_model = global.profiles.get(&active_profile)
-        .map(|p| p.model.clone())
-        .unwrap_or_default();
-    let project_name = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "project".to_string());
+            let active_profile = global.default_profile.clone().unwrap_or_default();
+            let active_model = global
+                .profiles
+                .get(&active_profile)
+                .map(|p| p.model.clone())
+                .unwrap_or_default();
+            let project_name = std::env::current_dir()
+                .ok()
+                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| "project".to_string());
 
-    let branch_name = std::process::Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .ok()
-        .and_then(|o| if o.status.success() { Some(String::from_utf8_lossy(&o.stdout).trim().to_string()) } else { None })
-        .unwrap_or_else(|| "unknown".to_string());
+            let branch_name = std::process::Command::new("git")
+                .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                .output()
+                .ok()
+                .and_then(|o| {
+                    if o.status.success() {
+                        Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "unknown".to_string());
 
-    match run_menu(provider_configured, project_configured, profiles, active_model, active_profile, project_name, branch_name).await? {
+            match run_menu(
+                provider_configured,
+                project_configured,
+                profiles,
+                active_model,
+                active_profile,
+                project_name,
+                branch_name,
+            )
+            .await?
+            {
                 MenuAction::RunScan(scanners) => {
                     commands::scan::run_with_scanners(scanners).await?;
                     // loop continues so scan UI q/Esc returns here
@@ -65,9 +85,7 @@ async fn main() -> anyhow::Result<()> {
             cli::ConfigAction::Show => commands::config::show().await?,
             cli::ConfigAction::Remove { name } => commands::config::remove(&name).await?,
         },
-        Some(cli::Commands::Scan { provider, only }) => {
-            commands::scan::run(provider, only).await?
-        }
+        Some(cli::Commands::Scan { provider, only }) => commands::scan::run(provider, only).await?,
         Some(cli::Commands::Update) => {
             eprintln!("zentra update â€” available in Plan 4 (install + CI)");
             std::process::exit(1);
@@ -75,4 +93,3 @@ async fn main() -> anyhow::Result<()> {
     }
     Ok(())
 }
-

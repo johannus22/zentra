@@ -6,7 +6,10 @@ pub fn run_audit(tool: &str) -> String {
         "cargo" => run_cargo_audit(),
         "pip" => run_pip_audit(),
         "go" => run_go_audit(),
-        other => format!("Unknown audit tool: '{}'. Supported: npm, cargo, pip, go.", other),
+        other => format!(
+            "Unknown audit tool: '{}'. Supported: npm, cargo, pip, go.",
+            other
+        ),
     }
 }
 
@@ -44,7 +47,10 @@ fn run_cargo_audit() -> String {
 }
 
 fn run_pip_audit() -> String {
-    match Command::new("pip-audit").args(["--output", "json"]).output() {
+    match Command::new("pip-audit")
+        .args(["--output", "json"])
+        .output()
+    {
         Err(_) => "pip-audit not installed — run 'pip install pip-audit'".to_string(),
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout).to_string();
@@ -63,8 +69,14 @@ fn run_pip_audit() -> String {
 }
 
 fn run_go_audit() -> String {
-    match Command::new("govulncheck").args(["-json", "./..."]).output() {
-        Err(_) => "govulncheck not installed — run 'go install golang.org/x/vuln/cmd/govulncheck@latest'".to_string(),
+    match Command::new("govulncheck")
+        .args(["-json", "./..."])
+        .output()
+    {
+        Err(_) => {
+            "govulncheck not installed — run 'go install golang.org/x/vuln/cmd/govulncheck@latest'"
+                .to_string()
+        }
         Ok(out) => {
             let stdout = String::from_utf8_lossy(&out.stdout).to_string();
             if stdout.trim().is_empty() {
@@ -86,5 +98,9 @@ fn truncate_output(s: String, max_bytes: usize) -> String {
         return s;
     }
     let boundary = s.floor_char_boundary(max_bytes);
-    format!("{}\n... (truncated, {} bytes total)", &s[..boundary], s.len())
+    format!(
+        "{}\n... (truncated, {} bytes total)",
+        &s[..boundary],
+        s.len()
+    )
 }

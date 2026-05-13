@@ -54,9 +54,16 @@ pub enum AgentMessage {
     /// Initial user instruction to the agent.
     User(String),
     /// Assistant reply, optionally with tool call requests.
-    Assistant { content: String, tool_calls: Vec<ToolCall> },
+    Assistant {
+        content: String,
+        tool_calls: Vec<ToolCall>,
+    },
     /// Tool execution result to feed back to the assistant.
-    ToolResult { id: String, name: String, content: String },
+    ToolResult {
+        id: String,
+        name: String,
+        content: String,
+    },
 }
 
 #[async_trait]

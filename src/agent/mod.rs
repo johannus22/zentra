@@ -46,7 +46,17 @@ pub enum ScanEvent {
     ScannerStarted(ScannerType),
     ScannerCompleted(ScannerType),
     FindingAdded(Finding),
-    ToolCall { scanner: ScannerType, tool: String, arg: String },
-    Error { scanner: ScannerType, message: String },
-    TokensUsed { input: u32, output: u32 },
+    ToolCall {
+        scanner: ScannerType,
+        tool: String,
+        arg: String,
+    },
+    Error {
+        scanner: ScannerType,
+        message: String,
+    },
+    TokensUsed {
+        input: u32,
+        output: u32,
+    },
 }

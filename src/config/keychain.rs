@@ -10,7 +10,11 @@ pub fn masked_display() -> &'static str {
 }
 
 pub fn key_file_path(profile: &str) -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".zentra").join("keys").join(format!("{}.key", profile)))
+    dirs::home_dir().map(|h| {
+        h.join(".zentra")
+            .join("keys")
+            .join(format!("{}.key", profile))
+    })
 }
 
 #[derive(Debug)]
@@ -56,8 +60,7 @@ pub fn get_key(profile: &str) -> Result<Option<String>> {
     }
     if let Some(path) = key_file_path(profile) {
         if path.exists() {
-            let key = std::fs::read_to_string(&path)
-                .context("Failed to read API key from file")?;
+            let key = std::fs::read_to_string(&path).context("Failed to read API key from file")?;
             return Ok(Some(key.trim().to_string()));
         }
     }
@@ -85,7 +88,8 @@ pub fn set_oauth_tokens(profile: &str, tokens: &crate::auth::OAuthTokens) -> Res
     let json = serde_json::to_string(tokens)?;
     let entry = keyring::Entry::new(&service_name(profile), "oauth_tokens")
         .context("Failed to access OS keychain")?;
-    entry.set_password(&json)
+    entry
+        .set_password(&json)
         .context("Failed to store OAuth tokens in keychain")?;
     Ok(())
 }

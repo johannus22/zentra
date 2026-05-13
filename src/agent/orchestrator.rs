@@ -3,8 +3,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::{ScanEvent, ScannerType};
 use crate::agent::scanner::ScannerAgent;
+use crate::agent::{ScanEvent, ScannerType};
 use crate::provider::LLMProvider;
 use crate::state::StateWriter;
 use crate::tools::ToolRegistry;
@@ -32,31 +32,43 @@ impl OrchestratorAgent {
         tx: mpsc::Sender<ScanEvent>,
         cancel_token: CancellationToken,
     ) -> Self {
-        Self { provider, tool_registry, state_writer, tx, cancel_token }
+        Self {
+            provider,
+            tool_registry,
+            state_writer,
+            tx,
+            cancel_token,
+        }
     }
 
     pub async fn run(self, scanners: &[ScannerType]) -> Result<()> {
         // Phase 0: FrameworkAnalysis — builds .zentra/architecture.md for all subsequent scanners
         if scanners.contains(&ScannerType::FrameworkAnalysis) {
-            self.run_llm_scanner(ScannerType::FrameworkAnalysis, None).await?;
+            self.run_llm_scanner(ScannerType::FrameworkAnalysis, None)
+                .await?;
 
             // Safety net: if the agent exhausted iterations without calling write_architecture,
             // write a minimal placeholder so Phase 0 won't re-trigger on the next scan.
             if self.state_writer.read_architecture().is_empty() {
                 let _ = self.state_writer.write_architecture(
                     "# Framework Architecture Analysis\n\nAnalysis incomplete. \
-Delete this file and re-run the scan to retry."
+Delete this file and re-run the scan to retry.",
                 );
             }
         }
 
         // Read produced architecture; inject into every LLM scanner that follows
         let context = self.state_writer.read_architecture();
-        let context_opt: Option<String> = if context.is_empty() { None } else { Some(context) };
+        let context_opt: Option<String> = if context.is_empty() {
+            None
+        } else {
+            Some(context)
+        };
 
         // Phase 1: ThreatModel — sequential
         if scanners.contains(&ScannerType::ThreatModel) {
-            self.run_llm_scanner(ScannerType::ThreatModel, context_opt.as_deref()).await?;
+            self.run_llm_scanner(ScannerType::ThreatModel, context_opt.as_deref())
+                .await?;
         }
 
         // Phase 2: parallel scanners (SAST, SCA, API, IaC)
@@ -89,13 +101,18 @@ Delete this file and re-run the scan to retry."
 
         // Phase 3: Report — sequential, runs last
         if scanners.contains(&ScannerType::Report) {
-            self.run_llm_scanner(ScannerType::Report, context_opt.as_deref()).await?;
+            self.run_llm_scanner(ScannerType::Report, context_opt.as_deref())
+                .await?;
         }
 
         Ok(())
     }
 
-    async fn run_llm_scanner(&self, scanner_type: ScannerType, context: Option<&str>) -> Result<()> {
+    async fn run_llm_scanner(
+        &self,
+        scanner_type: ScannerType,
+        context: Option<&str>,
+    ) -> Result<()> {
         ScannerAgent::new(
             scanner_type,
             Arc::clone(&self.provider),

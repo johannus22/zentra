@@ -45,7 +45,7 @@ impl PopupState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScanStatus {
     Queued,
-    Waiting,  // Report scanner: waits for all others
+    Waiting, // Report scanner: waits for all others
     Running,
     Done,
     Failed,
@@ -67,7 +67,11 @@ impl UiScanner {
     fn new(scanner_type: ScannerType, is_report: bool) -> Self {
         Self {
             scanner_type,
-            status: if is_report { ScanStatus::Waiting } else { ScanStatus::Queued },
+            status: if is_report {
+                ScanStatus::Waiting
+            } else {
+                ScanStatus::Queued
+            },
             critical_count: 0,
             high_count: 0,
             medium_count: 0,
@@ -163,7 +167,11 @@ impl UiState {
                 }
             }
             ScanEvent::FindingAdded(f) => {
-                if let Some(s) = self.scanners.iter_mut().find(|s| s.scanner_type.name() == f.scanner) {
+                if let Some(s) = self
+                    .scanners
+                    .iter_mut()
+                    .find(|s| s.scanner_type.name() == f.scanner)
+                {
                     s.add_finding(&f.severity);
                 }
                 self.findings.push(f);
@@ -193,9 +201,9 @@ impl UiState {
     }
 
     pub fn all_done(&self) -> bool {
-        self.scanners.iter().all(|s| {
-            matches!(s.status, ScanStatus::Done | ScanStatus::Failed)
-        })
+        self.scanners
+            .iter()
+            .all(|s| matches!(s.status, ScanStatus::Done | ScanStatus::Failed))
     }
 
     pub fn select_next(&mut self) {
@@ -215,7 +223,10 @@ impl UiState {
     }
 
     pub fn total_findings(&self) -> usize {
-        self.findings.iter().filter(|f| f.scanner != "framework").count()
+        self.findings
+            .iter()
+            .filter(|f| f.scanner != "framework")
+            .count()
     }
 
     pub fn token_pct(&self) -> u16 {
@@ -263,7 +274,10 @@ impl UiState {
 
     pub fn elapsed_duration(&self) -> std::time::Duration {
         self.scan_end
-            .map(|end| end.checked_duration_since(self.scan_start).unwrap_or(std::time::Duration::ZERO))
+            .map(|end| {
+                end.checked_duration_since(self.scan_start)
+                    .unwrap_or(std::time::Duration::ZERO)
+            })
             .unwrap_or_else(|| self.scan_start.elapsed())
     }
 }

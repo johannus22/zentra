@@ -3,8 +3,13 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 const CODEBASE_SIGNALS: &[&str] = &[
-    "Cargo.toml", "package.json", "go.mod", "requirements.txt",
-    "pom.xml", "pyproject.toml", "build.gradle",
+    "Cargo.toml",
+    "package.json",
+    "go.mod",
+    "requirements.txt",
+    "pom.xml",
+    "pyproject.toml",
+    "build.gradle",
 ];
 const SOURCE_DIRS: &[&str] = &["src", "lib", "app"];
 
@@ -17,7 +22,11 @@ pub struct ProjectConfig {
 
 impl ProjectConfig {
     pub fn new(stack: &str, exclusions: Vec<String>) -> Self {
-        Self { target_path: ".".to_string(), stack: stack.to_string(), exclusions }
+        Self {
+            target_path: ".".to_string(),
+            stack: stack.to_string(),
+            exclusions,
+        }
     }
 
     pub fn load_from(path: &Path) -> Result<Self> {
@@ -42,13 +51,21 @@ impl ProjectConfig {
     }
 
     pub fn detect_stack(root: &Path) -> String {
-        if root.join("Cargo.toml").exists() { return "rust".to_string(); }
-        if root.join("package.json").exists() { return "node".to_string(); }
-        if root.join("go.mod").exists() { return "go".to_string(); }
-        if root.join("requirements.txt").exists()
-            || root.join("pyproject.toml").exists() { return "python".to_string(); }
-        if root.join("pom.xml").exists()
-            || root.join("build.gradle").exists() { return "java".to_string(); }
+        if root.join("Cargo.toml").exists() {
+            return "rust".to_string();
+        }
+        if root.join("package.json").exists() {
+            return "node".to_string();
+        }
+        if root.join("go.mod").exists() {
+            return "go".to_string();
+        }
+        if root.join("requirements.txt").exists() || root.join("pyproject.toml").exists() {
+            return "python".to_string();
+        }
+        if root.join("pom.xml").exists() || root.join("build.gradle").exists() {
+            return "java".to_string();
+        }
         "unknown".to_string()
     }
 

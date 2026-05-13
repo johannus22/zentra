@@ -1,4 +1,4 @@
-﻿pub mod audit;
+pub mod audit;
 pub mod fs_tools;
 pub mod git_tools;
 
@@ -182,7 +182,10 @@ data entry points, security middleware already present, and known safety guarant
                 let finding = Finding {
                     scanner: scanner.name().to_string(),
                     severity,
-                    title: args["title"].as_str().unwrap_or("Untitled Finding").to_string(),
+                    title: args["title"]
+                        .as_str()
+                        .unwrap_or("Untitled Finding")
+                        .to_string(),
                     description: args["description"].as_str().unwrap_or("").to_string(),
                     location: args["location"].as_str().map(str::to_string),
                     recommendation: args["recommendation"].as_str().unwrap_or("").to_string(),
@@ -232,4 +235,3 @@ fn parse_severity(s: &str) -> Severity {
         _ => Severity::Info,
     }
 }
-

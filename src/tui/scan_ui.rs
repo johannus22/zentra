@@ -28,16 +28,20 @@ pub fn popup_items(scan_done: bool) -> Vec<&'static str> {
 pub const LOADING_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 pub const ACTIVITY_VERBS: &[&str] = &[
-    "Heraldizzing", 
-    "Gingerizing", 
-    "Jekloysizing", 
-    "Jedding", 
-    "Kodecrafting", 
-    "Jaredizing", 
-    "Adding Salt", 
+    "Heraldizzing",
+    "Gingerizing",
+    "Jekloysizing",
+    "Jedding",
+    "Kodecrafting",
+    "Jaredizing",
+    "Adding Salt",
     "ML BangBangizing",
-    "Gabottizzizing"
+    "Gabottizzizing",
 ];
+
+const SCANNER_PANEL_WIDTH: u16 = 34;
+const FINDINGS_PANEL_MIN_WIDTH: u16 = 20;
+const FAILED_PREVIEW_PREFIX: &str = "  └ ";
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run_scan_ui(
@@ -52,8 +56,17 @@ pub async fn run_scan_ui(
 ) -> Result<ScanOutcome> {
     let mut terminal = ratatui::init();
     let result = run_loop(
-        &mut terminal, &mut rx, scanners, model_info, context_window, cancel_token.clone(), profiles, branch, project_name,
-    ).await;
+        &mut terminal,
+        &mut rx,
+        scanners,
+        model_info,
+        context_window,
+        cancel_token.clone(),
+        profiles,
+        branch,
+        project_name,
+    )
+    .await;
     ratatui::restore();
     result
 }
@@ -70,7 +83,14 @@ async fn run_loop(
     branch: String,
     project_name: String,
 ) -> Result<ScanOutcome> {
-    let mut state = UiState::new(scanners, model_info, context_window, profiles, branch, project_name);
+    let mut state = UiState::new(
+        scanners,
+        model_info,
+        context_window,
+        profiles,
+        branch,
+        project_name,
+    );
     let mut keys = EventStream::new();
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(80));
     let mut animation_ticker = tokio::time::interval(std::time::Duration::from_millis(80));
@@ -168,10 +188,10 @@ async fn run_loop(
 fn render(frame: &mut Frame, state: &mut UiState) {
     let area = frame.area();
     let chunks = Layout::vertical([
-        Constraint::Length(7),   // 4-line ASCII banner + model line + 2 borders
+        Constraint::Length(7), // 4-line ASCII banner + model line + 2 borders
         Constraint::Min(6),
         Constraint::Length(1),
-        Constraint::Length(8),   // detail: 6 inner rows for title/loc/desc/fix
+        Constraint::Length(8), // detail: 6 inner rows for title/loc/desc/fix
         Constraint::Length(1),
     ])
     .split(area);
@@ -191,11 +211,7 @@ fn render(frame: &mut Frame, state: &mut UiState) {
 }
 
 fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
-    let cols = Layout::horizontal([
-        Constraint::Min(40),
-        Constraint::Length(22),
-    ])
-    .split(area);
+    let cols = Layout::horizontal([Constraint::Min(40), Constraint::Length(22)]).split(area);
 
     let banner = if area.width >= 80 {
         " ____        _ \n|_  /___ _ _| |_ _ _ __ _\n / // -_) ' \\  _| '_/ _` |\n/___\\___|_||_\\__|_| \\__,_|"
@@ -232,24 +248,20 @@ fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
     let project_display = state.project_name.chars().take(16).collect::<String>();
     let branch_display = state.branch.chars().take(14).collect::<String>();
     let right_content = ratatui::text::Text::from(vec![
-        ratatui::text::Line::from(vec![
-            ratatui::text::Span::styled(
-                project_display,
-                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        ratatui::text::Line::from(vec![
-            ratatui::text::Span::styled(
-                format!("⎇ {}", branch_display),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]),
-        ratatui::text::Line::from(vec![
-            ratatui::text::Span::styled(
-                format!("v{}", env!("CARGO_PKG_VERSION")),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]),
+        ratatui::text::Line::from(vec![ratatui::text::Span::styled(
+            project_display,
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        ratatui::text::Line::from(vec![ratatui::text::Span::styled(
+            format!("⎇ {}", branch_display),
+            Style::default().fg(Color::DarkGray),
+        )]),
+        ratatui::text::Line::from(vec![ratatui::text::Span::styled(
+            format!("v{}", env!("CARGO_PKG_VERSION")),
+            Style::default().fg(Color::DarkGray),
+        )]),
     ]);
     let right = Paragraph::new(right_content)
         .block(Block::default().borders(Borders::ALL))
@@ -258,14 +270,80 @@ fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
 }
 
 fn render_body(frame: &mut Frame, area: Rect, state: &mut UiState) {
+    let [scanner_area, findings_area] = scan_body_chunks(area);
+
+    render_scanners(frame, scanner_area, state);
+    render_findings(frame, findings_area, state);
+}
+
+pub fn scan_body_chunks(area: Rect) -> [Rect; 2] {
     let chunks = Layout::horizontal([
-        Constraint::Length(26),
-        Constraint::Min(20),
+        Constraint::Length(SCANNER_PANEL_WIDTH),
+        Constraint::Min(FINDINGS_PANEL_MIN_WIDTH),
     ])
     .split(area);
 
-    render_scanners(frame, chunks[0], state);
-    render_findings(frame, chunks[1], state);
+    [chunks[0], chunks[1]]
+}
+
+pub fn failed_error_preview_width(scanner_area_width: u16) -> usize {
+    scanner_area_width
+        .saturating_sub(2)
+        .saturating_sub(FAILED_PREVIEW_PREFIX.chars().count() as u16) as usize
+}
+
+pub fn clip_failed_error_preview(message: &str, max_chars: usize) -> String {
+    let normalized = normalize_failed_error_preview(message);
+    let char_count = normalized.chars().count();
+    if char_count <= max_chars {
+        return normalized;
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+    if max_chars == 1 {
+        return "…".to_string();
+    }
+
+    let mut clipped: String = normalized.chars().take(max_chars - 1).collect();
+    clipped.push('…');
+    clipped
+}
+
+fn normalize_failed_error_preview(message: &str) -> String {
+    let mut normalized = String::with_capacity(message.len());
+    let mut chars = message.chars().peekable();
+    let mut last_was_space = true;
+
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            if matches!(chars.peek(), Some('[')) {
+                chars.next();
+                while let Some(ansi) = chars.next() {
+                    if ('@'..='~').contains(&ansi) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+
+        let next = if ch.is_control() { Some(' ') } else { Some(ch) };
+
+        if let Some(next) = next {
+            if next.is_whitespace() {
+                if !last_was_space {
+                    normalized.push(' ');
+                    last_was_space = true;
+                }
+            } else {
+                normalized.push(next);
+                last_was_space = false;
+            }
+        }
+    }
+
+    normalized.trim().to_string()
 }
 
 fn render_scanners(frame: &mut Frame, area: Rect, state: &UiState) {
@@ -293,16 +371,22 @@ fn render_scanners(frame: &mut Frame, area: Rect, state: &UiState) {
             // Build item — two lines for failed scanners with an error message
             let item_text = if s.status == ScanStatus::Failed {
                 if let Some(ref err) = s.error {
-                    let truncated: String = err.chars().take(20).collect();
+                    let truncated =
+                        clip_failed_error_preview(err, failed_error_preview_width(area.width));
                     Text::from(vec![
                         Line::from(vec![Span::styled(label, Style::default().fg(Color::Red))]),
                         Line::from(vec![Span::styled(
-                            format!("  └ {}", truncated),
-                            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                            format!("{}{}", FAILED_PREVIEW_PREFIX, truncated),
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::ITALIC),
                         )]),
                     ])
                 } else {
-                    Text::from(Line::from(vec![Span::styled(label, Style::default().fg(Color::Red))]))
+                    Text::from(Line::from(vec![Span::styled(
+                        label,
+                        Style::default().fg(Color::Red),
+                    )]))
                 }
             } else {
                 Text::from(Line::from(vec![Span::styled(label, style)]))
@@ -316,9 +400,11 @@ fn render_scanners(frame: &mut Frame, area: Rect, state: &UiState) {
     let total_med: u32 = state.scanners.iter().map(|s| s.medium_count).sum();
     let total_low: u32 = state.scanners.iter().map(|s| s.low_count).sum();
 
-    let title = format!("SCANNERS  {}C {}H {}M {}L", total_crit, total_high, total_med, total_low);
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title));
+    let title = format!(
+        "SCANNERS  {}C {}H {}M {}L",
+        total_crit, total_high, total_med, total_low
+    );
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
     frame.render_widget(list, area);
 }
 
@@ -337,13 +423,25 @@ fn render_findings(frame: &mut Frame, area: Rect, state: &mut UiState) {
                 crate::state::Severity::Info => Color::DarkGray,
             };
             let sev = format!("{}", f.severity);
-            let loc = f.location.as_deref().unwrap_or("").chars().take(20).collect::<String>();
+            let loc = f
+                .location
+                .as_deref()
+                .unwrap_or("")
+                .chars()
+                .take(20)
+                .collect::<String>();
             let fixed = 8 + 8 + loc.len(); // sev col + scanner col + loc col
             let title_width = inner_width.saturating_sub(fixed).max(10);
             let title = f.title.chars().take(title_width).collect::<String>();
             let line = Line::from(vec![
-                Span::styled(format!("{:<8}", sev), Style::default().fg(sev_color).add_modifier(Modifier::BOLD)),
-                Span::raw(format!("{:<8}", f.scanner.chars().take(6).collect::<String>())),
+                Span::styled(
+                    format!("{:<8}", sev),
+                    Style::default().fg(sev_color).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(format!(
+                    "{:<8}",
+                    f.scanner.chars().take(6).collect::<String>()
+                )),
                 Span::raw(format!("{:<width$}", title, width = title_width)),
                 Span::styled(loc, Style::default().fg(Color::DarkGray)),
             ]);
@@ -357,8 +455,7 @@ fn render_findings(frame: &mut Frame, area: Rect, state: &mut UiState) {
         .collect();
 
     let title = format!("FINDINGS — ALL ({})", state.total_findings());
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title));
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
     let mut list_state = ListState::default();
     if !state.findings.is_empty() {
         list_state.select(Some(state.selected_idx));
@@ -391,7 +488,9 @@ fn render_activity(frame: &mut Frame, area: Rect, state: &UiState) {
             ),
             Span::styled(
                 format!(" {}", state.activity),
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
             ),
         ])
     } else {
@@ -404,8 +503,13 @@ fn render_activity(frame: &mut Frame, area: Rect, state: &UiState) {
         let glow_color = Color::Rgb(pulse, pulse, 255);
         Line::from(vec![
             Span::styled(
-                format!("{:<2}", LOADING_FRAMES[state.animation_index % LOADING_FRAMES.len()]),
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD),
+                format!(
+                    "{:<2}",
+                    LOADING_FRAMES[state.animation_index % LOADING_FRAMES.len()]
+                ),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("{: <22}", current_verb),
@@ -413,7 +517,9 @@ fn render_activity(frame: &mut Frame, area: Rect, state: &UiState) {
             ),
             Span::styled(
                 format!(" {}", state.activity),
-                Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
             ),
         ])
     };
@@ -421,10 +527,20 @@ fn render_activity(frame: &mut Frame, area: Rect, state: &UiState) {
 }
 
 fn render_detail(frame: &mut Frame, area: Rect, state: &UiState) {
-    let content = state.selected_finding().map(|f| {
-        let loc = f.location.as_deref().map(|l| format!(" · {}", l)).unwrap_or_default();
-        format!("[{}] {}{}\n{}\nFIX: {}", f.severity, f.title, loc, f.description, f.recommendation)
-    }).unwrap_or_default();
+    let content = state
+        .selected_finding()
+        .map(|f| {
+            let loc = f
+                .location
+                .as_deref()
+                .map(|l| format!(" · {}", l))
+                .unwrap_or_default();
+            format!(
+                "[{}] {}{}\n{}\nFIX: {}",
+                f.severity, f.title, loc, f.description, f.recommendation
+            )
+        })
+        .unwrap_or_default();
 
     let paragraph = Paragraph::new(content)
         .block(Block::default().borders(Borders::ALL).title("DETAIL"))
@@ -458,7 +574,9 @@ fn render_popup(frame: &mut Frame, area: Rect, popup: &crate::tui::PopupState, s
         .map(|(i, label)| {
             let prefix = if i == popup.selected { "▶ " } else { "  " };
             let style = if i == popup.selected {
-                Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow)
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .fg(Color::Yellow)
             } else {
                 Style::default()
             };
@@ -466,8 +584,12 @@ fn render_popup(frame: &mut Frame, area: Rect, popup: &crate::tui::PopupState, s
         })
         .collect();
 
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title("  MENU  ").title_style(Style::default().fg(Color::Cyan)));
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("  MENU  ")
+            .title_style(Style::default().fg(Color::Cyan)),
+    );
     frame.render_widget(list, popup_area);
 }
 
@@ -492,7 +614,9 @@ fn render_provider_popup(
         .map(|(i, name)| {
             let prefix = if i == popup.selected { "▶ " } else { "  " };
             let style = if i == popup.selected {
-                Style::default().add_modifier(Modifier::BOLD).fg(Color::Yellow)
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .fg(Color::Yellow)
             } else {
                 Style::default()
             };

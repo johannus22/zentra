@@ -19,7 +19,10 @@ impl StateWriter {
         // Truncate only findings — architecture.md persists across scans
         let findings_path = zentra_dir.join("detailed-findings.md");
         if findings_path.exists() {
-            OpenOptions::new().write(true).truncate(true).open(&findings_path)?;
+            OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&findings_path)?;
         }
         Ok(Self { zentra_dir })
     }
@@ -28,7 +31,9 @@ impl StateWriter {
         let path = self.zentra_dir.join("detailed-findings.md");
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
 
-        let location_line = finding.location.as_deref()
+        let location_line = finding
+            .location
+            .as_deref()
             .map(|l| format!("**Location:** {}\n", l))
             .unwrap_or_default();
 
@@ -47,7 +52,10 @@ impl StateWriter {
 
     pub fn write_report(&self, content: &str) -> Result<()> {
         let date = Local::now().format("%Y%m%d").to_string();
-        let path = self.zentra_dir.join("reports").join(format!("{}-report.md", date));
+        let path = self
+            .zentra_dir
+            .join("reports")
+            .join(format!("{}-report.md", date));
         fs::write(path, content)?;
         Ok(())
     }
