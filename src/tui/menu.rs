@@ -1,6 +1,7 @@
 use crate::agent::ScannerType;
 use crate::config::AuthMethod;
 use crate::wizard::{provider_defaults, KNOWN_PROVIDER_NAMES};
+use anyhow::Context;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::Alignment;
@@ -8,9 +9,11 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
     Frame,
 };
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::thread;
 use std::time::Duration;
 
 pub fn clip_with_ellipsis(s: &str, max_width: usize) -> String {
@@ -81,6 +84,27 @@ pub enum MenuScreen {
     ScannerSelector,
     ProviderSelector,
     ProviderForm,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OAuthModalPhase {
+    LaunchingBrowser,
+    WaitingForCallback,
+    ExchangingCode,
+    Success,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OAuthModalState {
+    pub phase: OAuthModalPhase,
+    pub auth_url: String,
+    pub error: Option<String>,
+}
+
+enum OAuthModalEvent {
+    BrowserLaunchFailed(String),
+    Phase(OAuthModalPhase),
+    Completed(anyhow::Result<crate::auth::OAuthTokens>),
 }
 
 #[derive(Clone)]
@@ -260,6 +284,7 @@ impl ProviderFormState {
         if self.model.trim().is_empty() {
             anyhow::bail!("Model cannot be empty");
         }
+        crate::config::validation::validate_provider_base_url(&self.base_url)?;
         if self.requires_api_key() && self.api_key.trim().is_empty() {
             anyhow::bail!("API key cannot be empty for this provider");
         }
@@ -301,7 +326,41 @@ impl ProviderFormState {
         RunOAuth: FnOnce() -> anyhow::Result<crate::auth::OAuthTokens>,
         StoreOAuth: FnOnce(&str, &crate::auth::OAuthTokens) -> anyhow::Result<()>,
     {
-        use crate::config::{keychain, GlobalConfig, ProviderProfile};
+        use crate::config::keychain;
+
+        self.save_with_oauth_to_path_using(
+            config_path,
+            run_oauth,
+            store_oauth,
+            |profile_name| keychain::delete_oauth_tokens(profile_name),
+            |profile_name, api_key| keychain::set_key(profile_name, api_key).map(|_| ()),
+            |profile_name| keychain::delete_key(profile_name),
+        )
+    }
+
+    pub fn save_with_oauth_to_path_using<
+        RunOAuth,
+        StoreOAuth,
+        DeleteOAuth,
+        StoreKey,
+        DeleteKey,
+    >(
+        &self,
+        config_path: &std::path::Path,
+        run_oauth: RunOAuth,
+        store_oauth: StoreOAuth,
+        delete_oauth: DeleteOAuth,
+        store_key: StoreKey,
+        delete_key: DeleteKey,
+    ) -> anyhow::Result<String>
+    where
+        RunOAuth: FnOnce() -> anyhow::Result<crate::auth::OAuthTokens>,
+        StoreOAuth: FnOnce(&str, &crate::auth::OAuthTokens) -> anyhow::Result<()>,
+        DeleteOAuth: FnOnce(&str) -> anyhow::Result<()>,
+        StoreKey: FnOnce(&str, &str) -> anyhow::Result<()>,
+        DeleteKey: FnOnce(&str) -> anyhow::Result<()>,
+    {
+        use crate::config::{GlobalConfig, ProviderProfile};
         use crate::wizard::model_context_window;
 
         self.validate()?;
@@ -329,8 +388,18 @@ impl ProviderFormState {
 
         if let Some(ref tokens) = oauth_tokens {
             store_oauth(&self.profile_name, tokens)?;
+            if let Err(delete_err) = delete_key(&self.profile_name) {
+                if let Err(cleanup_err) = delete_oauth(&self.profile_name) {
+                    return Err(anyhow::anyhow!(
+                        "{}; additionally failed to rollback OAuth tokens: {}",
+                        delete_err,
+                        cleanup_err
+                    ));
+                }
+                return Err(delete_err);
+            }
         } else if !d.keyless && !self.api_key.is_empty() {
-            keychain::set_key(&self.profile_name, &self.api_key)?;
+            store_key(&self.profile_name, &self.api_key)?;
         }
 
         let mut global = GlobalConfig::load_from(config_path)?;
@@ -338,7 +407,18 @@ impl ProviderFormState {
         if global.default_profile.is_none() {
             global.default_profile = Some(self.profile_name.clone());
         }
-        global.save_to(config_path)?;
+        if let Err(save_err) = global.save_to(config_path) {
+            if oauth_tokens.is_some() {
+                if let Err(cleanup_err) = delete_oauth(&self.profile_name) {
+                    return Err(anyhow::anyhow!(
+                        "{}; additionally failed to rollback OAuth tokens: {}",
+                        save_err,
+                        cleanup_err
+                    ));
+                }
+            }
+            return Err(save_err);
+        }
 
         Ok(self.profile_name.clone())
     }
@@ -359,8 +439,10 @@ pub struct MenuState {
     pub pending_delete_profile: Option<String>,
     pub provider_error: Option<String>,
     pub form: ProviderFormState,
+    pub oauth_modal: Option<OAuthModalState>,
     pub project_name: String,
     pub branch_name: String,
+    oauth_modal_rx: Option<Receiver<OAuthModalEvent>>,
 }
 
 impl MenuState {
@@ -388,8 +470,10 @@ impl MenuState {
             pending_delete_profile: None,
             provider_error: None,
             form: ProviderFormState::default(),
+            oauth_modal: None,
             project_name,
             branch_name,
+            oauth_modal_rx: None,
         }
     }
 
@@ -499,6 +583,130 @@ impl MenuState {
         self.clear_provider_selector_messages();
         Ok(true)
     }
+
+    pub fn open_oauth_modal(&mut self, auth_url: String) {
+        self.form.error = None;
+        self.oauth_modal = Some(OAuthModalState {
+            phase: OAuthModalPhase::LaunchingBrowser,
+            auth_url,
+            error: None,
+        });
+    }
+
+    pub fn set_oauth_modal_phase(&mut self, phase: OAuthModalPhase) {
+        if let Some(modal) = self.oauth_modal.as_mut() {
+            modal.phase = phase;
+        }
+    }
+
+    pub fn set_oauth_modal_error(&mut self, error: Option<String>) {
+        if let Some(modal) = self.oauth_modal.as_mut() {
+            modal.error = error;
+        }
+    }
+
+    pub fn finish_oauth_modal_error(&mut self, error: String) {
+        self.oauth_modal = None;
+        self.oauth_modal_rx = None;
+        self.form.error = Some(error);
+        self.screen = MenuScreen::ProviderForm;
+    }
+
+    fn start_oauth_modal_save(&mut self) -> Result<()> {
+        self.form.validate()?;
+
+        let session = crate::auth::OAuthSession::start();
+        self.open_oauth_modal(session.auth_url().to_string());
+
+        let (tx, rx) = mpsc::channel();
+        self.oauth_modal_rx = Some(rx);
+
+        thread::spawn(move || {
+            let runtime = match tokio::runtime::Runtime::new() {
+                Ok(runtime) => runtime,
+                Err(err) => {
+                    let _ = tx.send(OAuthModalEvent::Completed(Err(err.into())));
+                    return;
+                }
+            };
+
+            if let Err(err) = open::that(session.auth_url()).context("Failed to launch browser") {
+                let _ = tx.send(OAuthModalEvent::BrowserLaunchFailed(err.to_string()));
+            }
+
+            let _ = tx.send(OAuthModalEvent::Phase(OAuthModalPhase::WaitingForCallback));
+
+            let code = match runtime.block_on(session.wait_for_code(Duration::from_secs(300))) {
+                Ok(code) => code,
+                Err(err) => {
+                    let _ = tx.send(OAuthModalEvent::Completed(Err(err)));
+                    return;
+                }
+            };
+
+            let _ = tx.send(OAuthModalEvent::Phase(OAuthModalPhase::ExchangingCode));
+
+            match runtime.block_on(session.exchange_code(&code)) {
+                Ok(tokens) => {
+                    let _ = tx.send(OAuthModalEvent::Phase(OAuthModalPhase::Success));
+                    let _ = tx.send(OAuthModalEvent::Completed(Ok(tokens)));
+                }
+                Err(err) => {
+                    let _ = tx.send(OAuthModalEvent::Completed(Err(err)));
+                }
+            }
+        });
+
+        Ok(())
+    }
+
+    fn poll_oauth_modal(&mut self) -> Result<Option<String>> {
+        let event = match self.oauth_modal_rx.as_ref() {
+            Some(rx) => match rx.try_recv() {
+                Ok(event) => Some(event),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => Some(OAuthModalEvent::Completed(Err(
+                    anyhow::anyhow!("OAuth login was interrupted"),
+                ))),
+            },
+            None => None,
+        };
+
+        let Some(event) = event else {
+            return Ok(None);
+        };
+
+        match event {
+            OAuthModalEvent::BrowserLaunchFailed(error) => {
+                self.set_oauth_modal_error(Some(error));
+            }
+            OAuthModalEvent::Phase(phase) => {
+                self.set_oauth_modal_phase(phase);
+            }
+            OAuthModalEvent::Completed(result) => match result {
+                Ok(tokens) => {
+                    use crate::config::keychain;
+
+                    let profile_name = match self.form.save_with_oauth(
+                        || Ok(tokens),
+                        |profile_name, tokens| keychain::set_oauth_tokens(profile_name, tokens),
+                    ) {
+                        Ok(profile_name) => profile_name,
+                        Err(err) => {
+                            self.finish_oauth_modal_error(err.to_string());
+                            return Ok(None);
+                        }
+                    };
+                    self.oauth_modal = None;
+                    self.oauth_modal_rx = None;
+                    return Ok(Some(profile_name));
+                }
+                Err(err) => self.finish_oauth_modal_error(err.to_string()),
+            },
+        }
+
+        Ok(None)
+    }
 }
 
 pub async fn run_menu(
@@ -557,6 +765,10 @@ fn run_menu_loop(
     state: &mut MenuState,
 ) -> Result<MenuAction> {
     loop {
+        if let Some(name) = state.poll_oauth_modal()? {
+            return Ok(MenuAction::ProviderAdded(name));
+        }
+
         terminal.draw(|f| render_menu(f, state))?;
 
         if event::poll(Duration::from_millis(100))? {
@@ -646,6 +858,7 @@ fn run_menu_loop(
                         _ => {}
                     },
                     MenuScreen::ProviderForm => match key.code {
+                        _ if state.oauth_modal.is_some() => {}
                         KeyCode::Left => {
                             if state.form.focused_field == 0 {
                                 state.form.cycle_provider(-1);
@@ -676,9 +889,17 @@ fn run_menu_loop(
                         }
                         KeyCode::Enter => {
                             if state.form.focused_field == state.form.save_field_idx() {
-                                match state.form.save() {
-                                    Ok(name) => return Ok(MenuAction::ProviderAdded(name)),
-                                    Err(e) => state.form.error = Some(e.to_string()),
+                                if state.form.is_openai_provider()
+                                    && state.form.auth_method == AuthMethod::OAuth
+                                {
+                                    if let Err(err) = state.start_oauth_modal_save() {
+                                        state.form.error = Some(err.to_string());
+                                    }
+                                } else {
+                                    match state.form.save() {
+                                        Ok(name) => return Ok(MenuAction::ProviderAdded(name)),
+                                        Err(e) => state.form.error = Some(e.to_string()),
+                                    }
                                 }
                             } else {
                                 state.form.next_field();
@@ -1160,4 +1381,64 @@ fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &
         )));
         frame.render_widget(error, bottom_rows[1]);
     }
+
+    if let Some(modal) = &state.oauth_modal {
+        render_oauth_modal(frame, area, modal);
+    }
+}
+
+fn render_oauth_modal(frame: &mut Frame, area: Rect, modal: &OAuthModalState) {
+    let modal_area = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(11),
+        Constraint::Fill(1),
+    ])
+    .split(area)[1];
+    let modal_area = Layout::horizontal([
+        Constraint::Percentage(20),
+        Constraint::Percentage(60),
+        Constraint::Percentage(20),
+    ])
+    .split(modal_area)[1];
+
+    let status = match modal.phase {
+        OAuthModalPhase::LaunchingBrowser => "Launching browser...",
+        OAuthModalPhase::WaitingForCallback => "Waiting for browser login callback...",
+        OAuthModalPhase::ExchangingCode => "Exchanging authorization code...",
+        OAuthModalPhase::Success => "Authentication complete. Saving provider...",
+    };
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            status,
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Open this URL if the browser does not open:",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(modal.auth_url.clone()),
+    ];
+
+    if let Some(error) = &modal.error {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("Browser launch failed: {error}"),
+            Style::default().fg(Color::Red),
+        )));
+    }
+
+    frame.render_widget(Clear, modal_area);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" OPENAI LOGIN ")
+                    .title_style(Style::default().fg(Color::Cyan)),
+            )
+            .wrap(Wrap { trim: false }),
+        modal_area,
+    );
 }

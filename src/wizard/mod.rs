@@ -189,6 +189,8 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
         }
     };
 
+    crate::config::validation::validate_provider_base_url(&base_url)?;
+
     let default_model = defaults.models.first().cloned().unwrap_or_default();
     print!("Model [{}]: ", default_model);
     io::stdout().flush()?;
