@@ -183,6 +183,20 @@ fn provider_profile_context_window_defaults_to_none() {
 }
 
 #[test]
+fn provider_profile_auth_method_defaults_to_api_key() {
+    use zentra_cli::config::{AuthMethod, GlobalConfig};
+    let toml = r#"
+        [profiles.openai]
+        kind = "openai_compat"
+        base_url = "https://api.openai.com/v1"
+        model = "gpt-4o"
+    "#;
+    let cfg: GlobalConfig = toml::from_str(toml).unwrap();
+    let profile = cfg.profiles.get("openai").unwrap();
+    assert_eq!(profile.auth_method, AuthMethod::ApiKey);
+}
+
+#[test]
 fn provider_profile_context_window_round_trips() {
     use zentra_cli::config::{GlobalConfig, ProviderProfile};
     let mut cfg = GlobalConfig::default();
