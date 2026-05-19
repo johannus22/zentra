@@ -60,6 +60,13 @@ async fn main() -> anyhow::Result<()> {
                     commands::scan::run_with_scanners(scanners).await?;
                     // loop continues so scan UI q/Esc returns here
                 }
+                MenuAction::RunPentest => {
+                    if let Some(config) =
+                        zentra_cli::tui::pentest_setup::run_pentest_setup().await?
+                    {
+                        commands::pentest::run_config(config).await?;
+                    }
+                }
                 MenuAction::ViewLastResults => {
                     zentra_cli::tui::results::run_results().await?;
                 }

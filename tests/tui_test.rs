@@ -220,7 +220,7 @@ fn menu_state_navigate_wraps() {
         String::new(),
         String::new(),
     );
-    // 6 items: RunFull(0), SelectScanners(1), ViewResults(2), ChangeProvider(3), AddProvider(4), Exit(5)
+    // 7 items: RunFull(0), RunPentest(1), SelectScanners(2), ViewResults(3), ChangeProvider(4), AddProvider(5), Exit(6)
     state.next();
     assert_eq!(state.selected_idx, 1);
     state.next();
@@ -228,10 +228,10 @@ fn menu_state_navigate_wraps() {
     state.next();
     state.next();
     assert_eq!(state.selected_idx, 5);
-    state.next(); // clamp
-    assert_eq!(state.selected_idx, 5);
+    state.next();
+    assert_eq!(state.selected_idx, 6);
     state.prev();
-    assert_eq!(state.selected_idx, 4);
+    assert_eq!(state.selected_idx, 5);
 }
 
 #[test]
@@ -246,11 +246,12 @@ fn menu_state_disabled_items_when_unconfigured() {
         String::new(),
     ); // no provider, no project
     assert!(!state.is_item_enabled(0)); // RunFull
-    assert!(!state.is_item_enabled(1)); // SelectScanners
-    assert!(state.is_item_enabled(2)); // ViewResults
-    assert!(!state.is_item_enabled(3)); // ChangeProvider
-    assert!(state.is_item_enabled(4)); // AddProvider
-    assert!(state.is_item_enabled(5)); // Exit
+    assert!(state.is_item_enabled(1)); // RunPentest
+    assert!(!state.is_item_enabled(2)); // SelectScanners
+    assert!(state.is_item_enabled(3)); // ViewResults
+    assert!(!state.is_item_enabled(4)); // ChangeProvider
+    assert!(state.is_item_enabled(5)); // AddProvider
+    assert!(state.is_item_enabled(6)); // Exit
 }
 
 #[test]
@@ -511,7 +512,7 @@ fn menu_state_new_stores_active_profile() {
 }
 
 #[test]
-fn menu_state_navigate_new_max_is_5() {
+fn menu_state_navigate_new_max_is_6() {
     let mut state = MenuState::new(
         true,
         true,
@@ -521,20 +522,30 @@ fn menu_state_navigate_new_max_is_5() {
         String::new(),
         String::new(),
     );
-    for _ in 0..5 {
+    for _ in 0..6 {
         state.next();
     }
-    assert_eq!(state.selected_idx, 5);
+    assert_eq!(state.selected_idx, 6);
     state.next(); // clamp
-    assert_eq!(state.selected_idx, 5);
+    assert_eq!(state.selected_idx, 6);
 }
 
 #[test]
-fn menu_state_main_menu_still_has_six_actions() {
+fn menu_state_main_menu_has_run_pentest_action() {
+    let actions = main_menu_actions();
+    assert_eq!(actions[0], "Run Full Scan");
+    assert_eq!(actions[1], "Run Pentest");
+    assert!(actions.contains(&"Select Scanners"));
+}
+
+#[test]
+fn menu_state_main_menu_has_seven_actions() {
+    assert_eq!(main_menu_actions().len(), 7);
     assert_eq!(
         main_menu_actions(),
         &[
             "Run Full Scan",
+            "Run Pentest",
             "Select Scanners",
             "View Last Results",
             "Change Provider",
@@ -578,7 +589,7 @@ fn menu_state_change_provider_requires_provider() {
         String::new(),
         String::new(),
     );
-    assert!(!state.is_item_enabled(3)); // Change Provider = index 3
+    assert!(!state.is_item_enabled(4)); // Change Provider = index 4
 }
 
 use zentra_cli::tui::menu::{clip_with_ellipsis, ProviderFormState};
@@ -1039,5 +1050,5 @@ fn provider_selector_navigation_clears_pending_delete() {
     state.provider_selector_escape();
     assert!(state.pending_delete_profile.is_none());
     assert_eq!(state.screen, MenuScreen::Main);
-    assert_eq!(state.selected_idx, 3);
+    assert_eq!(state.selected_idx, 4);
 }

@@ -1,4 +1,5 @@
 pub mod menu;
+pub mod pentest_setup;
 pub mod results;
 pub mod scan_ui;
 
