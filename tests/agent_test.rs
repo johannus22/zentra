@@ -77,6 +77,38 @@ fn state_writer_appends_multiple_findings() {
 }
 
 #[test]
+fn state_writer_sorts_findings_by_severity_in_markdown() {
+    let dir = TempDir::new().unwrap();
+    let writer = StateWriter::new(dir.path()).unwrap();
+
+    writer
+        .write_finding(&Finding {
+            scanner: "sast".to_string(),
+            severity: Severity::Low,
+            title: "Low Finding".to_string(),
+            description: "low".to_string(),
+            location: None,
+            recommendation: "fix low".to_string(),
+        })
+        .unwrap();
+    writer
+        .write_finding(&Finding {
+            scanner: "iac_scan".to_string(),
+            severity: Severity::Critical,
+            title: "Critical Finding".to_string(),
+            description: "critical".to_string(),
+            location: None,
+            recommendation: "fix critical".to_string(),
+        })
+        .unwrap();
+
+    let content = std::fs::read_to_string(dir.path().join(".zentra").join("detailed-findings.md")).unwrap();
+    let critical_idx = content.find("## [CRITICAL] Critical Finding").unwrap();
+    let low_idx = content.find("## [LOW] Low Finding").unwrap();
+    assert!(critical_idx < low_idx, "critical findings should be ordered before low findings");
+}
+
+#[test]
 fn state_writer_writes_report() {
     let dir = TempDir::new().unwrap();
     let writer = StateWriter::new(dir.path()).unwrap();
@@ -318,6 +350,7 @@ fn tool_registry_definitions_contains_all_tools() {
         "list_files",
         "grep_code",
         "write_finding",
+        "write_report",
         "run_audit",
         "git_log",
         "git_diff",
@@ -557,6 +590,77 @@ async fn orchestrator_runs_selected_scanners_in_order() {
     assert!(started.contains(&ScannerType::Sast));
     assert!(started.contains(&ScannerType::Report));
     assert_eq!(completed.len(), 3);
+}
+
+#[tokio::test]
+async fn orchestrator_continues_to_report_after_parallel_scanner_error() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        })))
+        .up_to_n_times(2)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("bad request"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(OpenAICompatProvider::new(
+        server.uri(),
+        "gpt-4o".to_string(),
+        "key".to_string(),
+    ));
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let writer = Arc::new(zentra_cli::state::StateWriter::new(dir.path()).unwrap());
+    let (tx, mut rx) = mpsc::channel(32);
+
+    let orchestrator =
+        OrchestratorAgent::new(provider, registry, writer, tx, CancellationToken::new());
+
+    let result = orchestrator
+        .run(&[
+            ScannerType::ThreatModel,
+            ScannerType::Sast,
+            ScannerType::IacScan,
+            ScannerType::Report,
+        ])
+        .await;
+
+    assert!(result.is_ok(), "pipeline should continue after scanner errors: {result:?}");
+
+    let mut started = vec![];
+    let mut completed = vec![];
+    let mut saw_error = false;
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            ScanEvent::ScannerStarted(s) => started.push(s),
+            ScanEvent::ScannerCompleted(s) => completed.push(s),
+            ScanEvent::Error { .. } => saw_error = true,
+            _ => {}
+        }
+    }
+
+    assert!(saw_error, "should emit scanner error event");
+    assert!(started.contains(&ScannerType::Report), "report should still start");
+    assert!(completed.contains(&ScannerType::Report), "report should still complete");
 }
 
 #[tokio::test]

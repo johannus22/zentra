@@ -44,8 +44,9 @@ impl OrchestratorAgent {
     pub async fn run(self, scanners: &[ScannerType]) -> Result<()> {
         // Phase 0: FrameworkAnalysis — builds .zentra/architecture.md for all subsequent scanners
         if scanners.contains(&ScannerType::FrameworkAnalysis) {
-            self.run_llm_scanner(ScannerType::FrameworkAnalysis, None)
-                .await?;
+            let _ = self
+                .run_llm_scanner(ScannerType::FrameworkAnalysis, None)
+                .await;
 
             // Safety net: if the agent exhausted iterations without calling write_architecture,
             // write a minimal placeholder so Phase 0 won't re-trigger on the next scan.
@@ -67,8 +68,9 @@ Delete this file and re-run the scan to retry.",
 
         // Phase 1: ThreatModel — sequential
         if scanners.contains(&ScannerType::ThreatModel) {
-            self.run_llm_scanner(ScannerType::ThreatModel, context_opt.as_deref())
-                .await?;
+            let _ = self
+                .run_llm_scanner(ScannerType::ThreatModel, context_opt.as_deref())
+                .await;
         }
 
         // Phase 2: parallel scanners (SAST, SCA, API, IaC)
@@ -88,21 +90,40 @@ Delete this file and re-run the scan to retry.",
                 let tx = self.tx.clone();
                 let ctx = context_opt.clone();
                 let token = cancel_token.clone();
-                handles.push(tokio::spawn(async move {
-                    ScannerAgent::new(scanner_type, provider, registry, writer, tx, ctx, token)
-                        .run()
-                        .await
-                }));
+                handles.push((
+                    scanner_type,
+                    tokio::spawn(async move {
+                        ScannerAgent::new(scanner_type, provider, registry, writer, tx, ctx, token)
+                            .run()
+                            .await
+                    }),
+                ));
             }
-            for handle in handles {
-                handle.await??;
+            for (scanner_type, handle) in handles {
+                match handle.await {
+                    Ok(Ok(())) | Ok(Err(_)) => {}
+                    Err(e) => {
+                        self.tx
+                            .send(ScanEvent::Error {
+                                scanner: scanner_type,
+                                message: format!("Scanner task failed: {}", e),
+                            })
+                            .await
+                            .ok();
+                        self.tx
+                            .send(ScanEvent::ScannerCompleted(scanner_type))
+                            .await
+                            .ok();
+                    }
+                }
             }
         }
 
         // Phase 3: Report — sequential, runs last
         if scanners.contains(&ScannerType::Report) {
-            self.run_llm_scanner(ScannerType::Report, context_opt.as_deref())
-                .await?;
+            let _ = self
+                .run_llm_scanner(ScannerType::Report, context_opt.as_deref())
+                .await;
         }
 
         Ok(())
