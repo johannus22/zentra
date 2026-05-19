@@ -7,6 +7,7 @@ use zentra_cli::tui::menu::{
     centered_middle_column, main_menu_actions, provider_selector_footer_hint,
     scanner_selector_footer_hint, MenuScreen, MenuState, OAuthModalPhase,
 };
+use zentra_cli::tui::pentest_setup::build_pentest_config_from_setup_input;
 use zentra_cli::tui::{ScanStatus, UiState};
 
 #[test]
@@ -92,6 +93,32 @@ fn ui_state_apply_tool_call_updates_activity() {
     });
     assert!(state.activity.contains("read_file"));
     assert!(state.activity.contains("src/main.rs"));
+}
+
+#[test]
+fn pentest_setup_requires_authorization_confirmation() {
+    let config = build_pentest_config_from_setup_input("https://app.example.test", "no").unwrap();
+    assert!(config.is_none());
+}
+
+#[test]
+fn pentest_setup_accepts_yes_authorization_confirmation() {
+    let config = build_pentest_config_from_setup_input(" https://app.example.test ", " YES ")
+        .unwrap()
+        .expect("valid confirmation should build config");
+
+    assert_eq!(config.target_url, "https://app.example.test");
+    assert!(config.authorized);
+    assert_eq!(config.scope.allowed_hosts, vec!["app.example.test"]);
+    assert_eq!(config.scope.allowed_paths, vec!["/"]);
+    assert!(config.scope.excluded_paths.is_empty());
+    assert!(matches!(config.auth, zentra_cli::pentest::AuthMode::None));
+}
+
+#[test]
+fn pentest_setup_empty_url_returns_none() {
+    let config = build_pentest_config_from_setup_input("   ", "yes").unwrap();
+    assert!(config.is_none());
 }
 
 #[test]
