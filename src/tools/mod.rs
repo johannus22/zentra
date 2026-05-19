@@ -77,6 +77,20 @@ impl ToolRegistry {
                 }),
             },
             ToolDefinition {
+                name: "write_report".to_string(),
+                description: "Write the final markdown report to .zentra/reports/YYYYMMDD-report.md.".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "content": {
+                            "type": "string",
+                            "description": "Full markdown report content"
+                        }
+                    },
+                    "required": ["content"]
+                }),
+            },
+            ToolDefinition {
                 name: "run_audit".to_string(),
                 description: "Run a dependency audit tool. Returns JSON audit results or a fallback message.".to_string(),
                 parameters: serde_json::json!({
@@ -195,6 +209,13 @@ data entry points, security middleware already present, and known safety guarant
                 }
                 tx.send(ScanEvent::FindingAdded(finding)).await.ok();
                 "Finding recorded.".to_string()
+            }
+            "write_report" => {
+                let content = args["content"].as_str().unwrap_or("");
+                match state_writer.write_report(content) {
+                    Ok(_) => "Report written to .zentra/reports.".to_string(),
+                    Err(e) => format!("Error writing report: {}", e),
+                }
             }
             "run_audit" => {
                 let tool = args["tool"].as_str().unwrap_or("npm");

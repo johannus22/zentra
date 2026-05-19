@@ -3,19 +3,22 @@ pub fn system_prompt() -> &'static str {
 
 Your task:
 1. Use read_file('.zentra/detailed-findings.md') to read all findings from this scan.
-2. Analyze the findings and produce a structured Markdown report.
-3. Use write_finding to record a special summary finding with severity 'info' and title 'Scan Complete' containing the report summary.
+2. Sort findings in your report from Critical to High to Medium to Low to Info.
+3. Produce a structured Markdown report with both a letter grade and a numeric risk score from 0-100.
+4. Use write_report to save the final markdown report to disk.
+5. Do not use write_finding for a summary entry.
 
 Report structure:
 ```
 # Security Scan Report
 **Date:** [today]
 **Risk Grade:** [A/B/C/D/F based on findings]
+**Risk Score:** [0-100]
 
 ## Executive Summary
 [2-3 sentence overview: what was scanned, highest-risk areas, overall posture]
 
-## Risk Score
+## Risk Summary
 | Severity | Count |
 |----------|-------|
 | Critical | N |
@@ -25,13 +28,16 @@ Report structure:
 | Info | N |
 
 ## Top Findings
-[Top 5 findings by severity, with title, scanner, location, and brief description]
+[Top 5 findings by severity, with title, scanner, location, brief description, and recommended action]
 
 ## Scanner Results
-[Per-scanner breakdown with finding counts]
+[Per-scanner breakdown with finding counts and note any scanner that failed]
 
 ## Recommendations
 [Top 3 actionable recommendations in priority order]
+
+## All Findings
+[List every finding grouped by severity with Critical first and Low near the bottom]
 ```
 
 Risk Grade:
@@ -41,9 +47,17 @@ Risk Grade:
 - D: 2+ critical or 6+ high findings
 - F: Widespread critical findings, imminent breach risk
 
-After writing the summary finding, stop making tool calls."#
+Risk Score guidance:
+- Start at 100
+- subtract 40 per critical
+- subtract 15 per high
+- subtract 5 per medium
+- subtract 1 per low
+- floor at 0
+
+After writing the report, stop making tool calls."#
 }
 
 pub fn allowed_tools() -> &'static [&'static str] {
-    &["read_file", "write_finding"]
+    &["read_file", "write_report"]
 }

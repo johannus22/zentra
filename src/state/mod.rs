@@ -31,22 +31,8 @@ impl StateWriter {
         let path = self.zentra_dir.join("detailed-findings.md");
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
 
-        let location_line = finding
-            .location
-            .as_deref()
-            .map(|l| format!("**Location:** {}\n", l))
-            .unwrap_or_default();
-
-        writeln!(
-            file,
-            "## [{}] {}\n**Scanner:** {}\n{}**Description:** {}\n**Recommendation:** {}\n\n---\n",
-            finding.severity,
-            finding.title,
-            finding.scanner,
-            location_line,
-            finding.description,
-            finding.recommendation,
-        )?;
+        write!(file, "{}", format_finding_block(finding))?;
+        self.sort_findings_file()?;
         Ok(())
     }
 
@@ -69,6 +55,28 @@ impl StateWriter {
         }
     }
 
+    fn sort_findings_file(&self) -> Result<()> {
+        let path = self.zentra_dir.join("detailed-findings.md");
+        let raw = std::fs::read_to_string(&path)?;
+        let mut blocks: Vec<String> = raw
+            .split("\n\n---\n")
+            .map(str::trim)
+            .filter(|b| !b.is_empty())
+            .map(|b| b.to_string())
+            .collect();
+
+        blocks.sort_by_key(|block| finding_block_order(block));
+
+        let sorted = if blocks.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n\n---\n", blocks.join("\n\n---\n"))
+        };
+
+        std::fs::write(path, sorted)?;
+        Ok(())
+    }
+
     pub fn write_architecture(&self, content: &str) -> Result<()> {
         fs::write(self.zentra_dir.join("architecture.md"), content)?;
         Ok(())
@@ -87,5 +95,38 @@ impl StateWriter {
         self.zentra_dir
             .parent()
             .expect("zentra_dir always has a parent")
+    }
+}
+
+fn format_finding_block(finding: &Finding) -> String {
+    let location_line = finding
+        .location
+        .as_deref()
+        .map(|l| format!("**Location:** {}\n", l))
+        .unwrap_or_default();
+
+    format!(
+        "## [{}] {}\n**Scanner:** {}\n{}**Description:** {}\n**Recommendation:** {}\n\n---\n",
+        finding.severity,
+        finding.title,
+        finding.scanner,
+        location_line,
+        finding.description,
+        finding.recommendation,
+    )
+}
+
+fn finding_block_order(block: &str) -> u8 {
+    let first_line = block.lines().next().unwrap_or_default();
+    if first_line.starts_with("## [CRITICAL]") {
+        Severity::Critical.order()
+    } else if first_line.starts_with("## [HIGH]") {
+        Severity::High.order()
+    } else if first_line.starts_with("## [MEDIUM]") {
+        Severity::Medium.order()
+    } else if first_line.starts_with("## [LOW]") {
+        Severity::Low.order()
+    } else {
+        Severity::Info.order()
     }
 }
