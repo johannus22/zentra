@@ -2,7 +2,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use tempfile::TempDir;
 use zentra_cli::agent::{ScanEvent, ScannerType};
 use zentra_cli::config::{AuthMethod, GlobalConfig};
-use zentra_cli::pentest::{PentestEvent, PentestFinding, PentestSeverity};
+use zentra_cli::pentest::{PentestEvent, PentestEvidence, PentestFinding, PentestSeverity};
 use zentra_cli::state::{Finding, Severity};
 use zentra_cli::tui::menu::{
     centered_middle_column, main_menu_actions, provider_selector_footer_hint,
@@ -168,6 +168,173 @@ fn pentest_ui_state_tracks_findings_and_activity() {
     assert_eq!(state.findings.len(), 1);
     assert_eq!(state.activity.len(), 1);
     assert!(state.activity[0].contains("navigate"));
+}
+
+#[test]
+fn pentest_ui_state_redacts_sensitive_activity_values() {
+    let mut state = PentestUiState::new(
+        "https://app.example.test".to_string(),
+        "gpt-4o".to_string(),
+        "header".to_string(),
+    );
+
+    state.apply_event(PentestEvent::BrowserAction {
+        id: 1,
+        action: "navigate".to_string(),
+        target: "https://app.example.test/app?token=secret-token&api_key=secret-key&safe=ok"
+            .to_string(),
+    });
+    state.apply_event(PentestEvent::CliCall {
+        id: 1,
+        command: "open https://app.example.test --header Authorization: Bearer secret-bearer --cookie session=secret-session --header=Cookie: secret-cookie".to_string(),
+    });
+    state.apply_event(PentestEvent::EvidenceCaptured(PentestEvidence {
+        kind: "response".to_string(),
+        path: "evidence/login.json?signature=secret-signature&key=secret-key".to_string(),
+        description: "Login response".to_string(),
+    }));
+    state.apply_event(PentestEvent::Error {
+        id: None,
+        message: "failed with Cookie: secret-cookie and Authorization: Bearer secret-bearer"
+            .to_string(),
+    });
+
+    let activity = state.activity.join("\n");
+    assert!(activity.contains("token=<redacted>"));
+    assert!(activity.contains("api_key=<redacted>"));
+    assert!(activity.contains("signature=<redacted>"));
+    assert!(activity.contains("key=<redacted>"));
+    assert!(activity.contains("Authorization: Bearer <redacted>"));
+    assert!(activity.contains("Cookie: <redacted>"));
+    assert!(activity.contains("--header <redacted>"));
+    assert!(activity.contains("--cookie <redacted>"));
+    assert!(activity.contains("--header=<redacted>"));
+    assert!(!activity.contains("secret-token"));
+    assert!(!activity.contains("secret-key"));
+    assert!(!activity.contains("secret-bearer"));
+    assert!(!activity.contains("secret-session"));
+    assert!(!activity.contains("secret-cookie"));
+    assert!(!activity.contains("secret-signature"));
+}
+
+#[test]
+fn pentest_ui_state_handles_error_and_completed_events() {
+    let mut state = PentestUiState::new(
+        "https://app.example.test".to_string(),
+        "gpt-4o".to_string(),
+        "header".to_string(),
+    );
+    state.apply_event(PentestEvent::AgentStarted {
+        id: 7,
+        role: "Exploiter".to_string(),
+    });
+    state.apply_event(PentestEvent::Error {
+        id: Some(7),
+        message: "request failed with Authorization: Bearer secret-token".to_string(),
+    });
+    state.apply_event(PentestEvent::Completed);
+
+    assert_eq!(state.agents[0].status, PentestAgentStatus::Failed);
+    assert_eq!(state.completed, true);
+    assert!(state.agents[0]
+        .current_task
+        .contains("Authorization: Bearer <redacted>"));
+    assert!(state.activity[0].contains("Authorization: Bearer <redacted>"));
+    assert!(!state.agents[0].current_task.contains("secret-token"));
+    assert!(!state.activity[0].contains("secret-token"));
+}
+
+#[test]
+fn pentest_ui_state_caps_activity_log() {
+    let mut state = PentestUiState::new(
+        "https://app.example.test".to_string(),
+        "gpt-4o".to_string(),
+        "none".to_string(),
+    );
+
+    for idx in 0..105 {
+        state.apply_event(PentestEvent::AgentActivity {
+            id: 1,
+            message: format!("activity {idx}"),
+        });
+    }
+
+    assert_eq!(state.activity.len(), 100);
+    assert_eq!(state.activity[0], "activity 5");
+    assert_eq!(state.activity[99], "activity 104");
+}
+
+#[test]
+fn pentest_ui_state_only_assigns_counts_when_single_running_agent() {
+    let mut single = PentestUiState::new(
+        "https://app.example.test".to_string(),
+        "gpt-4o".to_string(),
+        "none".to_string(),
+    );
+    single.apply_event(PentestEvent::AgentStarted {
+        id: 1,
+        role: "Crawler".to_string(),
+    });
+    single.apply_event(PentestEvent::EvidenceCaptured(PentestEvidence {
+        kind: "screenshot".to_string(),
+        path: "evidence/page.png".to_string(),
+        description: "Page".to_string(),
+    }));
+    single.apply_event(PentestEvent::FindingAdded(PentestFinding {
+        severity: PentestSeverity::Low,
+        title: "Low".to_string(),
+        impact: "Minor".to_string(),
+        reproduction_steps: vec!["Open page".to_string()],
+        evidence_paths: vec!["evidence/page.png".to_string()],
+        remediation: "Fix".to_string(),
+    }));
+
+    assert_eq!(single.agents[0].evidence_count, 1);
+    assert_eq!(single.agents[0].finding_count, 1);
+
+    let mut multiple = PentestUiState::new(
+        "https://app.example.test".to_string(),
+        "gpt-4o".to_string(),
+        "none".to_string(),
+    );
+    multiple.apply_event(PentestEvent::AgentStarted {
+        id: 1,
+        role: "Crawler".to_string(),
+    });
+    multiple.apply_event(PentestEvent::AgentStarted {
+        id: 2,
+        role: "Exploiter".to_string(),
+    });
+    multiple.apply_event(PentestEvent::EvidenceCaptured(PentestEvidence {
+        kind: "response".to_string(),
+        path: "evidence/response.json".to_string(),
+        description: "Response".to_string(),
+    }));
+    multiple.selected_idx = 10;
+    multiple.apply_event(PentestEvent::FindingAdded(PentestFinding {
+        severity: PentestSeverity::Low,
+        title: "Low".to_string(),
+        impact: "Minor".to_string(),
+        reproduction_steps: vec!["Open page".to_string()],
+        evidence_paths: vec!["evidence/page.png".to_string()],
+        remediation: "Fix".to_string(),
+    }));
+    multiple.apply_event(PentestEvent::FindingAdded(PentestFinding {
+        severity: PentestSeverity::Critical,
+        title: "Critical".to_string(),
+        impact: "Major".to_string(),
+        reproduction_steps: vec!["Exploit".to_string()],
+        evidence_paths: vec!["evidence/exploit.json".to_string()],
+        remediation: "Fix now".to_string(),
+    }));
+
+    assert_eq!(multiple.agents[0].evidence_count, 0);
+    assert_eq!(multiple.agents[1].evidence_count, 0);
+    assert_eq!(multiple.agents[0].finding_count, 0);
+    assert_eq!(multiple.agents[1].finding_count, 0);
+    assert_eq!(multiple.findings.len(), 2);
+    assert_eq!(multiple.findings[0].severity, PentestSeverity::Critical);
+    assert!(multiple.selected_idx < multiple.findings.len());
 }
 
 #[test]
