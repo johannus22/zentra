@@ -28,18 +28,20 @@ pub fn clip_with_ellipsis(s: &str, max_width: usize) -> String {
 }
 
 const ACTION_RUN_FULL_SCAN: usize = 0;
-const ACTION_SELECT_SCANNERS: usize = 1;
-const ACTION_VIEW_RESULTS: usize = 2;
-const ACTION_CHANGE_PROVIDER: usize = 3;
-const ACTION_ADD_PROVIDER: usize = 4;
-const ACTION_EXIT: usize = 5;
+const ACTION_RUN_PENTEST: usize = 1;
+const ACTION_SELECT_SCANNERS: usize = 2;
+const ACTION_VIEW_RESULTS: usize = 3;
+const ACTION_CHANGE_PROVIDER: usize = 4;
+const ACTION_ADD_PROVIDER: usize = 5;
+const ACTION_EXIT: usize = 6;
 
-/// Highest selectable action index in the main menu (6 items: 0–5).
-const MAX_MENU_ACTION: usize = 5;
+/// Highest selectable action index in the main menu (7 items: 0-6).
+const MAX_MENU_ACTION: usize = 6;
 
 pub fn main_menu_actions() -> &'static [&'static str] {
     &[
         "Run Full Scan",
+        "Run Pentest",
         "Select Scanners",
         "View Last Results",
         "Change Provider",
@@ -72,6 +74,7 @@ pub fn provider_selector_footer_hint(state: &MenuState) -> &'static str {
 #[derive(Debug, Clone)]
 pub enum MenuAction {
     RunScan(Vec<ScannerType>),
+    RunPentest,
     ViewLastResults,
     ChangeProvider(String), // profile name — from ProviderSelector
     ProviderAdded(String),  // newly created profile name — from ProviderForm
@@ -768,6 +771,7 @@ fn run_menu_loop(
                                         ScannerType::Report,
                                     ]));
                                 }
+                                ACTION_RUN_PENTEST => return Ok(MenuAction::RunPentest),
                                 ACTION_SELECT_SCANNERS => {
                                     state.screen = MenuScreen::ScannerSelector;
                                     state.scanner_idx = 0;
@@ -812,7 +816,7 @@ fn run_menu_loop(
                         }
                         KeyCode::Esc => {
                             state.screen = MenuScreen::Main;
-                            state.selected_idx = 1;
+                            state.selected_idx = ACTION_SELECT_SCANNERS;
                         }
                         _ => {}
                     },
