@@ -25,6 +25,30 @@ pub enum Commands {
         #[arg(long)]
         provider: Option<String>,
     },
+    /// Run dynamic browser pentest against an authorized target
+    Pentest {
+        /// Target URL to pentest
+        #[arg(long)]
+        url: String,
+        /// Optional authorization header, for example: Authorization: Bearer token
+        #[arg(long)]
+        header: Option<String>,
+        /// Optional cookie string, for example: session=value
+        #[arg(long)]
+        cookie: Option<String>,
+        /// Additional allowed host. May be repeated.
+        #[arg(long = "allow-host")]
+        allow_hosts: Vec<String>,
+        /// Allowed path prefix. May be repeated.
+        #[arg(long = "allow-path")]
+        allow_paths: Vec<String>,
+        /// Excluded path prefix. May be repeated.
+        #[arg(long = "exclude-path")]
+        exclude_paths: Vec<String>,
+        /// Confirm that you are authorized to test this target
+        #[arg(long)]
+        authorized: bool,
+    },
     /// Upgrade zentra to the latest release
     Update,
 }
@@ -86,5 +110,47 @@ mod tests {
     fn parses_scan_defaults() {
         let cli = Cli::try_parse_from(["zentra", "scan"]).unwrap();
         assert!(matches!(cli.command, Some(Commands::Scan { .. })));
+    }
+
+    #[test]
+    fn parses_pentest_required_url() {
+        let cli = Cli::try_parse_from(["zentra", "pentest", "--url", "https://app.example.test"])
+            .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Pentest { ref url, .. }) if url == "https://app.example.test"
+        ));
+    }
+
+    #[test]
+    fn parses_pentest_scope_and_auth_flags() {
+        let cli = Cli::try_parse_from([
+            "zentra",
+            "pentest",
+            "--url",
+            "https://app.example.test",
+            "--header",
+            "Authorization: Bearer token",
+            "--cookie",
+            "session=value",
+            "--allow-host",
+            "app.example.test",
+            "--allow-path",
+            "/app",
+            "--exclude-path",
+            "/logout",
+            "--authorized",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Pentest {
+                header: Some(_),
+                cookie: Some(_),
+                authorized: true,
+                ..
+            })
+        ));
     }
 }

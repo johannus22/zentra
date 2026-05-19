@@ -86,6 +86,26 @@ async fn main() -> anyhow::Result<()> {
             cli::ConfigAction::Remove { name } => commands::config::remove(&name).await?,
         },
         Some(cli::Commands::Scan { provider, only }) => commands::scan::run(provider, only).await?,
+        Some(cli::Commands::Pentest {
+            url,
+            header,
+            cookie,
+            allow_hosts,
+            allow_paths,
+            exclude_paths,
+            authorized,
+        }) => {
+            commands::pentest::run(
+                url,
+                header,
+                cookie,
+                allow_hosts,
+                allow_paths,
+                exclude_paths,
+                authorized,
+            )
+            .await?
+        }
         Some(cli::Commands::Update) => {
             eprintln!("zentra update â€” available in Plan 4 (install + CI)");
             std::process::exit(1);
