@@ -3,6 +3,7 @@ pub mod auth;
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod pentest;
 pub mod provider;
 pub mod scanners;
 pub mod state;
