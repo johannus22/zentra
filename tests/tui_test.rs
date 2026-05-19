@@ -2,12 +2,14 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use tempfile::TempDir;
 use zentra_cli::agent::{ScanEvent, ScannerType};
 use zentra_cli::config::{AuthMethod, GlobalConfig};
+use zentra_cli::pentest::{PentestEvent, PentestFinding, PentestSeverity};
 use zentra_cli::state::{Finding, Severity};
 use zentra_cli::tui::menu::{
     centered_middle_column, main_menu_actions, provider_selector_footer_hint,
     scanner_selector_footer_hint, MenuScreen, MenuState, OAuthModalPhase,
 };
 use zentra_cli::tui::pentest_setup::build_pentest_config_from_setup_input;
+use zentra_cli::tui::pentest_ui::{PentestAgentStatus, PentestUiState};
 use zentra_cli::tui::{ScanStatus, UiState};
 
 #[test]
@@ -119,6 +121,53 @@ fn pentest_setup_accepts_yes_authorization_confirmation() {
 fn pentest_setup_empty_url_returns_none() {
     let config = build_pentest_config_from_setup_input("   ", "yes").unwrap();
     assert!(config.is_none());
+}
+
+#[test]
+fn pentest_ui_state_tracks_agent_lifecycle() {
+    let mut state = PentestUiState::new(
+        "https://app.example.test".to_string(),
+        "gpt-4o".to_string(),
+        "none".to_string(),
+    );
+    state.apply_event(PentestEvent::AgentPlanned {
+        role: "Crawler".to_string(),
+        objective: "Map app".to_string(),
+    });
+    state.apply_event(PentestEvent::AgentStarted {
+        id: 1,
+        role: "Crawler".to_string(),
+    });
+    state.apply_event(PentestEvent::AgentCompleted { id: 1 });
+
+    assert_eq!(state.agents.len(), 1);
+    assert_eq!(state.agents[0].status, PentestAgentStatus::Done);
+}
+
+#[test]
+fn pentest_ui_state_tracks_findings_and_activity() {
+    let mut state = PentestUiState::new(
+        "https://app.example.test".to_string(),
+        "gpt-4o".to_string(),
+        "header".to_string(),
+    );
+    state.apply_event(PentestEvent::BrowserAction {
+        id: 1,
+        action: "navigate".to_string(),
+        target: "https://app.example.test/app".to_string(),
+    });
+    state.apply_event(PentestEvent::FindingAdded(PentestFinding {
+        severity: PentestSeverity::High,
+        title: "IDOR".to_string(),
+        impact: "Data exposure".to_string(),
+        reproduction_steps: vec!["Open invoice".to_string()],
+        evidence_paths: vec!["evidence/invoice.json".to_string()],
+        remediation: "Check ownership".to_string(),
+    }));
+
+    assert_eq!(state.findings.len(), 1);
+    assert_eq!(state.activity.len(), 1);
+    assert!(state.activity[0].contains("navigate"));
 }
 
 #[test]
