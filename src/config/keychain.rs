@@ -27,15 +27,20 @@ pub fn set_key(profile: &str, api_key: &str) -> Result<KeyStorage> {
     let entry = keyring::Entry::new(&service_name(profile), "api_key")
         .context("Failed to access OS keychain")?;
 
-    let keyring_ok = entry.set_password(api_key).is_ok();
+    if entry.set_password(api_key).is_ok() {
+        // Keychain succeeded — remove any stale plaintext file from a previous fallback
+        if let Some(path) = key_file_path(profile) {
+            let _ = std::fs::remove_file(path);
+        }
+        return Ok(KeyStorage::Keychain);
+    }
 
-    // Always write file backup — Windows keyring may accept the write in-process
-    // but silently fail to persist it across process restarts.
+    // Keychain unavailable — write file as fallback only when necessary
     if let Some(path) = key_file_path(profile) {
         if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)?;
         }
-        let _ = std::fs::write(&path, api_key);
+        std::fs::write(&path, api_key)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -43,11 +48,7 @@ pub fn set_key(profile: &str, api_key: &str) -> Result<KeyStorage> {
         }
     }
 
-    if keyring_ok {
-        Ok(KeyStorage::Keychain)
-    } else {
-        Ok(KeyStorage::File)
-    }
+    Ok(KeyStorage::File)
 }
 
 pub fn get_key(profile: &str) -> Result<Option<String>> {
