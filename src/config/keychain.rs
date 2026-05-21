@@ -27,15 +27,20 @@ pub fn set_key(profile: &str, api_key: &str) -> Result<KeyStorage> {
     let entry = keyring::Entry::new(&service_name(profile), "api_key")
         .context("Failed to access OS keychain")?;
 
-    if entry.set_password(api_key).is_ok() {
-        // Keychain succeeded — remove any stale plaintext file from a previous fallback
+    // Verify the write by reading back immediately — Windows Credential Manager can
+    // return Ok on set_password but silently fail to persist across process restarts.
+    let keychain_verified = entry.set_password(api_key).is_ok()
+        && entry.get_password().ok().as_deref() == Some(api_key);
+
+    if keychain_verified {
+        // Remove any stale plaintext file from a previous fallback
         if let Some(path) = key_file_path(profile) {
             let _ = std::fs::remove_file(path);
         }
         return Ok(KeyStorage::Keychain);
     }
 
-    // Keychain unavailable — write file as fallback only when necessary
+    // Keychain unavailable or failed verification — write file as fallback
     if let Some(path) = key_file_path(profile) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
