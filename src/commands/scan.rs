@@ -95,8 +95,27 @@ async fn run_once(
         )),
     };
 
-    let project_config = ProjectConfig::load_from(&ProjectConfig::default_path())
-        .context("No project config found. Run 'zentra init' first.")?;
+    let project_config = if ProjectConfig::exists() {
+        match ProjectConfig::load_from(&ProjectConfig::default_path()) {
+            Ok(cfg) => cfg,
+            Err(_) => {
+                let cwd = std::env::current_dir()?;
+                let stack = ProjectConfig::detect_stack(&cwd);
+                let cfg = ProjectConfig::new(&stack, vec![]);
+                cfg.save_to(&ProjectConfig::default_path())?;
+                println!("⚠ Recreated .zentra/config.json (previous file was unreadable)");
+                cfg
+            }
+        }
+    } else {
+        let cwd = std::env::current_dir()?;
+        let stack = ProjectConfig::detect_stack(&cwd);
+        let config = ProjectConfig::new(&stack, vec![]);
+        config.save_to(&ProjectConfig::default_path())?;
+        crate::commands::init::update_gitignore_at(&cwd)?;
+        println!("✓ Auto-initialized .zentra/ (stack: {})", stack);
+        config
+    };
 
     let state_writer = Arc::new(
         StateWriter::new(Path::new(&project_config.target_path))
