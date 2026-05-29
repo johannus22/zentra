@@ -1242,6 +1242,25 @@ fn provider_form_validate_rejects_unsafe_profile_name() {
 }
 
 #[test]
+fn pentest_auth_form_all_blank_produces_default_auth() {
+    use zentra_cli::pentest::auth::PentestAuth;
+    let auth = PentestAuth::default();
+    assert!(auth.login_url.is_none());
+    assert!(auth.password.is_none());
+    assert_eq!(auth.label(), "none");
+}
+
+#[test]
+fn pentest_auth_form_bearer_only_label() {
+    use zentra_cli::pentest::auth::PentestAuth;
+    let auth = PentestAuth {
+        bearer_token: Some("tok".into()),
+        ..Default::default()
+    };
+    assert_eq!(auth.label(), "bearer-token");
+}
+
+#[test]
 fn ui_state_error_event_captures_message() {
     let mut state = UiState::new(
         vec![ScannerType::Sast],

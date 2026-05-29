@@ -61,10 +61,10 @@ async fn main() -> anyhow::Result<()> {
                     // loop continues so scan UI q/Esc returns here
                 }
                 MenuAction::RunPentest => {
-                    if let Some(config) =
+                    if let Some(result) =
                         zentra_cli::tui::pentest_setup::run_pentest_setup().await?
                     {
-                        commands::pentest::run_config(config, zentra_cli::pentest::auth::PentestAuth::default()).await?;
+                        commands::pentest::run_config(result.config, result.auth).await?;
                     }
                 }
                 MenuAction::ViewLastResults => {
