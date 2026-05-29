@@ -9,7 +9,7 @@ use zentra_cli::tui::menu::{
     scanner_selector_footer_hint, MenuScreen, MenuState, OAuthModalPhase,
 };
 use zentra_cli::tui::pentest_setup::build_pentest_config_from_setup_input;
-use zentra_cli::tui::pentest_ui::{PentestAgentStatus, PentestUiState};
+use zentra_cli::tui::pentest_ui::PentestUiState;
 use zentra_cli::tui::{ScanStatus, UiState};
 
 #[test]
@@ -124,12 +124,13 @@ fn pentest_setup_empty_url_returns_none() {
 }
 
 #[test]
-fn pentest_ui_state_tracks_agent_lifecycle() {
+fn pentest_ui_state_agent_lifecycle_events_are_no_ops() {
     let mut state = PentestUiState::new(
         "https://app.example.test".to_string(),
         "gpt-4o".to_string(),
         "none".to_string(),
     );
+    // These events are no-ops in the stage-based pipeline UI
     state.apply_event(PentestEvent::AgentPlanned {
         role: "Crawler".to_string(),
         objective: "Map app".to_string(),
@@ -140,8 +141,9 @@ fn pentest_ui_state_tracks_agent_lifecycle() {
     });
     state.apply_event(PentestEvent::AgentCompleted { id: 1 });
 
-    assert_eq!(state.agents.len(), 1);
-    assert_eq!(state.agents[0].status, PentestAgentStatus::Done);
+    // No side effects — activity log stays empty, no stage changes
+    assert_eq!(state.activity.len(), 0);
+    assert_eq!(state.current_stage, 0);
 }
 
 #[test]
@@ -234,13 +236,9 @@ fn pentest_ui_state_handles_error_and_completed_events() {
     });
     state.apply_event(PentestEvent::Completed);
 
-    assert_eq!(state.agents[0].status, PentestAgentStatus::Failed);
     assert_eq!(state.completed, true);
-    assert!(state.agents[0]
-        .current_task
-        .contains("Authorization: Bearer <redacted>"));
+    assert!(state.error_stages.contains(&7));
     assert!(state.activity[0].contains("Authorization: Bearer <redacted>"));
-    assert!(!state.agents[0].current_task.contains("secret-token"));
     assert!(!state.activity[0].contains("secret-token"));
 }
 
@@ -394,22 +392,18 @@ fn pentest_activity_scroll_resets_to_zero_floor_on_down() {
 }
 
 #[test]
-fn pentest_ui_state_only_assigns_counts_when_single_running_agent() {
-    let mut single = PentestUiState::new(
+fn pentest_ui_state_evidence_and_findings_tracked_at_state_level() {
+    let mut state = PentestUiState::new(
         "https://app.example.test".to_string(),
         "gpt-4o".to_string(),
         "none".to_string(),
     );
-    single.apply_event(PentestEvent::AgentStarted {
-        id: 1,
-        role: "Crawler".to_string(),
-    });
-    single.apply_event(PentestEvent::EvidenceCaptured(PentestEvidence {
+    state.apply_event(PentestEvent::EvidenceCaptured(PentestEvidence {
         kind: "screenshot".to_string(),
         path: "evidence/page.png".to_string(),
         description: "Page".to_string(),
     }));
-    single.apply_event(PentestEvent::FindingAdded(PentestFinding {
+    state.apply_event(PentestEvent::FindingAdded(PentestFinding {
         severity: PentestSeverity::Low,
         title: "Low".to_string(),
         impact: "Minor".to_string(),
@@ -418,29 +412,17 @@ fn pentest_ui_state_only_assigns_counts_when_single_running_agent() {
         remediation: "Fix".to_string(),
     }));
 
-    assert_eq!(single.agents[0].evidence_count, 1);
-    assert_eq!(single.agents[0].finding_count, 1);
+    assert_eq!(state.findings.len(), 1);
+    assert!(state.activity.iter().any(|a| a.contains("evidence/page.png")));
 
-    let mut multiple = PentestUiState::new(
+    // Findings are sorted by severity (highest first)
+    let mut multi = PentestUiState::new(
         "https://app.example.test".to_string(),
         "gpt-4o".to_string(),
         "none".to_string(),
     );
-    multiple.apply_event(PentestEvent::AgentStarted {
-        id: 1,
-        role: "Crawler".to_string(),
-    });
-    multiple.apply_event(PentestEvent::AgentStarted {
-        id: 2,
-        role: "Exploiter".to_string(),
-    });
-    multiple.apply_event(PentestEvent::EvidenceCaptured(PentestEvidence {
-        kind: "response".to_string(),
-        path: "evidence/response.json".to_string(),
-        description: "Response".to_string(),
-    }));
-    multiple.selected_idx = 10;
-    multiple.apply_event(PentestEvent::FindingAdded(PentestFinding {
+    multi.selected_idx = 10;
+    multi.apply_event(PentestEvent::FindingAdded(PentestFinding {
         severity: PentestSeverity::Low,
         title: "Low".to_string(),
         impact: "Minor".to_string(),
@@ -448,7 +430,7 @@ fn pentest_ui_state_only_assigns_counts_when_single_running_agent() {
         evidence_paths: vec!["evidence/page.png".to_string()],
         remediation: "Fix".to_string(),
     }));
-    multiple.apply_event(PentestEvent::FindingAdded(PentestFinding {
+    multi.apply_event(PentestEvent::FindingAdded(PentestFinding {
         severity: PentestSeverity::Critical,
         title: "Critical".to_string(),
         impact: "Major".to_string(),
@@ -457,13 +439,9 @@ fn pentest_ui_state_only_assigns_counts_when_single_running_agent() {
         remediation: "Fix now".to_string(),
     }));
 
-    assert_eq!(multiple.agents[0].evidence_count, 0);
-    assert_eq!(multiple.agents[1].evidence_count, 0);
-    assert_eq!(multiple.agents[0].finding_count, 0);
-    assert_eq!(multiple.agents[1].finding_count, 0);
-    assert_eq!(multiple.findings.len(), 2);
-    assert_eq!(multiple.findings[0].severity, PentestSeverity::Critical);
-    assert!(multiple.selected_idx < multiple.findings.len());
+    assert_eq!(multi.findings.len(), 2);
+    assert_eq!(multi.findings[0].severity, PentestSeverity::Critical);
+    assert!(multi.selected_idx < multi.findings.len());
 }
 
 #[test]
