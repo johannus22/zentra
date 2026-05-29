@@ -64,7 +64,7 @@ async fn main() -> anyhow::Result<()> {
                     if let Some(config) =
                         zentra_cli::tui::pentest_setup::run_pentest_setup().await?
                     {
-                        commands::pentest::run_config(config).await?;
+                        commands::pentest::run_config(config, zentra_cli::pentest::auth::PentestAuth::default()).await?;
                     }
                 }
                 MenuAction::ViewLastResults => {
