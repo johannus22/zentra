@@ -95,8 +95,6 @@ async fn main() -> anyhow::Result<()> {
         Some(cli::Commands::Scan { provider, only }) => commands::scan::run(provider, only).await?,
         Some(cli::Commands::Pentest {
             url,
-            header,
-            cookie,
             allow_hosts,
             allow_paths,
             exclude_paths,
@@ -104,8 +102,6 @@ async fn main() -> anyhow::Result<()> {
         }) => {
             commands::pentest::run(
                 url,
-                header,
-                cookie,
                 allow_hosts,
                 allow_paths,
                 exclude_paths,

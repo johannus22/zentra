@@ -114,7 +114,7 @@ fn pentest_setup_accepts_yes_authorization_confirmation() {
     assert_eq!(config.scope.allowed_hosts, vec!["app.example.test"]);
     assert_eq!(config.scope.allowed_paths, vec!["/"]);
     assert!(config.scope.excluded_paths.is_empty());
-    assert!(matches!(config.auth, zentra_cli::pentest::AuthMode::None));
+    assert_eq!(config.auth.label(), "none");
 }
 
 #[test]

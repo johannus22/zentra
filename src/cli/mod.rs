@@ -30,12 +30,6 @@ pub enum Commands {
         /// Target URL to pentest
         #[arg(long)]
         url: String,
-        /// Optional authorization header, for example: Authorization: Bearer token
-        #[arg(long)]
-        header: Option<String>,
-        /// Optional cookie string, for example: session=value
-        #[arg(long)]
-        cookie: Option<String>,
         /// Additional allowed host. May be repeated.
         #[arg(long = "allow-host")]
         allow_hosts: Vec<String>,
@@ -123,16 +117,12 @@ mod tests {
     }
 
     #[test]
-    fn parses_pentest_scope_and_auth_flags() {
+    fn parses_pentest_scope_flags() {
         let cli = Cli::try_parse_from([
             "zentra",
             "pentest",
             "--url",
             "https://app.example.test",
-            "--header",
-            "Authorization: Bearer token",
-            "--cookie",
-            "session=value",
             "--allow-host",
             "app.example.test",
             "--allow-path",
@@ -146,8 +136,6 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Commands::Pentest {
-                header: Some(_),
-                cookie: Some(_),
                 authorized: true,
                 ..
             })
