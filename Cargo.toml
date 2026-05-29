@@ -1,6 +1,6 @@
 [package]
 name = "zentra-cli"
-version = "0.2.51"
+version = "0.2.52"
 edition = "2021"
 
 [[bin]]
@@ -35,6 +35,7 @@ sha2 = "0.10"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 toml = "0.8"
+totp-rs = { version = "5", features = ["gen_secret", "serde_support"] }
 walkdir = "2"
 
 [dev-dependencies]
