@@ -349,7 +349,6 @@ fn pentest_activity_scroll_increments_on_up_when_activity_focused() {
 
 #[test]
 fn pentest_activity_scroll_clamps_to_history_length() {
-    use zentra_cli::tui::pentest_ui::PentestFocus;
     let mut state = PentestUiState::new(
         "https://t.test".to_string(),
         "model".to_string(),
@@ -362,16 +361,15 @@ fn pentest_activity_scroll_clamps_to_history_length() {
         });
     }
     state.handle_tab(); // Activity focus
-    // Press Up 100 times — must not exceed activity.len()
+    // Press Up 100 times — must not exceed activity.len() - 1 (keeps at least 1 item visible)
     for _ in 0..100 {
         state.handle_up();
     }
-    assert_eq!(state.activity_scroll, 3);
+    assert_eq!(state.activity_scroll, 2);
 }
 
 #[test]
 fn pentest_activity_scroll_resets_to_zero_floor_on_down() {
-    use zentra_cli::tui::pentest_ui::PentestFocus;
     let mut state = PentestUiState::new(
         "https://t.test".to_string(),
         "model".to_string(),
