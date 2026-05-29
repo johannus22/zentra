@@ -265,6 +265,137 @@ fn pentest_ui_state_caps_activity_log() {
 }
 
 #[test]
+fn pentest_focus_defaults_to_findings() {
+    use zentra_cli::tui::pentest_ui::PentestFocus;
+    let state = PentestUiState::new(
+        "https://t.test".to_string(),
+        "model".to_string(),
+        "none".to_string(),
+    );
+    assert_eq!(state.focus, PentestFocus::Findings);
+    assert_eq!(state.activity_scroll, 0);
+}
+
+#[test]
+fn pentest_tab_toggles_focus() {
+    use zentra_cli::tui::pentest_ui::PentestFocus;
+    let mut state = PentestUiState::new(
+        "https://t.test".to_string(),
+        "model".to_string(),
+        "none".to_string(),
+    );
+    assert_eq!(state.focus, PentestFocus::Findings);
+    state.handle_tab();
+    assert_eq!(state.focus, PentestFocus::Activity);
+    state.handle_tab();
+    assert_eq!(state.focus, PentestFocus::Findings);
+}
+
+#[test]
+fn pentest_up_down_routes_to_findings_when_findings_focused() {
+    use zentra_cli::tui::pentest_ui::PentestFocus;
+    let mut state = PentestUiState::new(
+        "https://t.test".to_string(),
+        "model".to_string(),
+        "none".to_string(),
+    );
+    // Add two findings via apply_event
+    let finding = PentestFinding {
+        severity: PentestSeverity::High,
+        title: "A".to_string(),
+        impact: "".to_string(),
+        reproduction_steps: vec![],
+        evidence_paths: vec![],
+        remediation: "".to_string(),
+    };
+    state.apply_event(PentestEvent::FindingAdded(finding.clone()));
+    state.apply_event(PentestEvent::FindingAdded(PentestFinding {
+        title: "B".to_string(),
+        ..finding
+    }));
+    assert_eq!(state.focus, PentestFocus::Findings);
+    state.handle_down();
+    assert_eq!(state.selected_idx, 1);
+    state.handle_up();
+    assert_eq!(state.selected_idx, 0);
+    // activity_scroll unchanged
+    assert_eq!(state.activity_scroll, 0);
+}
+
+#[test]
+fn pentest_activity_scroll_increments_on_up_when_activity_focused() {
+    use zentra_cli::tui::pentest_ui::PentestFocus;
+    let mut state = PentestUiState::new(
+        "https://t.test".to_string(),
+        "model".to_string(),
+        "none".to_string(),
+    );
+    // Add 5 activity entries
+    for i in 0..5 {
+        state.apply_event(PentestEvent::AgentActivity {
+            id: 1,
+            message: format!("event {i}"),
+        });
+    }
+    state.handle_tab(); // switch to Activity
+    assert_eq!(state.focus, PentestFocus::Activity);
+    state.handle_up();
+    assert_eq!(state.activity_scroll, 1);
+    state.handle_up();
+    assert_eq!(state.activity_scroll, 2);
+    // selected_idx unchanged
+    assert_eq!(state.selected_idx, 0);
+}
+
+#[test]
+fn pentest_activity_scroll_clamps_to_history_length() {
+    use zentra_cli::tui::pentest_ui::PentestFocus;
+    let mut state = PentestUiState::new(
+        "https://t.test".to_string(),
+        "model".to_string(),
+        "none".to_string(),
+    );
+    for i in 0..3 {
+        state.apply_event(PentestEvent::AgentActivity {
+            id: 1,
+            message: format!("event {i}"),
+        });
+    }
+    state.handle_tab(); // Activity focus
+    // Press Up 100 times — must not exceed activity.len()
+    for _ in 0..100 {
+        state.handle_up();
+    }
+    assert_eq!(state.activity_scroll, 3);
+}
+
+#[test]
+fn pentest_activity_scroll_resets_to_zero_floor_on_down() {
+    use zentra_cli::tui::pentest_ui::PentestFocus;
+    let mut state = PentestUiState::new(
+        "https://t.test".to_string(),
+        "model".to_string(),
+        "none".to_string(),
+    );
+    for i in 0..3 {
+        state.apply_event(PentestEvent::AgentActivity {
+            id: 1,
+            message: format!("event {i}"),
+        });
+    }
+    state.handle_tab();
+    state.handle_up();
+    state.handle_up();
+    assert_eq!(state.activity_scroll, 2);
+    state.handle_down();
+    assert_eq!(state.activity_scroll, 1);
+    state.handle_down();
+    assert_eq!(state.activity_scroll, 0);
+    state.handle_down(); // floor at 0
+    assert_eq!(state.activity_scroll, 0);
+}
+
+#[test]
 fn pentest_ui_state_only_assigns_counts_when_single_running_agent() {
     let mut single = PentestUiState::new(
         "https://app.example.test".to_string(),
