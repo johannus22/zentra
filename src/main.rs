@@ -100,6 +100,7 @@ async fn main() -> anyhow::Result<()> {
             exclude_paths,
             authorized,
             network_full_ports,
+            stealth,
         }) => {
             commands::pentest::run(
                 url,
@@ -108,6 +109,7 @@ async fn main() -> anyhow::Result<()> {
                 exclude_paths,
                 authorized,
                 network_full_ports,
+                stealth,
             )
             .await?
         }
