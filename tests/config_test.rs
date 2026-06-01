@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use tempfile::TempDir;
-use zentra_cli::config::{GlobalConfig, ProjectConfig, ProviderProfile};
 use zentra_cli::config::validation::validate_provider_base_url;
+use zentra_cli::config::{GlobalConfig, ProjectConfig, ProviderProfile};
 use zentra_cli::wizard::provider_defaults;
 
 #[test]

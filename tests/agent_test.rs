@@ -102,10 +102,14 @@ fn state_writer_sorts_findings_by_severity_in_markdown() {
         })
         .unwrap();
 
-    let content = std::fs::read_to_string(dir.path().join(".zentra").join("detailed-findings.md")).unwrap();
+    let content =
+        std::fs::read_to_string(dir.path().join(".zentra").join("detailed-findings.md")).unwrap();
     let critical_idx = content.find("## [CRITICAL] Critical Finding").unwrap();
     let low_idx = content.find("## [LOW] Low Finding").unwrap();
-    assert!(critical_idx < low_idx, "critical findings should be ordered before low findings");
+    assert!(
+        critical_idx < low_idx,
+        "critical findings should be ordered before low findings"
+    );
 }
 
 #[test]
@@ -644,7 +648,10 @@ async fn orchestrator_continues_to_report_after_parallel_scanner_error() {
         ])
         .await;
 
-    assert!(result.is_ok(), "pipeline should continue after scanner errors: {result:?}");
+    assert!(
+        result.is_ok(),
+        "pipeline should continue after scanner errors: {result:?}"
+    );
 
     let mut started = vec![];
     let mut completed = vec![];
@@ -659,8 +666,14 @@ async fn orchestrator_continues_to_report_after_parallel_scanner_error() {
     }
 
     assert!(saw_error, "should emit scanner error event");
-    assert!(started.contains(&ScannerType::Report), "report should still start");
-    assert!(completed.contains(&ScannerType::Report), "report should still complete");
+    assert!(
+        started.contains(&ScannerType::Report),
+        "report should still start"
+    );
+    assert!(
+        completed.contains(&ScannerType::Report),
+        "report should still complete"
+    );
 }
 
 #[tokio::test]

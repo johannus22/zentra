@@ -175,8 +175,8 @@ pub fn parse_callback_path(path: &str, expected_state: &str) -> anyhow::Result<S
         return Err(anyhow::anyhow!("OAuth callback returned error '{}'", error));
     }
 
-    let actual_state = state
-        .ok_or_else(|| anyhow::anyhow!("OAuth callback missing 'state' parameter"))?;
+    let actual_state =
+        state.ok_or_else(|| anyhow::anyhow!("OAuth callback missing 'state' parameter"))?;
     if actual_state != expected_state {
         return Err(anyhow::anyhow!("OAuth callback state mismatch"));
     }
