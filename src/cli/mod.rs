@@ -42,6 +42,9 @@ pub enum Commands {
         /// Confirm that you are authorized to test this target
         #[arg(long)]
         authorized: bool,
+        /// Scan all TCP ports during Stage 0 network recon instead of nmap default/common ports
+        #[arg(long = "network-full-ports")]
+        network_full_ports: bool,
     },
     /// Upgrade zentra to the latest release
     Update,
