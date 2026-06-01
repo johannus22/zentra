@@ -45,7 +45,7 @@ pub enum Commands {
         /// Scan all TCP ports during Stage 0 network recon instead of nmap default/common ports
         #[arg(long = "network-full-ports")]
         network_full_ports: bool,
-        /// Use low-concurrency, delayed requests to reduce IDS detection risk
+        /// Use low-concurrency requests to reduce IDS detection risk
         #[arg(long)]
         stealth: bool,
     },
