@@ -359,7 +359,7 @@ fn pentest_activity_scroll_clamps_to_history_length() {
         });
     }
     state.handle_tab(); // Activity focus
-    // Press Up 100 times — must not exceed activity.len() - 1 (keeps at least 1 item visible)
+                        // Press Up 100 times — must not exceed activity.len() - 1 (keeps at least 1 item visible)
     for _ in 0..100 {
         state.handle_up();
     }
@@ -413,7 +413,10 @@ fn pentest_ui_state_evidence_and_findings_tracked_at_state_level() {
     }));
 
     assert_eq!(state.findings.len(), 1);
-    assert!(state.activity.iter().any(|a| a.contains("evidence/page.png")));
+    assert!(state
+        .activity
+        .iter()
+        .any(|a| a.contains("evidence/page.png")));
 
     // Findings are sorted by severity (highest first)
     let mut multi = PentestUiState::new(
@@ -1145,10 +1148,7 @@ fn oauth_modal_state_tracks_progress_and_launch_error() {
     state.set_oauth_modal_phase(OAuthModalPhase::WaitingForCallback);
     let modal = state.oauth_modal.as_ref().unwrap();
     assert_eq!(modal.phase, OAuthModalPhase::WaitingForCallback);
-    assert_eq!(
-        modal.error.as_deref(),
-        Some("Failed to launch browser")
-    );
+    assert_eq!(modal.error.as_deref(), Some("Failed to launch browser"));
 
     state.set_oauth_modal_phase(OAuthModalPhase::ExchangingCode);
     assert_eq!(
@@ -1203,7 +1203,10 @@ fn provider_form_save_persists_openai_as_api_key_auth_even_if_legacy_oauth_state
     assert_eq!(cfg.default_profile.as_deref(), Some("openai_api_key"));
     assert_eq!(
         stored_keys.lock().unwrap().as_slice(),
-        [("openai_api_key".to_string(), "sk-test-key-12345".to_string())]
+        [(
+            "openai_api_key".to_string(),
+            "sk-test-key-12345".to_string()
+        )]
     );
 }
 

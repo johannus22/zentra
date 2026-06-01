@@ -194,8 +194,11 @@ fn callback_params_extracts_code_and_validates_state() {
 
 #[test]
 fn callback_params_preserves_literal_plus_in_code_and_state() {
-    let code = parse_callback_path("/callback?code=a+b+c&state=expected+state", "expected+state")
-        .unwrap();
+    let code = parse_callback_path(
+        "/callback?code=a+b+c&state=expected+state",
+        "expected+state",
+    )
+    .unwrap();
 
     assert_eq!(code, "a+b+c");
 }

@@ -321,13 +321,7 @@ impl ProviderFormState {
         )
     }
 
-    pub fn save_with_oauth_to_path_using<
-        RunOAuth,
-        StoreOAuth,
-        DeleteOAuth,
-        StoreKey,
-        DeleteKey,
-    >(
+    pub fn save_with_oauth_to_path_using<RunOAuth, StoreOAuth, DeleteOAuth, StoreKey, DeleteKey>(
         &self,
         config_path: &std::path::Path,
         _run_oauth: RunOAuth,
@@ -839,14 +833,16 @@ fn run_menu_loop(
                         KeyCode::Left => {
                             if state.form.focused_field == 0 {
                                 state.form.cycle_provider(-1);
-                            } else if state.form.auth_field_idx() == Some(state.form.focused_field) {
+                            } else if state.form.auth_field_idx() == Some(state.form.focused_field)
+                            {
                                 state.form.cycle_auth_method(-1);
                             }
                         }
                         KeyCode::Right => {
                             if state.form.focused_field == 0 {
                                 state.form.cycle_provider(1);
-                            } else if state.form.auth_field_idx() == Some(state.form.focused_field) {
+                            } else if state.form.auth_field_idx() == Some(state.form.focused_field)
+                            {
                                 state.form.cycle_auth_method(1);
                             }
                         }
@@ -1354,7 +1350,9 @@ fn render_oauth_modal(frame: &mut Frame, area: Rect, modal: &OAuthModalState) {
     let mut lines = vec![
         Line::from(Span::styled(
             status,
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
