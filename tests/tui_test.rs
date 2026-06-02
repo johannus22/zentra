@@ -1609,3 +1609,33 @@ fn uistate_mcp_status_updates_on_event() {
     state.apply_event(ScanEvent::McpChannelStatus(McpStatus::Disconnected));
     assert!(matches!(state.mcp_status, Some(McpStatus::Disconnected)));
 }
+
+#[test]
+fn error_span_toggle_and_dismiss() {
+    let mut state = MenuState::new(
+        true, true, vec![], String::new(), String::new(), String::new(), String::new(),
+    );
+    assert!(state.last_error.is_none());
+
+    state.last_error = Some("boom".to_string());
+    assert!(!state.error_expanded);
+
+    state.toggle_error_expanded();
+    assert!(state.error_expanded);
+    state.toggle_error_expanded();
+    assert!(!state.error_expanded);
+
+    state.error_expanded = true;
+    state.dismiss_error();
+    assert!(state.last_error.is_none());
+    assert!(!state.error_expanded);
+}
+
+#[test]
+fn toggle_error_is_noop_without_error() {
+    let mut state = MenuState::new(
+        true, true, vec![], String::new(), String::new(), String::new(), String::new(),
+    );
+    state.toggle_error_expanded();
+    assert!(!state.error_expanded);
+}

@@ -572,6 +572,17 @@ impl MenuState {
         crate::commands::clone::validate_repo_url(&self.repo_url)
     }
 
+    pub fn toggle_error_expanded(&mut self) {
+        if self.last_error.is_some() {
+            self.error_expanded = !self.error_expanded;
+        }
+    }
+
+    pub fn dismiss_error(&mut self) {
+        self.last_error = None;
+        self.error_expanded = false;
+    }
+
     pub fn next(&mut self) {
         let max = match self.screen {
             MenuScreen::Main => MAX_MENU_ACTION,
