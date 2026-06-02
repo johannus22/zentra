@@ -53,6 +53,40 @@ pub fn derive_repo_name(url: &str) -> String {
     }
 }
 
+/// Derive a collision-resistant audit folder name as `<owner>-<repo>` when an
+/// owner segment is present, else just `<repo>`. The owner is the path segment
+/// before the repo; a segment containing '.' is treated as a hostname (not an
+/// owner) and skipped. Sanitized to filesystem-safe characters.
+pub fn derive_audit_name(url: &str) -> String {
+    let repo = derive_repo_name(url);
+    let trimmed = url.trim().trim_end_matches('/');
+    let segments: Vec<&str> = trimmed
+        .rsplit(|c| c == '/' || c == ':')
+        .filter(|s| !s.is_empty())
+        .collect();
+    // segments[0] == repo segment; segments[1] == owner candidate (if any).
+    let owner = segments.get(1).copied().unwrap_or("");
+    // A dotted segment is a hostname (e.g. github.com), not an owner.
+    let owner = if owner.contains('.') { "" } else { owner };
+    let owner_clean: String = owner
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    if owner_clean.is_empty() {
+        repo
+    } else {
+        format!("{}-{}", owner_clean, repo)
+    }
+}
+
 /// Shallow-clone `url` into `dest` using the user's local `git` (inherits their
 /// credential helper / SSH keys). `dest` must not already exist.
 pub fn clone_repo(url: &str, dest: &Path) -> Result<()> {
@@ -117,22 +151,30 @@ impl Drop for CwdGuard {
 
 /// Clone an external repo into a throwaway temp dir, run the full scan against
 /// it, copy the resulting `.zentra/` artifacts into
-/// `cwd/.zentra/audits/<repo>/`, then discard the clone.
+/// `cwd/.zentra/audits/<owner>-<repo>/`, then discard the clone.
 pub async fn run_clone_and_scan(url: String) -> Result<()> {
     validate_repo_url(&url)?;
-    let repo_name = derive_repo_name(&url);
+    let audit_name = derive_audit_name(&url);
 
     // Capture where audit output should land before we change directories.
     let audit_root = std::env::current_dir()?
         .join(".zentra")
         .join("audits")
-        .join(&repo_name);
+        .join(&audit_name);
 
     let temp = tempfile::TempDir::new().context("failed to create temp dir for clone")?;
     let clone_dir = temp.path().join("repo");
 
     println!("Cloning {url} …");
     clone_repo(&url, &clone_dir)?;
+
+    // The clone is untrusted: strip any .zentra/ it ships so a malicious
+    // config.json can't redirect or shape the scan. The scan recreates one.
+    let clone_zentra = clone_dir.join(".zentra");
+    if clone_zentra.exists() {
+        std::fs::remove_dir_all(&clone_zentra)
+            .context("failed to clear pre-existing .zentra/ from clone")?;
+    }
 
     let full_scan = vec![
         ScannerType::ThreatModel,
@@ -149,18 +191,20 @@ pub async fn run_clone_and_scan(url: String) -> Result<()> {
         crate::commands::scan::run_with_scanners(full_scan).await?;
 
         // Copy the clone's .zentra/ output into the original project's audits dir.
-        let clone_zentra = clone_dir.join(".zentra");
         if clone_zentra.exists() {
             if audit_root.exists() {
-                std::fs::remove_dir_all(&audit_root).ok();
+                println!(
+                    "⚠ Overwriting existing audit at .zentra/audits/{}/",
+                    audit_name
+                );
+                std::fs::remove_dir_all(&audit_root).with_context(|| {
+                    format!("failed to remove existing audit dir {}", audit_root.display())
+                })?;
             }
             copy_dir_recursive(&clone_zentra, &audit_root)?;
         }
     } // guard drops here -> cwd restored
 
-    println!(
-        "\n✓ Audit complete. Results in .zentra/audits/{}/",
-        repo_name
-    );
+    println!("\n✓ Audit complete. Results in .zentra/audits/{}/", audit_name);
     Ok(())
 }
