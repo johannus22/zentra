@@ -1201,14 +1201,20 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
     if let Some(err) = &state.last_error {
         let first_line = err.lines().next().unwrap_or("");
         let toggle = if state.error_expanded { "collapse" } else { "expand" };
+        let summary_area = centered_middle_column(chunks[3]);
+        // Reserve room for the "✗ {} · e {toggle} · x dismiss" chrome (20 fixed
+        // chars + the toggle word) so the dismiss hint isn't truncated on
+        // narrow terminals; derive the message budget from the actual row width.
+        let chrome = 20 + toggle.chars().count();
+        let budget = (summary_area.width as usize).saturating_sub(chrome).max(1);
         let summary = format!(
             "✗ {}  · e {} · x dismiss",
-            clip_with_ellipsis(first_line, 48),
+            clip_with_ellipsis(first_line, budget),
             toggle
         );
         frame.render_widget(
             Paragraph::new(summary).style(Style::default().fg(Color::Red)),
-            centered_middle_column(chunks[3]),
+            summary_area,
         );
     }
 
