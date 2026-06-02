@@ -2925,7 +2925,7 @@ dependencies = [
 
 [[package]]
 name = "zentra-cli"
-version = "0.5.0"
+version = "0.6.2"
 dependencies = [
  "anyhow",
  "async-trait",
