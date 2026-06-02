@@ -163,7 +163,9 @@ pub async fn run_clone_and_scan(url: String) -> Result<()> {
         .join(&audit_name);
 
     let temp = tempfile::TempDir::new().context("failed to create temp dir for clone")?;
-    let clone_dir = temp.path().join("repo");
+    // Name the clone dir after the repo so the live scan header shows the real
+    // repo name (project name / branch are derived from cwd during the scan).
+    let clone_dir = temp.path().join(derive_repo_name(&url));
 
     println!("Cloning {url} …");
     clone_repo(&url, &clone_dir)?;
