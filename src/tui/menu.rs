@@ -93,6 +93,7 @@ pub enum MenuScreen {
     ProviderSelector,
     ProviderForm,
     Settings,
+    RepoInput,
 }
 
 /// State for the Settings screen. Currently a single editable field: the base
@@ -499,6 +500,10 @@ pub struct MenuState {
     pub oauth_modal: Option<OAuthModalState>,
     pub project_name: String,
     pub branch_name: String,
+    pub repo_url: String,
+    pub repo_input_error: Option<String>,
+    pub last_error: Option<String>,
+    pub error_expanded: bool,
     oauth_modal_rx: Option<Receiver<OAuthModalEvent>>,
 }
 
@@ -531,6 +536,10 @@ impl MenuState {
             oauth_modal: None,
             project_name,
             branch_name,
+            repo_url: String::new(),
+            repo_input_error: None,
+            last_error: None,
+            error_expanded: false,
             oauth_modal_rx: None,
         }
     }
@@ -553,11 +562,24 @@ impl MenuState {
         }
     }
 
+    pub fn open_repo_input(&mut self) {
+        self.screen = MenuScreen::RepoInput;
+        self.repo_url.clear();
+        self.repo_input_error = None;
+    }
+
+    pub fn validate_repo_input(&self) -> anyhow::Result<()> {
+        crate::commands::clone::validate_repo_url(&self.repo_url)
+    }
+
     pub fn next(&mut self) {
         let max = match self.screen {
             MenuScreen::Main => MAX_MENU_ACTION,
             MenuScreen::ScannerSelector => 5,
-            MenuScreen::ProviderSelector | MenuScreen::ProviderForm | MenuScreen::Settings => 0,
+            MenuScreen::ProviderSelector
+            | MenuScreen::ProviderForm
+            | MenuScreen::Settings
+            | MenuScreen::RepoInput => 0,
         };
         if self.selected_idx < max {
             self.selected_idx += 1;
@@ -1007,6 +1029,7 @@ fn run_menu_loop(
                         }
                         _ => {}
                     },
+                    MenuScreen::RepoInput => {}
                 }
             }
         }
@@ -1024,6 +1047,7 @@ fn render_menu(frame: &mut Frame, state: &MenuState) {
         MenuScreen::ProviderSelector => render_provider_selector(frame, area, state),
         MenuScreen::ProviderForm => render_provider_form(frame, area, state),
         MenuScreen::Settings => render_settings(frame, area, state),
+        MenuScreen::RepoInput => {}
     }
 }
 
