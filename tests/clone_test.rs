@@ -1,4 +1,4 @@
-use zentra_cli::commands::clone::{derive_repo_name, validate_repo_url};
+use zentra_cli::commands::clone::{derive_audit_name, derive_repo_name, validate_repo_url};
 
 use std::path::Path;
 use std::process::Command;
@@ -109,4 +109,19 @@ fn derives_safe_fallback_for_weird_input() {
     let name = derive_repo_name("https://");
     assert!(!name.is_empty());
     assert!(name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'));
+}
+
+#[test]
+fn derives_owner_namespaced_audit_name() {
+    assert_eq!(
+        derive_audit_name("https://github.com/octocat/Hello-World.git"),
+        "octocat-Hello-World"
+    );
+    assert_eq!(derive_audit_name("git@github.com:foo/bar.git"), "foo-bar");
+}
+
+#[test]
+fn audit_name_falls_back_to_repo_when_owner_is_host_or_absent() {
+    // Single path segment -> owner candidate is the host (dotted) -> skipped.
+    assert_eq!(derive_audit_name("https://host.example/repo.git"), "repo");
 }
