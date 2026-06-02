@@ -266,11 +266,14 @@ Pentest setup can run through the interactive TUI flow when launching from `zent
 
 ### Pentest output
 
-Pentest output is written under:
+Pentest output location depends on where the command is run:
 
-```text
-.zentra/pentest/
-```
+| Context | Output directory |
+| --- | --- |
+| Inside an initialized Zentra project with `.zentra/config.json` | `./.zentra/pentest/` |
+| Outside an initialized project | `~/.zentra/pentest/<target-host>/<run-id>/` |
+
+Standalone pentest mode does not create `.zentra/config.json` or edit `.gitignore` in the current directory. Zentra prints the resolved output directory when the run starts.
 
 Typical artifacts include:
 
