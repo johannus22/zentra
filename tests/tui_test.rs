@@ -1497,7 +1497,40 @@ fn provider_selector_navigation_clears_pending_delete() {
     state.provider_selector_escape();
     assert!(state.pending_delete_profile.is_none());
     assert_eq!(state.screen, MenuScreen::Main);
-    assert_eq!(state.selected_idx, 4);
+    assert_eq!(state.selected_idx, 5);
+}
+
+#[test]
+fn entering_clone_screen_sets_repo_input() {
+    let mut state = MenuState::new(
+        true,
+        true,
+        vec![],
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+    );
+    state.open_repo_input();
+    assert_eq!(state.screen, MenuScreen::RepoInput);
+    assert_eq!(state.repo_url, "");
+    assert!(state.repo_input_error.is_none());
+}
+
+#[test]
+fn repo_input_edit_and_validate() {
+    let mut state = MenuState::new(
+        true, true, vec![], String::new(), String::new(), String::new(), String::new(),
+    );
+    state.open_repo_input();
+    for c in "https://github.com/foo/bar.git".chars() {
+        state.repo_url.push(c);
+    }
+    assert!(state.validate_repo_input().is_ok());
+
+    state.repo_url.clear();
+    state.repo_url.push_str("garbage");
+    assert!(state.validate_repo_input().is_err());
 }
 
 #[test]
