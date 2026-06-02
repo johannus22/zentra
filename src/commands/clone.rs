@@ -2,6 +2,8 @@ use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::agent::ScannerType;
+
 /// Accept only URL forms `git clone` understands as remotes. The URL is always
 /// passed to `git` as an argument (never through a shell), so this is a
 /// usability guard, not an injection guard. `file://` is rejected to keep the
@@ -111,4 +113,54 @@ impl Drop for CwdGuard {
     fn drop(&mut self) {
         let _ = std::env::set_current_dir(&self.original);
     }
+}
+
+/// Clone an external repo into a throwaway temp dir, run the full scan against
+/// it, copy the resulting `.zentra/` artifacts into
+/// `cwd/.zentra/audits/<repo>/`, then discard the clone.
+pub async fn run_clone_and_scan(url: String) -> Result<()> {
+    validate_repo_url(&url)?;
+    let repo_name = derive_repo_name(&url);
+
+    // Capture where audit output should land before we change directories.
+    let audit_root = std::env::current_dir()?
+        .join(".zentra")
+        .join("audits")
+        .join(&repo_name);
+
+    let temp = tempfile::TempDir::new().context("failed to create temp dir for clone")?;
+    let clone_dir = temp.path().join("repo");
+
+    println!("Cloning {url} …");
+    clone_repo(&url, &clone_dir)?;
+
+    let full_scan = vec![
+        ScannerType::ThreatModel,
+        ScannerType::Sast,
+        ScannerType::SupplyChain,
+        ScannerType::ApiScan,
+        ScannerType::IacScan,
+        ScannerType::Report,
+    ];
+
+    {
+        // Enter the clone; the guard restores cwd on drop (incl. panic/early return).
+        let _guard = CwdGuard::change_to(&clone_dir)?;
+        crate::commands::scan::run_with_scanners(full_scan).await?;
+
+        // Copy the clone's .zentra/ output into the original project's audits dir.
+        let clone_zentra = clone_dir.join(".zentra");
+        if clone_zentra.exists() {
+            if audit_root.exists() {
+                std::fs::remove_dir_all(&audit_root).ok();
+            }
+            copy_dir_recursive(&clone_zentra, &audit_root)?;
+        }
+    } // guard drops here -> cwd restored
+
+    println!(
+        "\n✓ Audit complete. Results in .zentra/audits/{}/",
+        repo_name
+    );
+    Ok(())
 }
