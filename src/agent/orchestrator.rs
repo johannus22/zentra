@@ -22,6 +22,7 @@ pub struct OrchestratorAgent {
     state_writer: Arc<StateWriter>,
     tx: mpsc::Sender<ScanEvent>,
     cancel_token: CancellationToken,
+    ci_focus_context: Option<String>,
 }
 
 impl OrchestratorAgent {
@@ -38,7 +39,13 @@ impl OrchestratorAgent {
             state_writer,
             tx,
             cancel_token,
+            ci_focus_context: None,
         }
+    }
+
+    pub fn with_ci_focus_context(mut self, ci_focus_context: Option<String>) -> Self {
+        self.ci_focus_context = ci_focus_context;
+        self
     }
 
     pub async fn run(self, scanners: &[ScannerType]) -> Result<()> {
@@ -89,13 +96,23 @@ Delete this file and re-run the scan to retry.",
                 let writer = Arc::clone(&self.state_writer);
                 let tx = self.tx.clone();
                 let ctx = context_opt.clone();
+                let ci_ctx = self.ci_focus_context.clone();
                 let token = cancel_token.clone();
                 handles.push((
                     scanner_type,
                     tokio::spawn(async move {
-                        ScannerAgent::new(scanner_type, provider, registry, writer, tx, ctx, token)
-                            .run()
-                            .await
+                        ScannerAgent::new_with_contexts(
+                            scanner_type,
+                            provider,
+                            registry,
+                            writer,
+                            tx,
+                            ctx,
+                            ci_ctx,
+                            token,
+                        )
+                        .run()
+                        .await
                     }),
                 ));
             }
@@ -134,13 +151,14 @@ Delete this file and re-run the scan to retry.",
         scanner_type: ScannerType,
         context: Option<&str>,
     ) -> Result<()> {
-        ScannerAgent::new(
+        ScannerAgent::new_with_contexts(
             scanner_type,
             Arc::clone(&self.provider),
             Arc::clone(&self.tool_registry),
             Arc::clone(&self.state_writer),
             self.tx.clone(),
             context.map(str::to_string),
+            self.ci_focus_context.clone(),
             self.cancel_token.clone(),
         )
         .run()

@@ -1,8 +1,8 @@
-use crate::config::ProjectConfig;
+use crate::{ci::CiPlatformKind, config::ProjectConfig};
 use anyhow::Result;
 use std::path::Path;
 
-pub async fn run() -> Result<()> {
+pub async fn run(ci: Option<CiPlatformKind>) -> Result<()> {
     let cwd = std::env::current_dir()?;
 
     if !ProjectConfig::looks_like_codebase(&cwd) {
@@ -21,6 +21,10 @@ pub async fn run() -> Result<()> {
     let config = ProjectConfig::new(&stack, vec![]);
     config.save_to(&ProjectConfig::default_path())?;
     update_gitignore_at(&cwd)?;
+    if let Some(platform) = ci {
+        crate::ci::generate_ci_workflow_at(&cwd, platform)?;
+        println!("✓ Added {} CI workflow", platform.as_str());
+    }
 
     println!("✓ Initialized .zentra/config.json (stack: {})", stack);
     println!("✓ Added .zentra/ to .gitignore");
