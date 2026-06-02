@@ -9,6 +9,7 @@ use zentra_cli::{
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     if std::env::args().len() == 1 {
+        let mut last_error: Option<String> = None;
         loop {
             // Reload config every iteration so menu reflects any changes
             let global = GlobalConfig::load().unwrap_or_default();
@@ -53,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
                 active_profile,
                 project_name,
                 branch_name,
+                last_error.take(),
             )
             .await?
             {
@@ -62,9 +64,9 @@ async fn main() -> anyhow::Result<()> {
                 }
                 MenuAction::CloneAndScan(url) => {
                     if let Err(e) = commands::clone::run_clone_and_scan(url).await {
-                        eprintln!("Clone failed: {e}");
+                        last_error = Some(e.to_string());
                     }
-                    // loop continues; error surfaced via menu in Task 9
+                    // loop continues; error (if any) renders on the next menu draw
                 }
                 MenuAction::RunPentest => {
                     if let Some(result) =
