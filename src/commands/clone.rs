@@ -1,4 +1,6 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Accept only URL forms `git clone` understands as remotes. The URL is always
 /// passed to `git` as an argument (never through a shell), so this is a
@@ -46,5 +48,67 @@ pub fn derive_repo_name(url: &str) -> String {
         "repo".to_string()
     } else {
         cleaned
+    }
+}
+
+/// Shallow-clone `url` into `dest` using the user's local `git` (inherits their
+/// credential helper / SSH keys). `dest` must not already exist.
+pub fn clone_repo(url: &str, dest: &Path) -> Result<()> {
+    let output = Command::new("git")
+        .arg("clone")
+        .arg("--depth")
+        .arg("1")
+        .arg(url)
+        .arg(dest)
+        .output()
+        .context("failed to run `git` — is it installed and on PATH?")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("git clone failed: {}", stderr.trim());
+    }
+    Ok(())
+}
+
+/// Recursively copy the contents of `src` into `dst`, creating `dst` (and
+/// parents) as needed. Overwrites existing files.
+pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    std::fs::create_dir_all(dst)
+        .with_context(|| format!("failed to create {}", dst.display()))?;
+    for entry in std::fs::read_dir(src)
+        .with_context(|| format!("failed to read {}", src.display()))?
+    {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)
+                .with_context(|| format!("failed to copy {}", from.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Restores the process current directory to its original value when dropped,
+/// so a panic or early return inside a scan can't strand the process in the
+/// temp clone.
+pub struct CwdGuard {
+    original: PathBuf,
+}
+
+impl CwdGuard {
+    pub fn change_to(target: &Path) -> Result<Self> {
+        let original = std::env::current_dir().context("failed to read current dir")?;
+        std::env::set_current_dir(target)
+            .with_context(|| format!("failed to enter {}", target.display()))?;
+        Ok(Self { original })
+    }
+}
+
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.original);
     }
 }
