@@ -60,6 +60,12 @@ async fn main() -> anyhow::Result<()> {
                     commands::scan::run_with_scanners(scanners).await?;
                     // loop continues so scan UI q/Esc returns here
                 }
+                MenuAction::CloneAndScan(url) => {
+                    if let Err(e) = commands::clone::run_clone_and_scan(url).await {
+                        eprintln!("Clone failed: {e}");
+                    }
+                    // loop continues; error surfaced via menu in Task 9
+                }
                 MenuAction::RunPentest => {
                     if let Some(result) =
                         zentra_cli::tui::pentest_setup::run_pentest_setup().await?

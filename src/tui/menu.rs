@@ -28,20 +28,22 @@ pub fn clip_with_ellipsis(s: &str, max_width: usize) -> String {
 }
 
 const ACTION_RUN_FULL_SCAN: usize = 0;
-const ACTION_RUN_PENTEST: usize = 1;
-const ACTION_SELECT_SCANNERS: usize = 2;
-const ACTION_VIEW_RESULTS: usize = 3;
-const ACTION_CHANGE_PROVIDER: usize = 4;
-const ACTION_ADD_PROVIDER: usize = 5;
-const ACTION_SETTINGS: usize = 6;
-const ACTION_EXIT: usize = 7;
+const ACTION_CLONE_AND_SCAN: usize = 1;
+const ACTION_RUN_PENTEST: usize = 2;
+const ACTION_SELECT_SCANNERS: usize = 3;
+const ACTION_VIEW_RESULTS: usize = 4;
+const ACTION_CHANGE_PROVIDER: usize = 5;
+const ACTION_ADD_PROVIDER: usize = 6;
+const ACTION_SETTINGS: usize = 7;
+const ACTION_EXIT: usize = 8;
 
-/// Highest selectable action index in the main menu (8 items: 0-7).
-const MAX_MENU_ACTION: usize = 7;
+/// Highest selectable action index in the main menu (9 items: 0-8).
+const MAX_MENU_ACTION: usize = 8;
 
 pub fn main_menu_actions() -> &'static [&'static str] {
     &[
-        "Run Full Scan",
+        "Run Full Scan (this directory)",
+        "Clone Repo & Scan",
         "Run Pentest",
         "Select Scanners",
         "View Last Results",
@@ -77,6 +79,7 @@ pub fn provider_selector_footer_hint(state: &MenuState) -> &'static str {
 pub enum MenuAction {
     RunScan(Vec<ScannerType>),
     RunPentest,
+    CloneAndScan(String), // repo URL — from RepoInput screen
     ViewLastResults,
     ChangeProvider(String), // profile name — from ProviderSelector
     ProviderAdded(String),  // newly created profile name — from ProviderForm
@@ -570,6 +573,7 @@ impl MenuState {
     pub fn is_item_enabled(&self, idx: usize) -> bool {
         match idx {
             i if i == ACTION_RUN_FULL_SCAN
+                || i == ACTION_CLONE_AND_SCAN
                 || i == ACTION_SELECT_SCANNERS
                 || i == ACTION_CHANGE_PROVIDER =>
             {
