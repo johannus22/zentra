@@ -83,7 +83,8 @@ async fn main() -> anyhow::Result<()> {
     let cli = cli::Cli::parse();
     match cli.command {
         None => unreachable!(),
-        Some(cli::Commands::Init) => commands::init::run().await?,
+        Some(cli::Commands::Init { ci }) => commands::init::run(ci).await?,
+        Some(cli::Commands::Ci) => commands::ci::run().await?,
         Some(cli::Commands::Config { action }) => match action {
             cli::ConfigAction::Setup => wizard::run_setup(None).await?,
             cli::ConfigAction::Add => wizard::run_setup(None).await?,
@@ -114,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
             .await?
         }
         Some(cli::Commands::Update) => {
-            eprintln!("zentra update â€” available in Plan 4 (install + CI)");
+            eprintln!("zentra update - available in Plan 4 (install + CI)");
             std::process::exit(1);
         }
     }

@@ -17,6 +17,7 @@ pub struct ScannerAgent {
     state_writer: Arc<StateWriter>,
     tx: mpsc::Sender<ScanEvent>,
     context: Option<String>,
+    ci_focus_context: Option<String>,
     cancel_token: CancellationToken,
 }
 
@@ -37,13 +38,36 @@ impl ScannerAgent {
             state_writer,
             tx,
             context,
+            ci_focus_context: None,
+            cancel_token,
+        }
+    }
+
+    pub fn new_with_contexts(
+        scanner_type: ScannerType,
+        provider: Arc<dyn LLMProvider>,
+        tool_registry: Arc<ToolRegistry>,
+        state_writer: Arc<StateWriter>,
+        tx: mpsc::Sender<ScanEvent>,
+        context: Option<String>,
+        ci_focus_context: Option<String>,
+        cancel_token: CancellationToken,
+    ) -> Self {
+        Self {
+            scanner_type,
+            provider,
+            tool_registry,
+            state_writer,
+            tx,
+            context,
+            ci_focus_context,
             cancel_token,
         }
     }
 
     pub async fn run(self) -> Result<()> {
         let base_system = scanners::system_prompt(self.scanner_type);
-        let effective_system: String = match &self.context {
+        let mut effective_system: String = match &self.context {
             Some(ctx) => format!(
                 "{}\n\n## Project Framework Context\n\n\
 This context was produced by a prior framework analysis pass. Use it to avoid false positives — \
@@ -52,6 +76,10 @@ for example, do not flag SQL injection if the ORM listed here auto-parameterises
             ),
             None => base_system.to_string(),
         };
+        if let Some(ctx) = &self.ci_focus_context {
+            effective_system.push_str("\n\n## CI PR/MR Focus Context\n\n");
+            effective_system.push_str(ctx);
+        }
         let system = effective_system.as_str();
         let all_tools = self.tool_registry.definitions();
         let allowed = scanners::allowed_tools(self.scanner_type);

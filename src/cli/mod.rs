@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
 
+use crate::ci::CiPlatformKind;
+
 #[derive(Parser, Debug)]
 #[command(name = "zentra", version, about = "AI-powered Application Security")]
 pub struct Cli {
@@ -10,7 +12,13 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     /// Initialize .zentra/ in the current project
-    Init,
+    Init {
+        /// Generate CI workflow configuration for the selected platform
+        #[arg(long, value_enum)]
+        ci: Option<CiPlatformKind>,
+    },
+    /// Run CI security checks without launching the TUI
+    Ci,
     /// Manage LLM provider configuration
     Config {
         #[command(subcommand)]
@@ -77,7 +85,24 @@ mod tests {
     #[test]
     fn parses_init_command() {
         let cli = Cli::try_parse_from(["zentra", "init"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Init)));
+        assert!(matches!(cli.command, Some(Commands::Init { ci: None })));
+    }
+
+    #[test]
+    fn parses_init_with_ci_github() {
+        let cli = Cli::try_parse_from(["zentra", "init", "--ci", "github"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Init {
+                ci: Some(CiPlatformKind::Github)
+            })
+        ));
+    }
+
+    #[test]
+    fn parses_ci_command() {
+        let cli = Cli::try_parse_from(["zentra", "ci"]).unwrap();
+        assert!(matches!(cli.command, Some(Commands::Ci)));
     }
 
     #[test]

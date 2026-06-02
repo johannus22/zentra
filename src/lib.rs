@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod auth;
+pub mod ci;
 pub mod cli;
 pub mod commands;
 pub mod config;
