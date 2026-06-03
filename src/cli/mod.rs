@@ -193,6 +193,7 @@ mod tests {
     fn pentest_escalate_defaults_false() {
         let cli = Cli::try_parse_from([
             "zentra", "pentest", "--url", "https://app.example.test",
+            "--authorized",
         ])
         .unwrap();
         assert!(matches!(
