@@ -5,6 +5,7 @@ use tokio_util::sync::CancellationToken;
 
 pub mod anthropic;
 pub mod openai_compat;
+pub mod cli;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
