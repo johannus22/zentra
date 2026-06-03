@@ -1,4 +1,4 @@
-use zentra_cli::provider::cli::{serialize_messages, CliKind};
+use zentra_cli::provider::cli::serialize_messages;
 use zentra_cli::provider::AgentMessage;
 
 #[test]
@@ -39,4 +39,22 @@ fn serialize_tool_result_escapes_cdata_end_sequence() {
     ];
     let out = serialize_messages(&msgs);
     assert!(out.contains("a]]]]><![CDATA[>b"));
+}
+
+#[test]
+fn serialize_assistant_with_tool_calls() {
+    use zentra_cli::provider::ToolCall;
+    let msgs = vec![AgentMessage::Assistant {
+        content: "I will read the file.".to_string(),
+        tool_calls: vec![ToolCall {
+            id: "tc1".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"path": "src/main.rs"}),
+        }],
+    }];
+    let out = serialize_messages(&msgs);
+    assert!(out.contains("Assistant: I will read the file."));
+    assert!(out.contains("<ztool_call>"));
+    assert!(out.contains("\"name\":\"read_file\""));
+    assert!(out.contains("\"id\":\"tc1\""));
 }
