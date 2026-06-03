@@ -1424,3 +1424,22 @@ fn provider_selector_navigation_clears_pending_delete() {
     assert_eq!(state.screen, MenuScreen::Main);
     assert_eq!(state.selected_idx, 4);
 }
+
+#[test]
+fn pentest_ui_renders_escalation_spawned_activity() {
+    let mut state = PentestUiState::new(
+        "https://app.example.test".into(),
+        "model · profile".into(),
+        "none".into(),
+    );
+    state.apply_event(zentra_cli::pentest::PentestEvent::EscalationSpawned {
+        id: 100,
+        parent_id: 6,
+        finding_title: "IDOR on /api/user".into(),
+        depth: 1,
+    });
+    assert!(state
+        .activity
+        .iter()
+        .any(|a| a.contains("escalation") && a.contains("IDOR on /api/user")));
+}
