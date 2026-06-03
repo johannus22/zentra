@@ -10,9 +10,9 @@ pub enum CliKind {
 }
 
 pub struct CliProvider {
-    pub kind: CliKind,
-    pub binary: String,
-    pub model: String,
+    kind: CliKind,
+    binary: String,
+    model: String,
 }
 
 impl CliProvider {
@@ -58,7 +58,7 @@ pub fn serialize_messages(messages: &[AgentMessage]) -> String {
     out
 }
 
-pub fn escape_cdata(s: &str) -> String {
+pub(crate) fn escape_cdata(s: &str) -> String {
     s.replace("]]>", "]]]]><![CDATA[>")
 }
 
