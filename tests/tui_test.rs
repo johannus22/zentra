@@ -1443,3 +1443,19 @@ fn pentest_ui_renders_escalation_spawned_activity() {
         .iter()
         .any(|a| a.contains("escalation") && a.contains("IDOR on /api/user")));
 }
+
+#[test]
+fn pentest_ui_renders_escalation_cap_reached_activity() {
+    let mut state = zentra_cli::tui::pentest_ui::PentestUiState::new(
+        "https://app.example.test".into(),
+        "model · profile".into(),
+        "none".into(),
+    );
+    state.apply_event(zentra_cli::pentest::PentestEvent::EscalationCapReached {
+        dropped_title: "XSS in search".into(),
+    });
+    assert!(state
+        .activity
+        .iter()
+        .any(|a| a.contains("cap reached") && a.contains("XSS in search")));
+}
