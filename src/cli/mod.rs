@@ -56,6 +56,9 @@ pub enum Commands {
         /// Use low-concurrency requests to reduce IDS detection risk
         #[arg(long)]
         stealth: bool,
+        /// Reactively spawn escalation agents that chain confirmed High/Critical findings
+        #[arg(long)]
+        escalate: bool,
     },
     /// Upgrade zentra to the latest release
     Update,
@@ -170,6 +173,32 @@ mod tests {
                 authorized: true,
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn parses_pentest_escalate_flag() {
+        let cli = Cli::try_parse_from([
+            "zentra", "pentest", "--url", "https://app.example.test",
+            "--authorized", "--escalate",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Pentest { escalate: true, .. })
+        ));
+    }
+
+    #[test]
+    fn pentest_escalate_defaults_false() {
+        let cli = Cli::try_parse_from([
+            "zentra", "pentest", "--url", "https://app.example.test",
+            "--authorized",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Pentest { escalate: false, .. })
         ));
     }
 }
