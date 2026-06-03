@@ -62,6 +62,50 @@ pub(crate) fn escape_cdata(s: &str) -> String {
     s.replace("]]>", "]]]]><![CDATA[>")
 }
 
+/// Extract <ztool_call>...</ztool_call> tags from the assistant response.
+/// Only scans the top-level response — strips <ztool_result> blocks first
+/// so injected content from scanned files cannot produce fake tool calls.
+pub fn parse_ztool_calls(response: &str) -> Result<Vec<ToolCall>> {
+    let stripped = strip_ztool_results(response);
+
+    let mut calls = Vec::new();
+    let mut remaining = stripped.as_str();
+    while let Some(start) = remaining.find("<ztool_call>") {
+        let after_open = &remaining[start + "<ztool_call>".len()..];
+        let end = after_open
+            .find("</ztool_call>")
+            .ok_or_else(|| anyhow::anyhow!("Unclosed <ztool_call> tag"))?;
+        let json_str = &after_open[..end];
+        let v: serde_json::Value = serde_json::from_str(json_str)
+            .map_err(|e| anyhow::anyhow!("Malformed ztool_call JSON: {}", e))?;
+        calls.push(ToolCall {
+            id: v["id"].as_str().unwrap_or("").to_string(),
+            name: v["name"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("ztool_call missing 'name'"))?
+                .to_string(),
+            arguments: v["input"].clone(),
+        });
+        remaining = &after_open[end + "</ztool_call>".len()..];
+    }
+    Ok(calls)
+}
+
+fn strip_ztool_results(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(start) = rest.find("<ztool_result") {
+        out.push_str(&rest[..start]);
+        let end = rest[start..]
+            .find("</ztool_result>")
+            .map(|i| start + i + "</ztool_result>".len())
+            .unwrap_or(rest.len());
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 #[async_trait]
 impl LLMProvider for CliProvider {
     async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse> {
