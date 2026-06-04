@@ -11,6 +11,7 @@ use crate::provider::{
     openai_compat::OpenAICompatProvider,
     LLMProvider,
 };
+use crate::security::{self, AuditEvent, AuditLog, SecurityConfig, SecurityContext};
 use crate::state::StateWriter;
 use crate::tools::ToolRegistry;
 use crate::tui::{scan_ui::run_scan_ui, ScanOutcome};
@@ -154,6 +155,24 @@ async fn run_once(
     );
     let tool_registry = Arc::new(ToolRegistry::new());
 
+    // Security envelope: tamper-evident audit log, response binding, tool gate,
+    // and prompt-injection guard. Defaults are balanced; override with
+    // ZENTRA_SECURITY=off (disable) or ZENTRA_SECURITY=hardened (strictest).
+    let security_config = SecurityConfig::load();
+    let session_id = security::new_session_id();
+    let zentra_dir = Path::new(&project_config.target_path).join(".zentra");
+    let mut audit = AuditLog::new(&zentra_dir, &session_id, security_config.audit_log)
+        .context("Failed to open security audit log")?;
+    audit
+        .record(AuditEvent::SessionStart {
+            provider_kind: profile.kind.clone(),
+            model: profile.model.clone(),
+            scanner: "orchestrator".to_string(),
+        })
+        .ok();
+    let security_ctx = SecurityContext::new(security_config, audit);
+    let provider = security::GuardedProvider::wrap(provider, &security_ctx);
+
     let context_window = profile.context_window.unwrap_or(256_000);
     let model_info = format!("{} · {}", profile.model, profile_name);
     let provider_kind = profile.kind.clone();
@@ -184,6 +203,7 @@ async fn run_once(
             tx,
             token_for_orchestrator,
         )
+        .with_security(security_ctx)
         .run(&scanners_for_agent)
         .await
     });
