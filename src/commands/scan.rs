@@ -98,6 +98,8 @@ async fn run_once(
         }
     }
 
+    let (tx, rx) = mpsc::channel(128);
+
     let provider: Arc<dyn LLMProvider> = match profile.kind.as_str() {
         "anthropic" => Arc::new(AnthropicProvider::new(
             profile.base_url.clone(),
@@ -109,11 +111,14 @@ async fn run_once(
             resolve_cli_binary(&profile.kind, &profile.base_url),
             profile.model.clone(),
         )),
-        "codex_cli" => Arc::new(CliProvider::new(
-            CliKind::Codex,
-            resolve_cli_binary(&profile.kind, &profile.base_url),
-            profile.model.clone(),
-        )),
+        "codex_cli" => Arc::new(
+            CliProvider::new(
+                CliKind::Codex,
+                resolve_cli_binary(&profile.kind, &profile.base_url),
+                profile.model.clone(),
+            )
+            .with_event_channel(tx.clone()),
+        ),
         _ => Arc::new(OpenAICompatProvider::new(
             profile.base_url.clone(),
             profile.model.clone(),
@@ -165,7 +170,6 @@ async fn run_once(
         scanners_with_framework.insert(0, ScannerType::FrameworkAnalysis);
     }
 
-    let (tx, rx) = mpsc::channel(128);
     let scanners_for_agent = scanners_with_framework.clone();
 
     let cancel_token = CancellationToken::new();

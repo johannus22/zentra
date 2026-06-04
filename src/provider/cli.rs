@@ -13,11 +13,27 @@ pub struct CliProvider {
     kind: CliKind,
     binary: String,
     model: String,
+    event_tx: Option<tokio::sync::mpsc::Sender<crate::agent::ScanEvent>>,
 }
 
 impl CliProvider {
     pub fn new(kind: CliKind, binary: String, model: String) -> Self {
-        Self { kind, binary, model }
+        Self {
+            kind,
+            binary,
+            model,
+            event_tx: None,
+        }
+    }
+
+    /// Attach a scan-event channel so codex_cli can report MCP channel lifecycle
+    /// (Active / Done / Disconnected) to the TUI.
+    pub fn with_event_channel(
+        mut self,
+        tx: tokio::sync::mpsc::Sender<crate::agent::ScanEvent>,
+    ) -> Self {
+        self.event_tx = Some(tx);
+        self
     }
 }
 
@@ -220,6 +236,7 @@ impl LLMProvider for CliProvider {
             CliKind::Codex => {
                 codex_complete_with_tools(
                     &self.binary, &self.model, system, messages, tools, max_tokens, cancel_token,
+                    self.event_tx.as_ref(),
                 )
                 .await
             }
@@ -399,6 +416,33 @@ async fn codex_complete_with_tools(
     messages: &[AgentMessage],
     tools: &[ToolDefinition],
     _max_tokens: u32,
+    cancel_token: Option<&CancellationToken>,
+    event_tx: Option<&tokio::sync::mpsc::Sender<crate::agent::ScanEvent>>,
+) -> Result<CompletionResponse> {
+    use crate::agent::{McpStatus, ScanEvent};
+
+    let emit = |status: McpStatus| {
+        if let Some(tx) = event_tx {
+            let _ = tx.try_send(ScanEvent::McpChannelStatus(status));
+        }
+    };
+
+    emit(McpStatus::Active);
+    let result = codex_session(binary, model, system, messages, tools, cancel_token).await;
+    emit(if result.is_ok() {
+        McpStatus::Done
+    } else {
+        McpStatus::Disconnected
+    });
+    result
+}
+
+async fn codex_session(
+    binary: &str,
+    model: &str,
+    system: &str,
+    messages: &[AgentMessage],
+    tools: &[ToolDefinition],
     cancel_token: Option<&CancellationToken>,
 ) -> Result<CompletionResponse> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
