@@ -143,17 +143,14 @@ fn id_attribute_injection_in_ztool_result() {
 }
 
 #[test]
-fn unclosed_ztool_result_silently_strips_rest_of_input() {
-    // strip_ztool_results: if </ztool_result> is never found, it strips to end of input.
-    // Any real tool calls after the unclosed ztool_result are silently dropped.
+fn unclosed_ztool_result_returns_error() {
+    // strip_ztool_results: if </ztool_result> is never found, parse_ztool_calls returns Err.
     let response = concat!(
         r#"<ztool_result id="x" name="r">content without close tag"#,
         r#"<ztool_call>{"name":"real","id":"t1","input":{}}</ztool_call>"#,
     );
-    let calls = parse_ztool_calls(response).unwrap();
-    // This documents the behavior: the real tool call is dropped silently
-    // (the function should perhaps return an error here instead)
-    assert_eq!(calls.len(), 0, "Real tool call after unclosed ztool_result is silently dropped");
+    let result = parse_ztool_calls(response);
+    assert!(result.is_err(), "Expected error for unclosed <ztool_result>, got ok");
 }
 
 #[test]

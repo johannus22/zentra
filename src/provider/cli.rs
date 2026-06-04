@@ -67,7 +67,7 @@ pub(crate) fn escape_cdata(s: &str) -> String {
 /// Only scans the top-level response — strips <ztool_result> blocks first
 /// so injected content from scanned files cannot produce fake tool calls.
 pub fn parse_ztool_calls(response: &str) -> Result<Vec<ToolCall>> {
-    let stripped = strip_ztool_results(response);
+    let stripped = strip_ztool_results(response)?;
 
     let mut calls = Vec::new();
     let mut remaining = stripped.as_str();
@@ -99,7 +99,7 @@ pub fn parse_ztool_calls(response: &str) -> Result<Vec<ToolCall>> {
     Ok(calls)
 }
 
-fn strip_ztool_results(s: &str) -> String {
+fn strip_ztool_results(s: &str) -> Result<String> {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while let Some(start) = rest.find("<ztool_result") {
@@ -107,18 +107,19 @@ fn strip_ztool_results(s: &str) -> String {
         // Find the closing tag, skipping over any CDATA sections to avoid
         // an injection attack where scanned file content contains </ztool_result>.
         let block = &rest[start..];
-        let end_offset = find_close_tag_outside_cdata(block);
-        let end = start + end_offset;
-        rest = &rest[end..];
+        let end_offset = find_close_tag_outside_cdata(block)
+            .ok_or_else(|| anyhow::anyhow!("Unclosed <ztool_result> tag in response"))?;
+        rest = &rest[start + end_offset..];
     }
     out.push_str(rest);
-    out
+    Ok(out)
 }
 
 /// Find the byte offset of the end of `</ztool_result>` in `s`, skipping over
 /// any `<![CDATA[...]]>` sections so that a `</ztool_result>` inside CDATA
 /// cannot terminate the block early.
-fn find_close_tag_outside_cdata(s: &str) -> usize {
+/// Returns `None` if no closing tag is found.
+fn find_close_tag_outside_cdata(s: &str) -> Option<usize> {
     const CLOSE: &str = "</ztool_result>";
     const CDATA_START: &str = "<![CDATA[";
     const CDATA_END: &str = "]]>";
@@ -132,25 +133,25 @@ fn find_close_tag_outside_cdata(s: &str) -> usize {
 
         match (close_pos, cdata_pos) {
             (None, _) => {
-                // No close tag found — consume the rest.
-                return s.len();
+                // No close tag found.
+                return None;
             }
             (Some(c), None) => {
                 // Close tag found, no CDATA ahead.
-                return pos + c + CLOSE.len();
+                return Some(pos + c + CLOSE.len());
             }
             (Some(c), Some(d)) if c < d => {
                 // Close tag comes before any CDATA — this is the real end.
-                return pos + c + CLOSE.len();
+                return Some(pos + c + CLOSE.len());
             }
             (Some(_), Some(d)) => {
                 // A CDATA section starts before the close tag — skip over it.
                 let cdata_body_start = pos + d + CDATA_START.len();
                 if cdata_body_start >= s.len() {
-                    return s.len();
+                    return None;
                 }
                 match s[cdata_body_start..].find(CDATA_END) {
-                    None => return s.len(),
+                    None => return None,
                     Some(e) => {
                         pos = cdata_body_start + e + CDATA_END.len();
                     }
@@ -262,37 +263,74 @@ async fn claude_complete_with_tools(
 
     let conversation = serialize_messages(messages);
 
-    let child = Command::new(binary)
+    let mut child = Command::new(binary)
         .args([
             "-p",
-            &conversation,
+            "-",
             "--output-format",
             "json",
             "--model",
             model,
             "--append-system-prompt-file",
-            prompt_path.to_str().unwrap_or(""),
+            prompt_path.to_str()
+                .ok_or_else(|| anyhow::anyhow!("system prompt temp path is not valid UTF-8"))?,
             "--allowedTools",
             "",
         ])
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .with_context(|| format!("Failed to spawn '{}'. Is Claude CLI installed?", binary))?;
 
+    // Write conversation to stdin and close it (avoids Windows 32KB command-line limit).
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut stdin = child.stdin.take().context("claude CLI: failed to open stdin")?;
+        stdin
+            .write_all(conversation.as_bytes())
+            .await
+            .context("Failed to write conversation to claude CLI stdin")?;
+        // stdin drops here, sending EOF to the child process
+    }
+
     let output = if let Some(token) = cancel_token {
-        let wait_fut = child.wait_with_output();
-        tokio::pin!(wait_fut);
-        tokio::select! {
+        let mut child = child;
+        // `child.wait()` takes `&mut self`, so we can still call `start_kill` if cancelled.
+        // We collect stdout/stderr via `take()` before entering the select loop.
+        use tokio::io::AsyncReadExt;
+        let mut stdout_handle = child.stdout.take();
+        let mut stderr_handle = child.stderr.take();
+
+        // Read stdout and stderr concurrently with waiting, using select.
+        let mut stdout_buf = Vec::new();
+        let mut stderr_buf = Vec::new();
+
+        let status = tokio::select! {
             biased;
             _ = token.cancelled() => {
-                // wait_fut holds `child` — drop it to close stdin, then kill
-                drop(wait_fut);
+                let _ = child.start_kill();
+                let _ = child.wait().await;
                 return Err(anyhow::anyhow!("Claude CLI request cancelled"));
             }
-            result = &mut wait_fut => {
-                result.context("claude CLI process failed")?
+            status = async {
+                // Read stdout and stderr to completion, then wait for exit.
+                if let Some(ref mut h) = stdout_handle {
+                    let _ = h.read_to_end(&mut stdout_buf).await;
+                }
+                if let Some(ref mut h) = stderr_handle {
+                    let _ = h.read_to_end(&mut stderr_buf).await;
+                }
+                child.wait().await
+            } => {
+                status.context("claude CLI process failed")?
             }
+        };
+
+        std::process::Output {
+            status,
+            stdout: stdout_buf,
+            stderr: stderr_buf,
         }
     } else {
         child
