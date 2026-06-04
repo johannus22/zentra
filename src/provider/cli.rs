@@ -447,6 +447,9 @@ async fn codex_complete_with_tools(
         let raw_line = read_line_cancellable(&mut lines, &mut child, cancel_token).await?;
         let msg: serde_json::Value = serde_json::from_str(&raw_line)
             .map_err(|e| anyhow::anyhow!("codex: JSON parse error: {} raw={}", e, raw_line))?;
+        if let Some(err) = msg.get("error") {
+            return Err(anyhow::anyhow!("codex app-server error during thread/start: {}", err));
+        }
         if msg.get("id") == Some(&serde_json::json!(1)) {
             break msg["result"]["thread"]["id"]
                 .as_str()
@@ -471,7 +474,6 @@ async fn codex_complete_with_tools(
     // Step 3: Event loop — collect text, respond to tool calls, stop at turn/completed
     let mut final_text = String::new();
     let mut tool_calls_pending: Vec<ToolCall> = Vec::new();
-    let mut rpc_id: u64 = 100;
 
     loop {
         let raw_line = read_line_cancellable(&mut lines, &mut child, cancel_token).await?;
@@ -482,13 +484,16 @@ async fn codex_complete_with_tools(
         let msg: serde_json::Value = serde_json::from_str(&raw_line)
             .map_err(|e| anyhow::anyhow!("codex: JSON parse error: {} raw={}", e, raw_line))?;
 
+        if let Some(err) = msg.get("error") {
+            return Err(anyhow::anyhow!("codex app-server error: {}", err));
+        }
+
         let method = msg["method"].as_str().unwrap_or("");
 
         match method {
             "item/tool/call" => {
                 if let Some(tool_call) = parse_item_tool_call(&msg) {
-                    let call_rpc_id = msg["id"].as_u64().unwrap_or(rpc_id);
-                    rpc_id += 1;
+                    let call_rpc_id = msg["id"].as_u64().unwrap_or(0);
                     // Buffer for caller to dispatch; respond with placeholder so session continues
                     tool_calls_pending.push(tool_call.clone());
                     let response = build_tool_result_response(
