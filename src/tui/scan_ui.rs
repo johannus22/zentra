@@ -1,4 +1,4 @@
-use crate::agent::{ScanEvent, ScannerType};
+use crate::agent::{McpStatus, ScanEvent, ScannerType};
 use crate::tui::{ScanOutcome, ScanStatus, UiState};
 use anyhow::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind};
@@ -235,9 +235,9 @@ fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
 
     let mcp_badge = if state.provider_kind == "codex_cli" {
         match &state.mcp_status {
-            None | Some(crate::agent::McpStatus::Active) => "  ◈ MCP channel active",
-            Some(crate::agent::McpStatus::Done) => "  ✓ MCP done",
-            Some(crate::agent::McpStatus::Disconnected) => "  ✗ disconnected",
+            None | Some(McpStatus::Active) => "  ◈ MCP channel active",
+            Some(McpStatus::Done) => "  ✓ MCP done",
+            Some(McpStatus::Disconnected) => "  ✗ disconnected",
         }
     } else {
         ""
@@ -250,15 +250,15 @@ fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
     };
 
     let left_text = format!(
-        "{}\n{}{}{} · peak: {} / {} {}  total: {}",
+        "{}\n{}{} · peak: {} / {} {}  total: {}{}",
         banner,
         state.model_info,
         mcp_badge,
-        experimental_warning,
         state.peak_input_tokens,
         state.context_window,
         bar,
         state.total_tokens,
+        experimental_warning,
     );
 
     let left = Paragraph::new(left_text)
