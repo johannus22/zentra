@@ -6,7 +6,10 @@ use tokio::sync::mpsc;
 use crate::agent::{orchestrator::OrchestratorAgent, ScannerType};
 use crate::config::{keychain, GlobalConfig, ProjectConfig};
 use crate::provider::{
-    anthropic::AnthropicProvider, openai_compat::OpenAICompatProvider, LLMProvider,
+    anthropic::AnthropicProvider,
+    cli::{CliKind, CliProvider},
+    openai_compat::OpenAICompatProvider,
+    LLMProvider,
 };
 use crate::state::StateWriter;
 use crate::tools::ToolRegistry;
@@ -82,12 +85,49 @@ async fn run_once(
         }
     };
 
+    // For CLI providers, verify the binary is reachable before starting the TUI
+    if profile.kind == "claude_cli" || profile.kind == "codex_cli" {
+        let binary = if profile.base_url.is_empty() {
+            match profile.kind.as_str() {
+                "claude_cli" => "claude",
+                _ => "codex",
+            }
+            .to_string()
+        } else {
+            profile.base_url.clone()
+        };
+        if which::which(&binary).is_err() {
+            anyhow::bail!(
+                "CLI provider '{}' requires '{}' on PATH.\n\
+                 Install it and try again, or run 'zentra config use <other-profile>'.",
+                profile_name,
+                binary
+            );
+        }
+    }
+
     let provider: Arc<dyn LLMProvider> = match profile.kind.as_str() {
         "anthropic" => Arc::new(AnthropicProvider::new(
             profile.base_url.clone(),
             profile.model.clone(),
             api_key,
         )),
+        "claude_cli" => {
+            let binary = if profile.base_url.is_empty() {
+                "claude".to_string()
+            } else {
+                profile.base_url.clone()
+            };
+            Arc::new(CliProvider::new(CliKind::Claude, binary, profile.model.clone()))
+        }
+        "codex_cli" => {
+            let binary = if profile.base_url.is_empty() {
+                "codex".to_string()
+            } else {
+                profile.base_url.clone()
+            };
+            Arc::new(CliProvider::new(CliKind::Codex, binary, profile.model.clone()))
+        }
         _ => Arc::new(OpenAICompatProvider::new(
             profile.base_url.clone(),
             profile.model.clone(),
