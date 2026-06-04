@@ -66,7 +66,9 @@ pub fn serialize_messages(messages: &[AgentMessage]) -> String {
                 let escaped = escape_cdata(content);
                 out.push_str(&format!(
                     "<ztool_result id=\"{}\" name=\"{}\"><![CDATA[{}]]></ztool_result>\n\n",
-                    id, name, escaped
+                    escape_attr(id),
+                    escape_attr(name),
+                    escaped
                 ));
             }
         }
@@ -77,6 +79,16 @@ pub fn serialize_messages(messages: &[AgentMessage]) -> String {
 pub(crate) fn escape_cdata(s: &str) -> String {
     s.replace("]]>", "]]]]><![CDATA[>")
      .replace("</ztool_result>", "</ztool_]]><![CDATA[result>")
+}
+
+/// Escape XML attribute special characters in tool-call `id`/`name` values.
+/// Defense-in-depth: prevents a crafted id/name from injecting markup outside
+/// the CDATA boundary (e.g. a forged `<ztool_call>` or premature tag close).
+pub(crate) fn escape_attr(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 /// Extract <ztool_call>...</ztool_call> tags from the assistant response.
