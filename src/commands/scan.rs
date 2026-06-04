@@ -87,15 +87,7 @@ async fn run_once(
 
     // For CLI providers, verify the binary is reachable before starting the TUI
     if profile.kind == "claude_cli" || profile.kind == "codex_cli" {
-        let binary = if profile.base_url.is_empty() {
-            match profile.kind.as_str() {
-                "claude_cli" => "claude",
-                _ => "codex",
-            }
-            .to_string()
-        } else {
-            profile.base_url.clone()
-        };
+        let binary = resolve_cli_binary(&profile.kind, &profile.base_url);
         if which::which(&binary).is_err() {
             anyhow::bail!(
                 "CLI provider '{}' requires '{}' on PATH.\n\
@@ -112,22 +104,16 @@ async fn run_once(
             profile.model.clone(),
             api_key,
         )),
-        "claude_cli" => {
-            let binary = if profile.base_url.is_empty() {
-                "claude".to_string()
-            } else {
-                profile.base_url.clone()
-            };
-            Arc::new(CliProvider::new(CliKind::Claude, binary, profile.model.clone()))
-        }
-        "codex_cli" => {
-            let binary = if profile.base_url.is_empty() {
-                "codex".to_string()
-            } else {
-                profile.base_url.clone()
-            };
-            Arc::new(CliProvider::new(CliKind::Codex, binary, profile.model.clone()))
-        }
+        "claude_cli" => Arc::new(CliProvider::new(
+            CliKind::Claude,
+            resolve_cli_binary(&profile.kind, &profile.base_url),
+            profile.model.clone(),
+        )),
+        "codex_cli" => Arc::new(CliProvider::new(
+            CliKind::Codex,
+            resolve_cli_binary(&profile.kind, &profile.base_url),
+            profile.model.clone(),
+        )),
         _ => Arc::new(OpenAICompatProvider::new(
             profile.base_url.clone(),
             profile.model.clone(),
@@ -221,6 +207,20 @@ async fn run_once(
     }
 
     Ok(outcome)
+}
+
+/// Resolve the executable name/path for a CLI provider: an explicit `base_url`
+/// overrides the default, otherwise the kind selects the conventional binary.
+fn resolve_cli_binary(kind: &str, base_url: &str) -> String {
+    if !base_url.is_empty() {
+        return base_url.to_string();
+    }
+    match kind {
+        "claude_cli" => "claude",
+        "codex_cli" => "codex",
+        _ => kind,
+    }
+    .to_string()
 }
 
 fn ensure_supported_scan_auth(
