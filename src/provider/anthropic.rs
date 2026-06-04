@@ -12,11 +12,21 @@ pub struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(base_url: String, model: String, api_key: String) -> Self {
+        // Harden the transport: reject invalid certs explicitly and refuse to
+        // negotiate below TLS 1.2. (HTTPS-vs-localhost enforcement already happens
+        // at config-validation time, so we don't force https_only here and break
+        // legitimate local proxies.) Falls back to the default client if the TLS
+        // backend can't honor these, keeping behavior unchanged rather than failing.
+        let client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(false)
+            .min_tls_version(reqwest::tls::Version::TLS_1_2)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             base_url,
             model,
             api_key,
-            client: reqwest::Client::new(),
+            client,
         }
     }
 

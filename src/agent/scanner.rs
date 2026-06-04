@@ -1,6 +1,8 @@
 use crate::agent::{ScanEvent, ScannerType};
 use crate::provider::{AgentMessage, LLMProvider};
 use crate::scanners;
+use crate::security::audit_log::{sha256_json, sha256_str};
+use crate::security::{AuditEvent, SecurityContext};
 use crate::state::StateWriter;
 use crate::tools::ToolRegistry;
 use anyhow::Result;
@@ -19,6 +21,7 @@ pub struct ScannerAgent {
     context: Option<String>,
     ci_focus_context: Option<String>,
     cancel_token: CancellationToken,
+    security: SecurityContext,
 }
 
 impl ScannerAgent {
@@ -40,6 +43,7 @@ impl ScannerAgent {
             context,
             ci_focus_context: None,
             cancel_token,
+            security: SecurityContext::disabled(),
         }
     }
 
@@ -62,7 +66,14 @@ impl ScannerAgent {
             context,
             ci_focus_context,
             cancel_token,
+            security: SecurityContext::disabled(),
         }
+    }
+
+    /// Attach the security envelope (audit log, tool gate, prompt guard).
+    pub fn with_security(mut self, security: SecurityContext) -> Self {
+        self.security = security;
+        self
     }
 
     pub async fn run(self) -> Result<()> {
@@ -93,6 +104,10 @@ for example, do not flag SQL injection if the ORM listed here auto-parameterises
             "Begin your security scan. Start by listing the project files.".to_string()
         };
         let mut messages: Vec<AgentMessage> = vec![AgentMessage::User(initial_prompt)];
+
+        // Per-scanner security state.
+        let mut gate = self.security.gate(self.scanner_type);
+        let mut prompt_guard = self.security.prompt_guard();
 
         self.tx
             .send(ScanEvent::ScannerStarted(self.scanner_type))
@@ -162,8 +177,28 @@ for example, do not flag SQL injection if the ORM listed here auto-parameterises
                 tool_calls: resp.tool_calls.clone(),
             });
 
-            // Execute each tool call and append results
+            // Execute each tool call (gated) and append results
             for tc in &resp.tool_calls {
+                // Security gate: block disallowed/suspicious calls without
+                // killing the scan — the LLM is told why and can adjust.
+                if let Err(blocked) = gate.check(&tc.name, &tc.arguments) {
+                    self.security.record(AuditEvent::SecurityViolation {
+                        category: "tool_gate".to_string(),
+                        detail: format!("{}: {}", tc.name, blocked),
+                    });
+                    messages.push(AgentMessage::ToolResult {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        content: format!("[SECURITY GATE] Call blocked: {}", blocked),
+                    });
+                    continue;
+                }
+
+                self.security.record(AuditEvent::ToolDispatched {
+                    tool: tc.name.clone(),
+                    arg_hash: sha256_json(&tc.arguments),
+                });
+
                 let result = self
                     .tool_registry
                     .dispatch(
@@ -174,11 +209,43 @@ for example, do not flag SQL injection if the ORM listed here auto-parameterises
                         self.scanner_type,
                     )
                     .await;
+
+                self.security.record(AuditEvent::ToolResult {
+                    tool: tc.name.clone(),
+                    result_hash: sha256_str(&result),
+                });
+
+                // Tag external output and scan it for prompt-injection attempts.
+                let (wrapped, injected) = prompt_guard.scan_and_wrap(&tc.name, &result);
+                if injected {
+                    self.security.record(AuditEvent::SecurityViolation {
+                        category: "prompt_injection".to_string(),
+                        detail: format!("injection pattern in {} output", tc.name),
+                    });
+                }
+
                 messages.push(AgentMessage::ToolResult {
                     id: tc.id.clone(),
                     name: tc.name.clone(),
-                    content: result,
+                    content: wrapped,
                 });
+            }
+
+            // Optionally abort once injection attempts cross the threshold.
+            if prompt_guard.is_session_aborted() && self.security.config.prompt_guard_abort {
+                self.security.record(AuditEvent::SecurityViolation {
+                    category: "prompt_injection".to_string(),
+                    detail: "injection threshold exceeded — aborting scanner".to_string(),
+                });
+                self.tx
+                    .send(ScanEvent::Error {
+                        scanner: self.scanner_type,
+                        message: "Scan aborted: repeated prompt-injection attempts detected"
+                            .to_string(),
+                    })
+                    .await
+                    .ok();
+                break;
             }
         }
 

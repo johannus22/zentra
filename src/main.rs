@@ -116,6 +116,11 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?
         }
+        Some(cli::Commands::Security { action }) => match action {
+            cli::SecurityAction::VerifyAudit { session } => {
+                commands::security::verify_audit(session).await?
+            }
+        },
         Some(cli::Commands::Update) => {
             eprintln!("zentra update - available in Plan 4 (install + CI)");
             std::process::exit(1);
