@@ -99,6 +99,39 @@ pub fn parse_ztool_calls(response: &str) -> Result<Vec<ToolCall>> {
     Ok(calls)
 }
 
+pub fn build_jsonrpc_request(id: u64, method: &str, params: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "method": method,
+        "params": params
+    })
+}
+
+/// Returns Some(ToolCall) if the message is an `item/tool/call` request, else None.
+/// The `tool` field is an object {name, server} — we extract `tool.name`.
+pub fn parse_item_tool_call(msg: &serde_json::Value) -> Option<ToolCall> {
+    if msg["method"].as_str()? != "item/tool/call" {
+        return None;
+    }
+    let params = &msg["params"];
+    let tool_name = params["tool"]["name"].as_str()
+        .or_else(|| params["tool"].as_str())?; // handle both object and plain string forms
+    Some(ToolCall {
+        id: params["callId"].as_str()?.to_string(),
+        name: tool_name.to_string(),
+        arguments: params["arguments"].clone(),
+    })
+}
+
+fn build_tool_result_response(rpc_id: u64, content: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": rpc_id,
+        "result": {
+            "contentItems": [{ "type": "text", "text": content }]
+        }
+    })
+}
+
 fn strip_ztool_results(s: &str) -> Result<String> {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
@@ -360,13 +393,161 @@ async fn claude_complete_with_tools(
 }
 
 async fn codex_complete_with_tools(
-    _binary: &str,
-    _model: &str,
-    _system: &str,
-    _messages: &[AgentMessage],
-    _tools: &[ToolDefinition],
+    binary: &str,
+    model: &str,
+    system: &str,
+    messages: &[AgentMessage],
+    tools: &[ToolDefinition],
     _max_tokens: u32,
-    _cancel_token: Option<&CancellationToken>,
+    cancel_token: Option<&CancellationToken>,
 ) -> Result<CompletionResponse> {
-    Err(anyhow::anyhow!("codex_cli: not yet implemented"))
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::process::Command;
+
+    let mut child = Command::new(binary)
+        .args(["app-server", "--model", model])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .with_context(|| format!("Failed to spawn '{} app-server'. Is Codex CLI installed?", binary))?;
+
+    let mut stdin = child.stdin.take().context("codex app-server: no stdin")?;
+    let stdout = child.stdout.take().context("codex app-server: no stdout")?;
+    let mut lines = BufReader::new(stdout).lines();
+
+    let tool_defs: Vec<serde_json::Value> = tools
+        .iter()
+        .map(|t| {
+            serde_json::json!({
+                "name": t.name,
+                "description": t.description,
+                "inputSchema": t.parameters
+            })
+        })
+        .collect();
+
+    let conversation = serialize_messages(messages);
+
+    // Step 1: Start thread
+    let thread_start = build_jsonrpc_request(
+        1,
+        "thread/start",
+        serde_json::json!({
+            "model": model,
+            "cwd": ".",
+            "tools": tool_defs
+        }),
+    );
+    let line = format!("{}\n", serde_json::to_string(&thread_start)?);
+    stdin.write_all(line.as_bytes()).await.context("codex: write thread/start failed")?;
+
+    // Read thread/start response
+    let thread_id = loop {
+        let raw_line = read_line_cancellable(&mut lines, &mut child, cancel_token).await?;
+        let msg: serde_json::Value = serde_json::from_str(&raw_line)
+            .map_err(|e| anyhow::anyhow!("codex: JSON parse error: {} raw={}", e, raw_line))?;
+        if msg.get("id") == Some(&serde_json::json!(1)) {
+            break msg["result"]["thread"]["id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("codex: thread/start missing thread.id"))?
+                .to_string();
+        }
+    };
+
+    // Step 2: Start turn with full conversation as system prompt + user input
+    let full_prompt = format!("System instructions:\n{}\n\nConversation:\n{}", system, conversation);
+    let turn_start = build_jsonrpc_request(
+        2,
+        "turn/start",
+        serde_json::json!({
+            "thread_id": thread_id,
+            "input": [{"type": "text", "text_elements": [{"text": full_prompt}]}]
+        }),
+    );
+    let line = format!("{}\n", serde_json::to_string(&turn_start)?);
+    stdin.write_all(line.as_bytes()).await.context("codex: write turn/start failed")?;
+
+    // Step 3: Event loop — collect text, respond to tool calls, stop at turn/completed
+    let mut final_text = String::new();
+    let mut tool_calls_pending: Vec<ToolCall> = Vec::new();
+    let mut rpc_id: u64 = 100;
+
+    loop {
+        let raw_line = read_line_cancellable(&mut lines, &mut child, cancel_token).await?;
+        if raw_line.trim().is_empty() {
+            continue;
+        }
+
+        let msg: serde_json::Value = serde_json::from_str(&raw_line)
+            .map_err(|e| anyhow::anyhow!("codex: JSON parse error: {} raw={}", e, raw_line))?;
+
+        let method = msg["method"].as_str().unwrap_or("");
+
+        match method {
+            "item/tool/call" => {
+                if let Some(tool_call) = parse_item_tool_call(&msg) {
+                    let call_rpc_id = msg["id"].as_u64().unwrap_or(rpc_id);
+                    rpc_id += 1;
+                    // Buffer for caller to dispatch; respond with placeholder so session continues
+                    tool_calls_pending.push(tool_call.clone());
+                    let response = build_tool_result_response(
+                        call_rpc_id,
+                        &format!("Tool '{}' will be dispatched by zentra", tool_call.name),
+                    );
+                    let resp_line = format!("{}\n", serde_json::to_string(&response)?);
+                    stdin.write_all(resp_line.as_bytes()).await
+                        .context("codex: write tool result failed")?;
+                }
+            }
+            "item/agentMessage/delta" => {
+                if let Some(delta) = msg["params"]["delta"].as_str() {
+                    final_text.push_str(delta);
+                }
+            }
+            "turn/completed" => {
+                break;
+            }
+            "" => {
+                // Response to a request we sent (has "id" but no "method") — ignore
+            }
+            _ => {
+                // Other notifications (item/started, item/completed, etc.) — ignore
+            }
+        }
+    }
+
+    let _ = child.wait().await;
+
+    Ok(CompletionResponse {
+        content: final_text,
+        tool_calls: tool_calls_pending,
+        usage: TokenUsage::default(),
+    })
+}
+
+async fn read_line_cancellable(
+    lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+    child: &mut tokio::process::Child,
+    cancel_token: Option<&CancellationToken>,
+) -> Result<String> {
+    if let Some(token) = cancel_token {
+        tokio::select! {
+            biased;
+            _ = token.cancelled() => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                Err(anyhow::anyhow!("Codex app-server request cancelled"))
+            }
+            line = lines.next_line() => {
+                line.context("codex app-server: read failed")?
+                    .ok_or_else(|| anyhow::anyhow!("codex app-server: stdout closed unexpectedly"))
+            }
+        }
+    } else {
+        lines.next_line()
+            .await
+            .context("codex app-server: read failed")?
+            .ok_or_else(|| anyhow::anyhow!("codex app-server: stdout closed unexpectedly"))
+    }
 }

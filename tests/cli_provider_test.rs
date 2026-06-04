@@ -1,4 +1,6 @@
+use zentra_cli::provider::cli::build_jsonrpc_request;
 use zentra_cli::provider::cli::parse_claude_json_output;
+use zentra_cli::provider::cli::parse_item_tool_call;
 use zentra_cli::provider::cli::parse_ztool_calls;
 use zentra_cli::provider::cli::serialize_messages;
 use zentra_cli::provider::AgentMessage;
@@ -223,4 +225,36 @@ fn claude_json_output_returns_error_on_is_error_true() {
     });
     let result = parse_claude_json_output(&json.to_string());
     assert!(result.is_err());
+}
+
+#[test]
+fn build_jsonrpc_request_produces_valid_envelope() {
+    let req = build_jsonrpc_request(1, "turn/start", serde_json::json!({"prompt": "hello"}));
+    assert_eq!(req["id"], 1);
+    assert_eq!(req["method"], "turn/start");
+    assert_eq!(req["params"]["prompt"], "hello");
+}
+
+#[test]
+fn parse_item_tool_call_extracts_fields() {
+    let msg = serde_json::json!({
+        "method": "item/tool/call",
+        "id": 60,
+        "params": {
+            "callId": "call_1",
+            "tool": {"name": "read_file", "server": "client"},
+            "arguments": { "path": "src/main.rs" }
+        }
+    });
+    let call = parse_item_tool_call(&msg).unwrap();
+    assert_eq!(call.name, "read_file");
+    assert_eq!(call.id, "call_1");
+    assert_eq!(call.arguments["path"], "src/main.rs");
+}
+
+#[test]
+fn parse_item_tool_call_returns_none_for_other_methods() {
+    let msg = serde_json::json!({"method": "item/completed", "id": 1, "params": {}});
+    let call = parse_item_tool_call(&msg);
+    assert!(call.is_none());
 }
