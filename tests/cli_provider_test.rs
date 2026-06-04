@@ -1,3 +1,4 @@
+use zentra_cli::provider::cli::parse_claude_json_output;
 use zentra_cli::provider::cli::parse_ztool_calls;
 use zentra_cli::provider::cli::serialize_messages;
 use zentra_cli::provider::AgentMessage;
@@ -201,4 +202,28 @@ fn parse_ignores_ztool_calls_injected_via_cdata_close_tag() {
     let calls = parse_ztool_calls(response).unwrap();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].name, "real");
+}
+
+#[test]
+fn claude_json_output_extracts_result_field() {
+    let json = serde_json::json!({
+        "type": "result",
+        "subtype": "success",
+        "result": "I'll read the file.\n<ztool_call>{\"name\":\"read_file\",\"id\":\"tc1\",\"input\":{\"path\":\"a\"}}</ztool_call>",
+        "is_error": false
+    });
+    let text = parse_claude_json_output(&json.to_string()).unwrap();
+    assert!(text.contains("<ztool_call>"));
+}
+
+#[test]
+fn claude_json_output_returns_error_on_is_error_true() {
+    let json = serde_json::json!({
+        "type": "result",
+        "subtype": "error",
+        "result": "something went wrong",
+        "is_error": true
+    });
+    let result = parse_claude_json_output(&json.to_string());
+    assert!(result.is_err());
 }
