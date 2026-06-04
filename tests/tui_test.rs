@@ -1459,3 +1459,29 @@ fn pentest_ui_renders_escalation_cap_reached_activity() {
         .iter()
         .any(|a| a.contains("cap reached") && a.contains("XSS in search")));
 }
+
+#[test]
+fn provider_form_validate_skips_base_url_check_for_cli_providers() {
+    use zentra_cli::wizard::KNOWN_PROVIDER_NAMES;
+
+    // Find the index of "claude_cli" in KNOWN_PROVIDER_NAMES
+    let claude_cli_idx = KNOWN_PROVIDER_NAMES
+        .iter()
+        .position(|&n| n == "claude_cli")
+        .expect("claude_cli must be in KNOWN_PROVIDER_NAMES");
+
+    let form = ProviderFormState {
+        provider_idx: claude_cli_idx,
+        profile_name: "my-claude-cli".to_string(),
+        model: "claude-opus-4-8".to_string(),
+        base_url: "claude".to_string(), // binary name — not a URL
+        ..Default::default()
+    };
+
+    // validate() must succeed: CLI providers must not fail the base_url URL check
+    assert!(
+        form.validate().is_ok(),
+        "CLI provider with binary-name base_url should pass validate(): {:?}",
+        form.validate().unwrap_err()
+    );
+}
