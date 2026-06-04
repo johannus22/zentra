@@ -59,4 +59,14 @@ pub enum ScanEvent {
         input: u32,
         output: u32,
     },
+    /// Emitted by CliProvider (codex_cli) to report MCP channel lifecycle.
+    /// Wired to the scan event channel in Task 8 (final integration).
+    McpChannelStatus(McpStatus),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpStatus {
+    Active,
+    Done,
+    Disconnected,
 }

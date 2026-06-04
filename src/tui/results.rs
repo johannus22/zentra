@@ -105,6 +105,7 @@ fn run_results_blocking(findings: Vec<Finding>) -> Result<()> {
         vec![],
         String::new(),
         String::new(),
+        String::new(),
     );
 
     for s in state.scanners.iter_mut() {

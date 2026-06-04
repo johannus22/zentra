@@ -8,6 +8,8 @@ pub const KNOWN_PROVIDER_NAMES: &[&str] = &[
     "litellm",
     "ollama",
     "zhipu",
+    "claude_cli",
+    "codex_cli",
 ];
 
 pub struct ProviderDefaults {
@@ -82,6 +84,18 @@ pub fn provider_defaults(provider: &str) -> ProviderDefaults {
             kind: "openai_compat".to_string(),
             keyless: false,
         },
+        "claude_cli" => ProviderDefaults {
+            base_url: "claude".to_string(),
+            models: vec!["claude-opus-4-8".to_string()],
+            kind: "claude_cli".to_string(),
+            keyless: true,
+        },
+        "codex_cli" => ProviderDefaults {
+            base_url: "codex".to_string(),
+            models: vec!["gpt-5.5".to_string()],
+            kind: "codex_cli".to_string(),
+            keyless: true,
+        },
         _ => ProviderDefaults {
             base_url: String::new(),
             models: vec![],
@@ -89,6 +103,13 @@ pub fn provider_defaults(provider: &str) -> ProviderDefaults {
             keyless: false,
         },
     }
+}
+
+/// Returns (has_claude, has_codex) based on whether the binaries are on PATH.
+fn detect_cli_binaries() -> (bool, bool) {
+    let has_claude = which::which("claude").is_ok();
+    let has_codex = which::which("codex").is_ok();
+    (has_claude, has_codex)
 }
 
 impl From<&CustomProvider> for ProviderDefaults {
@@ -109,15 +130,16 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     };
     use std::io::{self, Write};
 
-    const PROVIDERS: &[&str] = &[
-        "openai",
-        "anthropic",
-        "cerebras",
-        "litellm",
-        "ollama",
-        "zhipu",
-        "other",
-    ];
+    let (has_claude, has_codex) = detect_cli_binaries();
+    let mut providers: Vec<&str> = vec!["openai", "anthropic", "cerebras", "litellm", "ollama", "zhipu"];
+    if has_claude {
+        providers.push("claude_cli");
+    }
+    if has_codex {
+        providers.push("codex_cli");
+    }
+    providers.push("other");
+    let providers = providers; // freeze
 
     // Load user-defined provider presets from ~/.zentra/providers.toml
     let custom_file = CustomProvidersFile::load();
@@ -125,7 +147,7 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
         .providers
         .iter()
         .filter(|cp| {
-            if PROVIDERS.iter().any(|s| s.eq_ignore_ascii_case(&cp.name)) {
+            if providers.iter().any(|s| s.eq_ignore_ascii_case(&cp.name)) {
                 eprintln!(
                     "⚠ custom provider '{}' conflicts with built-in name — skipped",
                     cp.name
@@ -139,15 +161,20 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
 
     println!("\n Zentra — Provider Setup\n");
     println!("Choose a provider:");
-    for (i, p) in PROVIDERS.iter().enumerate() {
-        println!("  {}. {}", i + 1, p);
+    for (i, p) in providers.iter().enumerate() {
+        let label = match *p {
+            "claude_cli" => "claude_cli  (uses Claude Code subscription — no API key needed)".to_string(),
+            "codex_cli" => "codex_cli   (uses Codex subscription — communicates with `codex app-server` over MCP; experimental)".to_string(),
+            other => other.to_string(),
+        };
+        println!("  {}. {}", i + 1, label);
     }
     if !valid_customs.is_empty() {
         println!("  ── Custom ──");
         for (i, cp) in valid_customs.iter().enumerate() {
             println!(
                 "  {}. {}  ({})",
-                PROVIDERS.len() + i + 1,
+                providers.len() + i + 1,
                 cp.effective_display_name(),
                 cp.name
             );
@@ -159,17 +186,22 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     io::stdin().read_line(&mut input)?;
     let idx = input.trim().parse::<usize>().unwrap_or(1).saturating_sub(1);
 
-    let (defaults, default_profile_name) = if idx < PROVIDERS.len() {
-        let key = PROVIDERS[idx];
+    let (defaults, default_profile_name) = if idx < providers.len() {
+        let key = providers[idx];
         (provider_defaults(key), key.to_string())
     } else {
-        match valid_customs.get(idx - PROVIDERS.len()) {
+        match valid_customs.get(idx - providers.len()) {
             Some(cp) => (ProviderDefaults::from(*cp), cp.name.clone()),
             None => (provider_defaults("openai"), "openai".to_string()),
         }
     };
 
-    let base_url = if defaults.base_url.is_empty() {
+    let is_cli_provider = defaults.kind == "claude_cli" || defaults.kind == "codex_cli";
+
+    let base_url = if is_cli_provider {
+        // base_url holds the binary name; not user-configurable in the wizard
+        defaults.base_url.clone()
+    } else if defaults.base_url.is_empty() {
         print!("Base URL: ");
         io::stdout().flush()?;
         let mut url = String::new();
@@ -188,7 +220,9 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
         }
     };
 
-    crate::config::validation::validate_provider_base_url(&base_url)?;
+    if !is_cli_provider {
+        crate::config::validation::validate_provider_base_url(&base_url)?;
+    }
 
     let default_model = defaults.models.first().cloned().unwrap_or_default();
     print!("Model [{}]: ", default_model);
@@ -226,46 +260,51 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     let name = profile_name.unwrap_or(default_profile_name);
     let test_key = api_key_opt.clone().unwrap_or_default();
 
-    println!("\nTesting connection...");
-    let test_provider: Box<dyn provider::LLMProvider> = if defaults.kind == "anthropic" {
-        Box::new(provider::anthropic::AnthropicProvider::new(
-            base_url.clone(),
-            model.clone(),
-            test_key,
-        ))
+    let verified = if is_cli_provider {
+        println!("\n✓ CLI provider detected — skipping connection test (uses local binary auth)");
+        true
     } else {
-        Box::new(provider::openai_compat::OpenAICompatProvider::new(
-            base_url.clone(),
-            model.clone(),
-            test_key,
-        ))
-    };
+        println!("\nTesting connection...");
+        let test_provider: Box<dyn provider::LLMProvider> = if defaults.kind == "anthropic" {
+            Box::new(provider::anthropic::AnthropicProvider::new(
+                base_url.clone(),
+                model.clone(),
+                test_key,
+            ))
+        } else {
+            Box::new(provider::openai_compat::OpenAICompatProvider::new(
+                base_url.clone(),
+                model.clone(),
+                test_key,
+            ))
+        };
 
-    let test_req = provider::CompletionRequest {
-        messages: vec![provider::Message {
-            role: "user".to_string(),
-            content: "Reply OK".to_string(),
-        }],
-        tools: vec![],
-        max_tokens: Some(5),
-    };
+        let test_req = provider::CompletionRequest {
+            messages: vec![provider::Message {
+                role: "user".to_string(),
+                content: "Reply OK".to_string(),
+            }],
+            tools: vec![],
+            max_tokens: Some(5),
+        };
 
-    let verified = match test_provider.complete(test_req).await {
-        Ok(_) => {
-            println!("✓ Connection verified");
-            true
-        }
-        Err(e) => {
-            println!("✗ Connection failed: {}", e);
-            print!("Save anyway? [y/N]: ");
-            io::stdout().flush()?;
-            let mut yn = String::new();
-            io::stdin().read_line(&mut yn)?;
-            if !yn.trim().eq_ignore_ascii_case("y") {
-                println!("Aborted.");
-                return Ok(());
+        match test_provider.complete(test_req).await {
+            Ok(_) => {
+                println!("✓ Connection verified");
+                true
             }
-            false
+            Err(e) => {
+                println!("✗ Connection failed: {}", e);
+                print!("Save anyway? [y/N]: ");
+                io::stdout().flush()?;
+                let mut yn = String::new();
+                io::stdin().read_line(&mut yn)?;
+                if !yn.trim().eq_ignore_ascii_case("y") {
+                    println!("Aborted.");
+                    return Ok(());
+                }
+                false
+            }
         }
     };
 

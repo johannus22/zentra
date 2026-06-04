@@ -4,7 +4,7 @@ pub mod pentest_ui;
 pub mod results;
 pub mod scan_ui;
 
-use crate::agent::{ScanEvent, ScannerType};
+use crate::agent::{McpStatus, ScanEvent, ScannerType};
 use crate::state::{Finding, Severity};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +115,8 @@ pub struct UiState {
     pub profiles: Vec<String>,
     pub provider_popup_open: bool,
     pub provider_popup: PopupState,
+    pub provider_kind: String,
+    pub mcp_status: Option<McpStatus>,
 }
 
 impl UiState {
@@ -125,6 +127,7 @@ impl UiState {
         profiles: Vec<String>,
         branch: String,
         project_name: String,
+        provider_kind: String,
     ) -> Self {
         let scanners = scanner_types
             .iter()
@@ -151,6 +154,8 @@ impl UiState {
             profiles,
             provider_popup_open: false,
             provider_popup: PopupState::new(),
+            provider_kind,
+            mcp_status: None,
         }
     }
 
@@ -181,10 +186,11 @@ impl UiState {
                 self.selected_idx = self.selected_idx.min(self.findings.len().saturating_sub(1));
             }
             ScanEvent::ToolCall { tool, arg, .. } => {
+                let prefix = if self.provider_kind == "codex_cli" { "↔" } else { "→" };
                 self.activity = if arg.is_empty() {
-                    format!("→ {}", tool)
+                    format!("{} {}", prefix, tool)
                 } else {
-                    format!("→ {}({})", tool, arg)
+                    format!("{} {}({})", prefix, tool, arg)
                 };
             }
             ScanEvent::Error { scanner, message } => {
@@ -198,6 +204,9 @@ impl UiState {
                 if input > self.peak_input_tokens {
                     self.peak_input_tokens = input;
                 }
+            }
+            ScanEvent::McpChannelStatus(status) => {
+                self.mcp_status = Some(status);
             }
         }
     }

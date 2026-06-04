@@ -21,6 +21,7 @@ fn ui_state_scanner_starts_as_queued() {
         vec![],
         String::new(),
         String::new(),
+        String::new(),
     );
     assert_eq!(state.scanners[0].status, ScanStatus::Queued);
     assert_eq!(state.scanners[1].status, ScanStatus::Waiting);
@@ -33,6 +34,7 @@ fn ui_state_apply_scanner_started() {
         "gpt-4o".to_string(),
         200_000,
         vec![],
+        String::new(),
         String::new(),
         String::new(),
     );
@@ -49,6 +51,7 @@ fn ui_state_apply_scanner_completed() {
         vec![],
         String::new(),
         String::new(),
+        String::new(),
     );
     state.apply_event(ScanEvent::ScannerStarted(ScannerType::Sast));
     state.apply_event(ScanEvent::ScannerCompleted(ScannerType::Sast));
@@ -62,6 +65,7 @@ fn ui_state_apply_finding_added() {
         "m".to_string(),
         200_000,
         vec![],
+        String::new(),
         String::new(),
         String::new(),
     );
@@ -85,6 +89,7 @@ fn ui_state_apply_tool_call_updates_activity() {
         "m".to_string(),
         200_000,
         vec![],
+        String::new(),
         String::new(),
         String::new(),
     );
@@ -456,6 +461,7 @@ fn ui_state_apply_tokens_used_accumulates() {
         vec![],
         String::new(),
         String::new(),
+        String::new(),
     );
     state.apply_event(ScanEvent::TokensUsed {
         input: 1000,
@@ -477,6 +483,7 @@ fn ui_state_all_done_when_all_scanners_completed_or_failed() {
         vec![],
         String::new(),
         String::new(),
+        String::new(),
     );
     assert!(!state.all_done());
     state.apply_event(ScanEvent::ScannerStarted(ScannerType::Sast));
@@ -493,6 +500,7 @@ fn ui_state_select_next_wraps() {
         "m".to_string(),
         200_000,
         vec![],
+        String::new(),
         String::new(),
         String::new(),
     );
@@ -521,6 +529,7 @@ fn ui_state_token_pct_is_correct() {
         vec![],
         String::new(),
         String::new(),
+        String::new(),
     );
     state.apply_event(ScanEvent::TokensUsed {
         input: 10_000,
@@ -537,6 +546,7 @@ fn ui_state_token_pct_caps_at_100() {
         "m".to_string(),
         1_000,
         vec![],
+        String::new(),
         String::new(),
         String::new(),
     );
@@ -743,6 +753,7 @@ fn ui_state_popup_starts_closed() {
         vec![],
         String::new(),
         String::new(),
+        String::new(),
     );
     assert!(!state.popup_open);
 }
@@ -754,6 +765,7 @@ fn ui_state_toggle_popup() {
         "m".to_string(),
         200_000,
         vec![],
+        String::new(),
         String::new(),
         String::new(),
     );
@@ -774,6 +786,7 @@ fn ui_state_scan_end_is_none_initially() {
         vec![],
         String::new(),
         String::new(),
+        String::new(),
     );
     assert!(state.scan_end.is_none());
 }
@@ -785,6 +798,7 @@ fn ui_state_mark_complete_sets_scan_end() {
         "m".to_string(),
         200_000,
         vec![],
+        String::new(),
         String::new(),
         String::new(),
     );
@@ -801,6 +815,7 @@ fn ui_state_elapsed_duration_freezes_after_complete() {
         "m".to_string(),
         200_000,
         vec![],
+        String::new(),
         String::new(),
         String::new(),
     );
@@ -995,6 +1010,7 @@ fn ui_state_abort_scan_marks_running_as_failed() {
         "m".to_string(),
         200_000,
         vec![],
+        String::new(),
         String::new(),
         String::new(),
     );
@@ -1250,6 +1266,7 @@ fn ui_state_error_event_captures_message() {
         vec![],
         String::new(),
         String::new(),
+        String::new(),
     );
     state.apply_event(ScanEvent::ScannerStarted(ScannerType::Sast));
     state.apply_event(ScanEvent::Error {
@@ -1458,4 +1475,46 @@ fn pentest_ui_renders_escalation_cap_reached_activity() {
         .activity
         .iter()
         .any(|a| a.contains("cap reached") && a.contains("XSS in search")));
+}
+
+#[test]
+fn provider_form_validate_skips_base_url_check_for_cli_providers() {
+    use zentra_cli::wizard::KNOWN_PROVIDER_NAMES;
+
+    // Find the index of "claude_cli" in KNOWN_PROVIDER_NAMES
+    let claude_cli_idx = KNOWN_PROVIDER_NAMES
+        .iter()
+        .position(|&n| n == "claude_cli")
+        .expect("claude_cli must be in KNOWN_PROVIDER_NAMES");
+
+    let form = ProviderFormState {
+        provider_idx: claude_cli_idx,
+        profile_name: "my-claude-cli".to_string(),
+        model: "claude-opus-4-8".to_string(),
+        base_url: "claude".to_string(), // binary name — not a URL
+        ..Default::default()
+    };
+
+    // validate() must succeed: CLI providers must not fail the base_url URL check
+    assert!(
+        form.validate().is_ok(),
+        "CLI provider with binary-name base_url should pass validate(): {:?}",
+        form.validate().unwrap_err()
+    );
+}
+
+#[test]
+fn uistate_mcp_status_updates_on_event() {
+    use zentra_cli::agent::{McpStatus, ScanEvent};
+    let mut state = UiState::new(
+        vec![],
+        "Codex CLI".to_string(),
+        128_000,
+        vec![],
+        "main".to_string(),
+        "myproject".to_string(),
+        "codex_cli".to_string(),
+    );
+    state.apply_event(ScanEvent::McpChannelStatus(McpStatus::Disconnected));
+    assert!(matches!(state.mcp_status, Some(McpStatus::Disconnected)));
 }
