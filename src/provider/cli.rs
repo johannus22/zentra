@@ -60,6 +60,7 @@ pub fn serialize_messages(messages: &[AgentMessage]) -> String {
 
 pub(crate) fn escape_cdata(s: &str) -> String {
     s.replace("]]>", "]]]]><![CDATA[>")
+     .replace("</ztool_result>", "</ztool_]]><![CDATA[result>")
 }
 
 /// Extract <ztool_call>...</ztool_call> tags from the assistant response.
@@ -79,12 +80,19 @@ pub fn parse_ztool_calls(response: &str) -> Result<Vec<ToolCall>> {
         let v: serde_json::Value = serde_json::from_str(json_str)
             .map_err(|e| anyhow::anyhow!("Malformed ztool_call JSON: {}", e))?;
         calls.push(ToolCall {
-            id: v["id"].as_str().unwrap_or("").to_string(),
+            id: v["id"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("ztool_call missing 'id'"))?
+                .to_string(),
             name: v["name"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("ztool_call missing 'name'"))?
                 .to_string(),
-            arguments: v["input"].clone(),
+            arguments: if v["input"].is_null() {
+                serde_json::Value::Object(Default::default())
+            } else {
+                v["input"].clone()
+            },
         });
         remaining = &after_open[end + "</ztool_call>".len()..];
     }
@@ -96,14 +104,60 @@ fn strip_ztool_results(s: &str) -> String {
     let mut rest = s;
     while let Some(start) = rest.find("<ztool_result") {
         out.push_str(&rest[..start]);
-        let end = rest[start..]
-            .find("</ztool_result>")
-            .map(|i| start + i + "</ztool_result>".len())
-            .unwrap_or(rest.len());
+        // Find the closing tag, skipping over any CDATA sections to avoid
+        // an injection attack where scanned file content contains </ztool_result>.
+        let block = &rest[start..];
+        let end_offset = find_close_tag_outside_cdata(block);
+        let end = start + end_offset;
         rest = &rest[end..];
     }
     out.push_str(rest);
     out
+}
+
+/// Find the byte offset of the end of `</ztool_result>` in `s`, skipping over
+/// any `<![CDATA[...]]>` sections so that a `</ztool_result>` inside CDATA
+/// cannot terminate the block early.
+fn find_close_tag_outside_cdata(s: &str) -> usize {
+    const CLOSE: &str = "</ztool_result>";
+    const CDATA_START: &str = "<![CDATA[";
+    const CDATA_END: &str = "]]>";
+
+    let mut pos = 0;
+    loop {
+        let remaining = &s[pos..];
+        // Find whichever marker comes first.
+        let close_pos = remaining.find(CLOSE);
+        let cdata_pos = remaining.find(CDATA_START);
+
+        match (close_pos, cdata_pos) {
+            (None, _) => {
+                // No close tag found — consume the rest.
+                return s.len();
+            }
+            (Some(c), None) => {
+                // Close tag found, no CDATA ahead.
+                return pos + c + CLOSE.len();
+            }
+            (Some(c), Some(d)) if c < d => {
+                // Close tag comes before any CDATA — this is the real end.
+                return pos + c + CLOSE.len();
+            }
+            (Some(_), Some(d)) => {
+                // A CDATA section starts before the close tag — skip over it.
+                let cdata_body_start = pos + d + CDATA_START.len();
+                if cdata_body_start >= s.len() {
+                    return s.len();
+                }
+                match s[cdata_body_start..].find(CDATA_END) {
+                    None => return s.len(),
+                    Some(e) => {
+                        pos = cdata_body_start + e + CDATA_END.len();
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[async_trait]
