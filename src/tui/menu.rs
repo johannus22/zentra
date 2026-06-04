@@ -267,7 +267,11 @@ impl ProviderFormState {
         if self.model.trim().is_empty() {
             anyhow::bail!("Model cannot be empty");
         }
-        crate::config::validation::validate_provider_base_url(&self.base_url)?;
+        let kind = provider_defaults(KNOWN_PROVIDER_NAMES[self.provider_idx]).kind;
+        let is_cli_provider = kind == "claude_cli" || kind == "codex_cli";
+        if !is_cli_provider {
+            crate::config::validation::validate_provider_base_url(&self.base_url)?;
+        }
         if self.requires_api_key() && self.api_key.trim().is_empty() {
             anyhow::bail!("API key cannot be empty for this provider");
         }

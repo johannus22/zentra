@@ -6,7 +6,10 @@ use tokio::sync::mpsc;
 use crate::agent::{orchestrator::OrchestratorAgent, ScannerType};
 use crate::config::{keychain, GlobalConfig, ProjectConfig};
 use crate::provider::{
-    anthropic::AnthropicProvider, openai_compat::OpenAICompatProvider, LLMProvider,
+    anthropic::AnthropicProvider,
+    cli::{CliKind, CliProvider},
+    openai_compat::OpenAICompatProvider,
+    LLMProvider,
 };
 use crate::state::StateWriter;
 use crate::tools::ToolRegistry;
@@ -82,12 +85,40 @@ async fn run_once(
         }
     };
 
+    // For CLI providers, verify the binary is reachable before starting the TUI
+    if profile.kind == "claude_cli" || profile.kind == "codex_cli" {
+        let binary = resolve_cli_binary(&profile.kind, &profile.base_url);
+        if which::which(&binary).is_err() {
+            anyhow::bail!(
+                "CLI provider '{}' requires '{}' on PATH.\n\
+                 Install it and try again, or run 'zentra config use <other-profile>'.",
+                profile_name,
+                binary
+            );
+        }
+    }
+
+    let (tx, rx) = mpsc::channel(128);
+
     let provider: Arc<dyn LLMProvider> = match profile.kind.as_str() {
         "anthropic" => Arc::new(AnthropicProvider::new(
             profile.base_url.clone(),
             profile.model.clone(),
             api_key,
         )),
+        "claude_cli" => Arc::new(CliProvider::new(
+            CliKind::Claude,
+            resolve_cli_binary(&profile.kind, &profile.base_url),
+            profile.model.clone(),
+        )),
+        "codex_cli" => Arc::new(
+            CliProvider::new(
+                CliKind::Codex,
+                resolve_cli_binary(&profile.kind, &profile.base_url),
+                profile.model.clone(),
+            )
+            .with_event_channel(tx.clone()),
+        ),
         _ => Arc::new(OpenAICompatProvider::new(
             profile.base_url.clone(),
             profile.model.clone(),
@@ -125,6 +156,7 @@ async fn run_once(
 
     let context_window = profile.context_window.unwrap_or(256_000);
     let model_info = format!("{} · {}", profile.model, profile_name);
+    let provider_kind = profile.kind.clone();
     let branch = current_branch();
     let project_name = current_project_name();
     let profiles: Vec<String> = global.profiles.keys().cloned().collect();
@@ -138,7 +170,6 @@ async fn run_once(
         scanners_with_framework.insert(0, ScannerType::FrameworkAnalysis);
     }
 
-    let (tx, rx) = mpsc::channel(128);
     let scanners_for_agent = scanners_with_framework.clone();
 
     let cancel_token = CancellationToken::new();
@@ -166,6 +197,7 @@ async fn run_once(
         profiles,
         branch,
         project_name,
+        provider_kind,
     )
     .await?;
 
@@ -181,6 +213,20 @@ async fn run_once(
     }
 
     Ok(outcome)
+}
+
+/// Resolve the executable name/path for a CLI provider: an explicit `base_url`
+/// overrides the default, otherwise the kind selects the conventional binary.
+fn resolve_cli_binary(kind: &str, base_url: &str) -> String {
+    if !base_url.is_empty() {
+        return base_url.to_string();
+    }
+    match kind {
+        "claude_cli" => "claude",
+        "codex_cli" => "codex",
+        _ => kind,
+    }
+    .to_string()
 }
 
 fn ensure_supported_scan_auth(
