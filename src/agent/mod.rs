@@ -59,4 +59,12 @@ pub enum ScanEvent {
         input: u32,
         output: u32,
     },
+    McpChannelStatus(McpStatus),
+}
+
+#[derive(Debug, Clone)]
+pub enum McpStatus {
+    Active,
+    Done,
+    Disconnected,
 }

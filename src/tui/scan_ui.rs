@@ -53,6 +53,7 @@ pub async fn run_scan_ui(
     profiles: Vec<String>,
     branch: String,
     project_name: String,
+    provider_kind: String,
 ) -> Result<ScanOutcome> {
     let mut terminal = ratatui::init();
     let result = run_loop(
@@ -65,6 +66,7 @@ pub async fn run_scan_ui(
         profiles,
         branch,
         project_name,
+        provider_kind,
     )
     .await;
     ratatui::restore();
@@ -82,6 +84,7 @@ async fn run_loop(
     profiles: Vec<String>,
     branch: String,
     project_name: String,
+    provider_kind: String,
 ) -> Result<ScanOutcome> {
     let mut state = UiState::new(
         scanners,
@@ -90,6 +93,7 @@ async fn run_loop(
         profiles,
         branch,
         project_name,
+        provider_kind,
     );
     let mut keys = EventStream::new();
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(80));
@@ -229,10 +233,28 @@ fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
         pct
     );
 
+    let mcp_badge = if state.provider_kind == "codex_cli" {
+        match &state.mcp_status {
+            None | Some(crate::agent::McpStatus::Active) => "  ◈ MCP channel active",
+            Some(crate::agent::McpStatus::Done) => "  ✓ MCP done",
+            Some(crate::agent::McpStatus::Disconnected) => "  ✗ disconnected",
+        }
+    } else {
+        ""
+    };
+
+    let experimental_warning = if state.provider_kind == "codex_cli" {
+        "\n⚠ Codex app-server is experimental (may change)"
+    } else {
+        ""
+    };
+
     let left_text = format!(
-        "{}\n{} · peak: {} / {} {}  total: {}",
+        "{}\n{}{}{} · peak: {} / {} {}  total: {}",
         banner,
         state.model_info,
+        mcp_badge,
+        experimental_warning,
         state.peak_input_tokens,
         state.context_window,
         bar,

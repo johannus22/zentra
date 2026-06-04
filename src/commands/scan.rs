@@ -151,6 +151,7 @@ async fn run_once(
 
     let context_window = profile.context_window.unwrap_or(256_000);
     let model_info = format!("{} · {}", profile.model, profile_name);
+    let provider_kind = profile.kind.clone();
     let branch = current_branch();
     let project_name = current_project_name();
     let profiles: Vec<String> = global.profiles.keys().cloned().collect();
@@ -192,6 +193,7 @@ async fn run_once(
         profiles,
         branch,
         project_name,
+        provider_kind,
     )
     .await?;
 
