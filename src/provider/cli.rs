@@ -409,6 +409,7 @@ async fn claude_complete_with_tools(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn codex_complete_with_tools(
     binary: &str,
     model: &str,
