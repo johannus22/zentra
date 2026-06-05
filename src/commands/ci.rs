@@ -200,11 +200,14 @@ async fn load_provider() -> Result<Arc<dyn LLMProvider>> {
             profile.model.clone(),
             api_key,
         )),
-        _ => Arc::new(OpenAICompatProvider::new(
-            profile.base_url.clone(),
-            profile.model.clone(),
-            api_key,
-        )),
+        _ => Arc::new(
+            OpenAICompatProvider::new(
+                profile.base_url.clone(),
+                profile.model.clone(),
+                api_key,
+            )
+            .with_reasoning(profile.reasoning_effort.clone()),
+        ),
     };
 
     Ok(provider)

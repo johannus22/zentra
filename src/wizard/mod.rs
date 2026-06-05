@@ -302,11 +302,15 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
                 test_key,
             ))
         } else {
-            Box::new(provider::openai_compat::OpenAICompatProvider::new(
-                base_url.clone(),
-                model.clone(),
-                test_key,
-            ))
+            // TODO(Task 4): replace None with the wizard-captured reasoning_effort value
+            Box::new(
+                provider::openai_compat::OpenAICompatProvider::new(
+                    base_url.clone(),
+                    model.clone(),
+                    test_key,
+                )
+                .with_reasoning(None),
+            )
         };
 
         let test_req = provider::CompletionRequest {
