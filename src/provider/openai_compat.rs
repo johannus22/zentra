@@ -8,6 +8,7 @@ pub struct OpenAICompatProvider {
     model: String,
     api_key: String,
     client: reqwest::Client,
+    reasoning_effort: Option<String>,
 }
 
 impl OpenAICompatProvider {
@@ -17,6 +18,20 @@ impl OpenAICompatProvider {
             model,
             api_key,
             client: reqwest::Client::new(),
+            reasoning_effort: None,
+        }
+    }
+
+    /// Builder: set the reasoning level forwarded as `reasoning_effort`.
+    /// `None` (the default) omits the field from requests entirely.
+    pub fn with_reasoning(mut self, effort: Option<String>) -> Self {
+        self.reasoning_effort = effort;
+        self
+    }
+
+    fn apply_reasoning(&self, body: &mut serde_json::Value) {
+        if let Some(ref effort) = self.reasoning_effort {
+            body["reasoning_effort"] = serde_json::json!(effort);
         }
     }
 
@@ -89,6 +104,7 @@ impl LLMProvider for OpenAICompatProvider {
                 serde_json::to_value(&req.tools).context("Failed to serialize tools")?;
         }
 
+        self.apply_reasoning(&mut body);
         let json = self.post_chat(body, None).await?;
         parse_openai_response(&json)
     }
@@ -171,6 +187,7 @@ impl LLMProvider for OpenAICompatProvider {
             body["tool_choice"] = serde_json::json!("auto");
         }
 
+        self.apply_reasoning(&mut body);
         let json = self.post_chat(body, cancel_token).await?;
         parse_openai_response(&json)
     }
@@ -179,7 +196,7 @@ impl LLMProvider for OpenAICompatProvider {
         match self.model.as_str() {
             m if m.contains("gpt-4o") || m.contains("o1") || m.contains("llama-3") => 128_000,
             m if m.contains("claude") => 200_000,
-            _ => 32_000,
+            _ => 128_000,
         }
     }
 

@@ -120,11 +120,14 @@ async fn run_once(
             )
             .with_event_channel(tx.clone()),
         ),
-        _ => Arc::new(OpenAICompatProvider::new(
-            profile.base_url.clone(),
-            profile.model.clone(),
-            api_key,
-        )),
+        _ => Arc::new(
+            OpenAICompatProvider::new(
+                profile.base_url.clone(),
+                profile.model.clone(),
+                api_key,
+            )
+            .with_reasoning(profile.reasoning_effort.clone()),
+        ),
     };
 
     let project_config = if ProjectConfig::exists() {
@@ -314,6 +317,7 @@ mod tests {
             keyless: false,
             auth_method: AuthMethod::OAuth,
             context_window: None,
+            reasoning_effort: None,
         };
 
         let err = ensure_supported_scan_auth("openai", &profile).unwrap_err();

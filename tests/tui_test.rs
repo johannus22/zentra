@@ -1069,9 +1069,21 @@ fn provider_form_default_uses_first_known_provider() {
 }
 
 #[test]
-fn provider_form_append_char_to_api_key() {
+fn provider_form_append_char_to_reasoning_field() {
     let mut form = ProviderFormState {
         focused_field: 3,
+        ..Default::default()
+    }; // reasoning field
+    form.append_char('l');
+    form.append_char('o');
+    form.append_char('w');
+    assert_eq!(form.reasoning_effort, "low");
+}
+
+#[test]
+fn provider_form_append_char_to_api_key() {
+    let mut form = ProviderFormState {
+        focused_field: 4,
         ..Default::default()
     }; // api_key field
     form.append_char('s');
@@ -1082,7 +1094,7 @@ fn provider_form_append_char_to_api_key() {
 #[test]
 fn provider_form_backspace_removes_last_char() {
     let mut form = ProviderFormState {
-        focused_field: 4,
+        focused_field: 5,
         profile_name: "test".to_string(),
         ..Default::default()
     }; // profile_name field
@@ -1282,6 +1294,56 @@ fn provider_form_save_persists_openai_as_api_key_auth_even_if_legacy_oauth_state
             "sk-test-key-12345".to_string()
         )]
     );
+}
+
+#[test]
+fn provider_form_save_with_reasoning_persists_effort() {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+
+    let mut form = ProviderFormState::default();
+    form.cycle_provider(1);
+    form.profile_name = "r1".to_string();
+    form.api_key = "sk-test".to_string();
+    form.reasoning_effort = "high".to_string();
+
+    form.save_with_oauth_to_path_using(
+        &config_path,
+        || unreachable!(),
+        |_, _| Ok(()),
+        |_| Ok(()),
+        |_, _| Ok(()),
+        |_| Ok(()),
+    )
+    .unwrap();
+
+    let cfg = GlobalConfig::load_from(&config_path).unwrap();
+    assert_eq!(cfg.profiles["r1"].reasoning_effort.as_deref(), Some("high"));
+}
+
+#[test]
+fn provider_form_save_with_blank_reasoning_omits_effort() {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+
+    let mut form = ProviderFormState::default();
+    form.cycle_provider(1);
+    form.profile_name = "r2".to_string();
+    form.api_key = "sk-test".to_string();
+    form.reasoning_effort = "   ".to_string(); // whitespace-only → None
+
+    form.save_with_oauth_to_path_using(
+        &config_path,
+        || unreachable!(),
+        |_, _| Ok(()),
+        |_| Ok(()),
+        |_, _| Ok(()),
+        |_| Ok(()),
+    )
+    .unwrap();
+
+    let cfg = GlobalConfig::load_from(&config_path).unwrap();
+    assert!(cfg.profiles["r2"].reasoning_effort.is_none());
 }
 
 #[test]
@@ -1518,6 +1580,7 @@ fn apply_provider_change_persists_default_and_refreshes_state_in_place() {
             keyless: false,
             auth_method: AuthMethod::ApiKey,
             context_window: None,
+            reasoning_effort: None,
         },
     );
     profiles.insert(
@@ -1529,6 +1592,7 @@ fn apply_provider_change_persists_default_and_refreshes_state_in_place() {
             keyless: false,
             auth_method: AuthMethod::ApiKey,
             context_window: None,
+            reasoning_effort: None,
         },
     );
     GlobalConfig {

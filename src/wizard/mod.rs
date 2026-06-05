@@ -31,7 +31,7 @@ pub fn model_context_window(model: &str) -> u32 {
     } else if model.contains("gpt-3.5") {
         16_000
     } else {
-        32_000
+        128_000
     }
 }
 
@@ -249,6 +249,19 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     io::stdin().read_line(&mut cw_input)?;
     let context_window: Option<u32> = cw_input.trim().parse().ok();
 
+    print!("Reasoning effort [none|low|medium|high|max] (leave blank for default): ");
+    io::stdout().flush()?;
+    let mut reasoning_input = String::new();
+    io::stdin().read_line(&mut reasoning_input)?;
+    let reasoning_effort: Option<String> = {
+        let t = reasoning_input.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    };
+
     let api_key_opt = if defaults.keyless {
         None
     } else {
@@ -302,11 +315,14 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
                 test_key,
             ))
         } else {
-            Box::new(provider::openai_compat::OpenAICompatProvider::new(
-                base_url.clone(),
-                model.clone(),
-                test_key,
-            ))
+            Box::new(
+                provider::openai_compat::OpenAICompatProvider::new(
+                    base_url.clone(),
+                    model.clone(),
+                    test_key,
+                )
+                .with_reasoning(reasoning_effort.clone()),
+            )
         };
 
         let test_req = provider::CompletionRequest {
@@ -359,6 +375,7 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
             keyless: defaults.keyless,
             auth_method: auth_method.clone(),
             context_window,
+            reasoning_effort: reasoning_effort.clone(),
         },
     );
     if global.default_profile.is_none() {
