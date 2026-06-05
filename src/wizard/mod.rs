@@ -31,7 +31,7 @@ pub fn model_context_window(model: &str) -> u32 {
     } else if model.contains("gpt-3.5") {
         16_000
     } else {
-        32_000
+        128_000
     }
 }
 

@@ -196,7 +196,7 @@ impl LLMProvider for OpenAICompatProvider {
         match self.model.as_str() {
             m if m.contains("gpt-4o") || m.contains("o1") || m.contains("llama-3") => 128_000,
             m if m.contains("claude") => 200_000,
-            _ => 32_000,
+            _ => 128_000,
         }
     }
 

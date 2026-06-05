@@ -228,7 +228,7 @@ fn model_context_window_returns_known_values() {
     assert_eq!(model_context_window("gpt-4o"), 128_000);
     assert_eq!(model_context_window("claude-opus-4-7"), 200_000);
     assert_eq!(model_context_window("glm-4-flash"), 128_000);
-    assert_eq!(model_context_window("unknown-model"), 32_000);
+    assert_eq!(model_context_window("unknown-model"), 128_000);
 }
 
 #[test]
