@@ -6,6 +6,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::scanner::ScannerAgent;
 use crate::agent::{ScanEvent, ScannerType};
 use crate::provider::LLMProvider;
+use crate::security::SecurityContext;
 use crate::state::StateWriter;
 use crate::tools::ToolRegistry;
 
@@ -23,6 +24,7 @@ pub struct OrchestratorAgent {
     tx: mpsc::Sender<ScanEvent>,
     cancel_token: CancellationToken,
     ci_focus_context: Option<String>,
+    security: SecurityContext,
 }
 
 impl OrchestratorAgent {
@@ -40,11 +42,17 @@ impl OrchestratorAgent {
             tx,
             cancel_token,
             ci_focus_context: None,
+            security: SecurityContext::disabled(),
         }
     }
 
     pub fn with_ci_focus_context(mut self, ci_focus_context: Option<String>) -> Self {
         self.ci_focus_context = ci_focus_context;
+        self
+    }
+
+    pub fn with_security(mut self, security: SecurityContext) -> Self {
+        self.security = security;
         self
     }
 
@@ -98,6 +106,7 @@ Delete this file and re-run the scan to retry.",
                 let ctx = context_opt.clone();
                 let ci_ctx = self.ci_focus_context.clone();
                 let token = cancel_token.clone();
+                let security = self.security.clone();
                 handles.push((
                     scanner_type,
                     tokio::spawn(async move {
@@ -111,6 +120,7 @@ Delete this file and re-run the scan to retry.",
                             ci_ctx,
                             token,
                         )
+                        .with_security(security)
                         .run()
                         .await
                     }),
@@ -161,6 +171,7 @@ Delete this file and re-run the scan to retry.",
             self.ci_focus_context.clone(),
             self.cancel_token.clone(),
         )
+        .with_security(self.security.clone())
         .run()
         .await
     }

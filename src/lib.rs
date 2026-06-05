@@ -7,6 +7,7 @@ pub mod config;
 pub mod pentest;
 pub mod provider;
 pub mod scanners;
+pub mod security;
 pub mod state;
 pub mod tools;
 pub mod tui;
