@@ -231,3 +231,50 @@ async fn openai_compat_cancels_on_token() {
     assert!(inner.is_err(), "should return error when cancelled");
     assert!(inner.unwrap_err().to_string().contains("cancelled"));
 }
+
+#[tokio::test]
+async fn openai_compat_includes_reasoning_effort_when_set() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = OpenAICompatProvider::new(server.uri(), "m".to_string(), "k".to_string())
+        .with_reasoning(Some("high".to_string()));
+    provider
+        .complete_with_tools("sys", &[AgentMessage::User("hi".to_string())], &[], 100, None)
+        .await
+        .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["reasoning_effort"], serde_json::json!("high"));
+}
+
+#[tokio::test]
+async fn openai_compat_omits_reasoning_effort_when_unset() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = OpenAICompatProvider::new(server.uri(), "m".to_string(), "k".to_string());
+    provider
+        .complete_with_tools("sys", &[AgentMessage::User("hi".to_string())], &[], 100, None)
+        .await
+        .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert!(body.get("reasoning_effort").is_none());
+}
