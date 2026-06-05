@@ -314,6 +314,7 @@ mod tests {
             keyless: false,
             auth_method: AuthMethod::OAuth,
             context_window: None,
+            reasoning_effort: None,
         };
 
         let err = ensure_supported_scan_auth("openai", &profile).unwrap_err();

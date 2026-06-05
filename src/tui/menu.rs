@@ -439,6 +439,7 @@ impl ProviderFormState {
             keyless: d.keyless,
             auth_method: AuthMethod::ApiKey,
             context_window: Some(cw),
+            reasoning_effort: None,
         };
 
         if let Some(ref tokens) = oauth_tokens {
