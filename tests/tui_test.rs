@@ -1297,6 +1297,56 @@ fn provider_form_save_persists_openai_as_api_key_auth_even_if_legacy_oauth_state
 }
 
 #[test]
+fn provider_form_save_with_reasoning_persists_effort() {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+
+    let mut form = ProviderFormState::default();
+    form.cycle_provider(1);
+    form.profile_name = "r1".to_string();
+    form.api_key = "sk-test".to_string();
+    form.reasoning_effort = "high".to_string();
+
+    form.save_with_oauth_to_path_using(
+        &config_path,
+        || unreachable!(),
+        |_, _| Ok(()),
+        |_| Ok(()),
+        |_, _| Ok(()),
+        |_| Ok(()),
+    )
+    .unwrap();
+
+    let cfg = GlobalConfig::load_from(&config_path).unwrap();
+    assert_eq!(cfg.profiles["r1"].reasoning_effort.as_deref(), Some("high"));
+}
+
+#[test]
+fn provider_form_save_with_blank_reasoning_omits_effort() {
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+
+    let mut form = ProviderFormState::default();
+    form.cycle_provider(1);
+    form.profile_name = "r2".to_string();
+    form.api_key = "sk-test".to_string();
+    form.reasoning_effort = "   ".to_string(); // whitespace-only → None
+
+    form.save_with_oauth_to_path_using(
+        &config_path,
+        || unreachable!(),
+        |_, _| Ok(()),
+        |_| Ok(()),
+        |_, _| Ok(()),
+        |_| Ok(()),
+    )
+    .unwrap();
+
+    let cfg = GlobalConfig::load_from(&config_path).unwrap();
+    assert!(cfg.profiles["r2"].reasoning_effort.is_none());
+}
+
+#[test]
 fn provider_form_validate_rejects_unsafe_profile_name() {
     let form = ProviderFormState {
         api_key: "sk-test-key-12345".to_string(),
