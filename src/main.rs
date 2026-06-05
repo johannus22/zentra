@@ -10,6 +10,27 @@ use zentra_cli::{
 async fn main() -> anyhow::Result<()> {
     if std::env::args().len() == 1 {
         let mut last_error: Option<String> = None;
+
+        // These don't change across menu iterations, so compute them once.
+        // The git subprocess in particular is expensive to spawn and used to
+        // run on every menu re-entry, lengthening the blank-screen gap.
+        let project_name = std::env::current_dir()
+            .ok()
+            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .unwrap_or_else(|| "project".to_string());
+        let branch_name = std::process::Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+
         loop {
             // Reload config every iteration so menu reflects any changes
             let global = GlobalConfig::load().unwrap_or_default();
@@ -28,23 +49,6 @@ async fn main() -> anyhow::Result<()> {
                 .get(&active_profile)
                 .map(|p| p.model.clone())
                 .unwrap_or_default();
-            let project_name = std::env::current_dir()
-                .ok()
-                .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                .unwrap_or_else(|| "project".to_string());
-
-            let branch_name = std::process::Command::new("git")
-                .args(["rev-parse", "--abbrev-ref", "HEAD"])
-                .output()
-                .ok()
-                .and_then(|o| {
-                    if o.status.success() {
-                        Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_else(|| "unknown".to_string());
 
             match run_menu(
                 provider_configured,
@@ -52,8 +56,8 @@ async fn main() -> anyhow::Result<()> {
                 profiles,
                 active_model,
                 active_profile,
-                project_name,
-                branch_name,
+                project_name.clone(),
+                branch_name.clone(),
                 last_error.take(),
             )
             .await?
@@ -78,10 +82,9 @@ async fn main() -> anyhow::Result<()> {
                 MenuAction::ViewLastResults => {
                     zentra_cli::tui::results::run_results().await?;
                 }
-                MenuAction::ChangeProvider(name) | MenuAction::ProviderAdded(name) => {
-                    commands::config::use_profile(&name).await?;
-                    // loop continues; GlobalConfig reloaded at top of next iteration
-                }
+                // Changing/adding a provider is now handled inside the menu loop
+                // (see MenuState::apply_provider_change) so the terminal is not
+                // torn down and rebuilt just to update the default profile.
                 MenuAction::Exit => break,
             }
         }
