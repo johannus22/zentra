@@ -62,6 +62,20 @@ pub enum Commands {
     },
     /// Upgrade zentra to the latest release
     Update,
+    /// Inspect and verify the security audit trail
+    Security {
+        #[command(subcommand)]
+        action: SecurityAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SecurityAction {
+    /// Verify the tamper-evident hash chain of an audit log session
+    VerifyAudit {
+        /// Session id (the audit file stem under .zentra/audit/). Omit to verify all sessions.
+        session: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
