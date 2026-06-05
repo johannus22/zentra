@@ -25,6 +25,7 @@ fn global_config_roundtrip() {
     let config = GlobalConfig {
         profiles,
         default_profile: Some("openai".to_string()),
+        output_dir: None,
     };
     config.save_to(&path).unwrap();
 
@@ -441,6 +442,54 @@ kind = ""
 // ── Keychain File Fallback ─────────────────────────────────────────────────
 
 use zentra_cli::config::keychain;
+
+#[test]
+fn output_base_dir_defaults_to_documents_zentra() {
+    use zentra_cli::config::GlobalConfig;
+    let cfg = GlobalConfig::default();
+    let base = cfg.output_base_dir();
+    assert!(
+        base.ends_with("Zentra"),
+        "default output base should end with Zentra, got {base:?}"
+    );
+    assert_eq!(base, GlobalConfig::default_output_base_dir());
+}
+
+#[test]
+fn output_base_dir_uses_configured_override() {
+    use zentra_cli::config::GlobalConfig;
+    let cfg = GlobalConfig {
+        output_dir: Some("/mnt/c/Users/me/Documents/Zentra".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(
+        cfg.output_base_dir(),
+        std::path::PathBuf::from("/mnt/c/Users/me/Documents/Zentra")
+    );
+}
+
+#[test]
+fn output_base_dir_blank_override_falls_back_to_default() {
+    use zentra_cli::config::GlobalConfig;
+    let cfg = GlobalConfig {
+        output_dir: Some("   ".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(cfg.output_base_dir(), GlobalConfig::default_output_base_dir());
+}
+
+#[test]
+fn output_base_dir_expands_leading_tilde() {
+    use zentra_cli::config::GlobalConfig;
+    let Some(home) = dirs::home_dir() else {
+        return; // no home dir on this platform — skip
+    };
+    let cfg = GlobalConfig {
+        output_dir: Some("~/scans/zentra".to_string()),
+        ..Default::default()
+    };
+    assert_eq!(cfg.output_base_dir(), home.join("scans").join("zentra"));
+}
 
 #[test]
 fn set_key_writes_key_file_by_default() {

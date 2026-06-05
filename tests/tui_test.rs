@@ -6,7 +6,7 @@ use zentra_cli::pentest::{PentestEvent, PentestEvidence, PentestFinding, Pentest
 use zentra_cli::state::{Finding, Severity};
 use zentra_cli::tui::menu::{
     centered_middle_column, main_menu_actions, provider_selector_footer_hint,
-    scanner_selector_footer_hint, MenuScreen, MenuState, OAuthModalPhase,
+    scanner_selector_footer_hint, MenuScreen, MenuState, OAuthModalPhase, SettingsFormState,
 };
 use zentra_cli::tui::pentest_setup::build_pentest_config_from_setup_input;
 use zentra_cli::tui::pentest_ui::PentestUiState;
@@ -583,7 +583,8 @@ fn menu_state_navigate_wraps() {
         String::new(),
         String::new(),
     );
-    // 7 items: RunFull(0), RunPentest(1), SelectScanners(2), ViewResults(3), ChangeProvider(4), AddProvider(5), Exit(6)
+    // 8 items: RunFull(0), RunPentest(1), SelectScanners(2), ViewResults(3),
+    // ChangeProvider(4), AddProvider(5), Settings(6), Exit(7)
     state.next();
     assert_eq!(state.selected_idx, 1);
     state.next();
@@ -880,7 +881,7 @@ fn menu_state_new_stores_active_profile() {
 }
 
 #[test]
-fn menu_state_navigate_new_max_is_6() {
+fn menu_state_navigate_new_max_is_7() {
     let mut state = MenuState::new(
         true,
         true,
@@ -890,12 +891,12 @@ fn menu_state_navigate_new_max_is_6() {
         String::new(),
         String::new(),
     );
-    for _ in 0..6 {
+    for _ in 0..7 {
         state.next();
     }
-    assert_eq!(state.selected_idx, 6);
+    assert_eq!(state.selected_idx, 7);
     state.next(); // clamp
-    assert_eq!(state.selected_idx, 6);
+    assert_eq!(state.selected_idx, 7);
 }
 
 #[test]
@@ -907,8 +908,33 @@ fn menu_state_main_menu_has_run_pentest_action() {
 }
 
 #[test]
-fn menu_state_main_menu_has_seven_actions() {
-    assert_eq!(main_menu_actions().len(), 7);
+fn settings_form_save_persists_and_clears_output_dir() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("config.toml");
+
+    // Saving a (whitespace-padded) directory trims and persists it.
+    let mut s = SettingsFormState {
+        output_dir: "  /mnt/c/Users/me/Documents/Zentra  ".to_string(),
+        ..Default::default()
+    };
+    s.save_to(&path).unwrap();
+    assert!(s.saved);
+    let loaded = GlobalConfig::load_from(&path).unwrap();
+    assert_eq!(
+        loaded.output_dir.as_deref(),
+        Some("/mnt/c/Users/me/Documents/Zentra")
+    );
+
+    // Saving a blank directory clears the override (back to default).
+    let mut blank = SettingsFormState::default();
+    blank.save_to(&path).unwrap();
+    let reloaded = GlobalConfig::load_from(&path).unwrap();
+    assert_eq!(reloaded.output_dir, None);
+}
+
+#[test]
+fn menu_state_main_menu_has_eight_actions() {
+    assert_eq!(main_menu_actions().len(), 8);
     assert_eq!(
         main_menu_actions(),
         &[
@@ -918,6 +944,7 @@ fn menu_state_main_menu_has_seven_actions() {
             "View Last Results",
             "Change Provider",
             "Add Provider",
+            "Settings",
             "Exit",
         ]
     );

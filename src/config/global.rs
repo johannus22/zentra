@@ -16,6 +16,27 @@ pub struct GlobalConfig {
     #[serde(default)]
     pub profiles: HashMap<String, ProviderProfile>,
     pub default_profile: Option<String>,
+    /// Base directory for run artifacts (pentest reports/evidence). When unset,
+    /// defaults to `<Documents>/Zentra`. Configurable via the TUI Settings screen —
+    /// lets WSL users point output at a Windows path
+    /// (e.g. `/mnt/c/Users/<you>/Documents/Zentra`).
+    #[serde(default)]
+    pub output_dir: Option<String>,
+}
+
+/// Expand a leading `~` / `~/` / `~\` to the user's home directory.
+fn expand_tilde(path: &str) -> PathBuf {
+    if path == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home;
+        }
+    }
+    if let Some(rest) = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\")) {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+    }
+    PathBuf::from(path)
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -64,5 +85,31 @@ impl GlobalConfig {
 
     pub fn is_configured() -> bool {
         Self::default_path().map(|p| p.exists()).unwrap_or(false)
+    }
+
+    /// Resolve the base directory for run artifacts, falling back to the default
+    /// when `output_dir` is unset or blank.
+    pub fn output_base_dir(&self) -> PathBuf {
+        match self
+            .output_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            Some(dir) => expand_tilde(dir),
+            None => Self::default_output_base_dir(),
+        }
+    }
+
+    /// Default artifact base directory: `<Documents>/Zentra`, with a home-relative
+    /// fallback for platforms where the document dir can't be resolved (some WSL setups).
+    pub fn default_output_base_dir() -> PathBuf {
+        if let Some(docs) = dirs::document_dir() {
+            return docs.join("Zentra");
+        }
+        if let Some(home) = dirs::home_dir() {
+            return home.join("Documents").join("Zentra");
+        }
+        PathBuf::from("Zentra")
     }
 }
