@@ -123,6 +123,16 @@ pub struct ProviderFormState {
     pub error: Option<String>,
 }
 
+/// Default profile name to pre-fill for a given provider. "custom" is a generic
+/// provider with no sensible name, so it starts empty and the user must choose one.
+fn default_profile_name(provider: &str) -> String {
+    if provider == "custom" {
+        String::new()
+    } else {
+        provider.to_string()
+    }
+}
+
 impl Default for ProviderFormState {
     fn default() -> Self {
         let name = KNOWN_PROVIDER_NAMES[0];
@@ -133,7 +143,7 @@ impl Default for ProviderFormState {
             base_url: d.base_url,
             auth_method: AuthMethod::ApiKey,
             api_key: String::new(),
-            profile_name: name.to_string(),
+            profile_name: default_profile_name(name),
             focused_field: 0,
             error: None,
         }
@@ -190,7 +200,7 @@ impl ProviderFormState {
         self.model = d.models.first().cloned().unwrap_or_default();
         self.base_url = d.base_url;
         self.auth_method = AuthMethod::ApiKey;
-        self.profile_name = name.to_string();
+        self.profile_name = default_profile_name(name);
         self.focused_field = self.focused_field.min(self.save_field_idx());
         self.error = None;
     }
