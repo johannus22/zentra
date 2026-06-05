@@ -33,10 +33,11 @@ const ACTION_SELECT_SCANNERS: usize = 2;
 const ACTION_VIEW_RESULTS: usize = 3;
 const ACTION_CHANGE_PROVIDER: usize = 4;
 const ACTION_ADD_PROVIDER: usize = 5;
-const ACTION_EXIT: usize = 6;
+const ACTION_SETTINGS: usize = 6;
+const ACTION_EXIT: usize = 7;
 
-/// Highest selectable action index in the main menu (7 items: 0-6).
-const MAX_MENU_ACTION: usize = 6;
+/// Highest selectable action index in the main menu (8 items: 0-7).
+const MAX_MENU_ACTION: usize = 7;
 
 pub fn main_menu_actions() -> &'static [&'static str] {
     &[
@@ -46,6 +47,7 @@ pub fn main_menu_actions() -> &'static [&'static str] {
         "View Last Results",
         "Change Provider",
         "Add Provider",
+        "Settings",
         "Exit",
     ]
 }
@@ -87,6 +89,74 @@ pub enum MenuScreen {
     ScannerSelector,
     ProviderSelector,
     ProviderForm,
+    Settings,
+}
+
+/// State for the Settings screen. Currently a single editable field: the base
+/// directory for run artifacts (pentest output). Blank means "use the default".
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SettingsFormState {
+    /// User-entered output directory (empty = default).
+    pub output_dir: String,
+    /// Resolved default path, shown as a hint when `output_dir` is empty.
+    pub default_dir: String,
+    pub focused_field: usize,
+    pub error: Option<String>,
+    pub saved: bool,
+}
+
+impl SettingsFormState {
+    const OUTPUT_DIR_FIELD: usize = 0;
+    const SAVE_FIELD: usize = 1;
+    const FIELD_COUNT: usize = 2;
+
+    pub fn next_field(&mut self) {
+        self.focused_field = (self.focused_field + 1) % Self::FIELD_COUNT;
+    }
+
+    pub fn prev_field(&mut self) {
+        self.focused_field = if self.focused_field == 0 {
+            Self::FIELD_COUNT - 1
+        } else {
+            self.focused_field - 1
+        };
+    }
+
+    pub fn append_char(&mut self, c: char) {
+        if self.focused_field == Self::OUTPUT_DIR_FIELD {
+            self.output_dir.push(c);
+            self.saved = false;
+            self.error = None;
+        }
+    }
+
+    pub fn backspace(&mut self) {
+        if self.focused_field == Self::OUTPUT_DIR_FIELD {
+            self.output_dir.pop();
+            self.saved = false;
+            self.error = None;
+        }
+    }
+
+    /// Persist the output directory to the global config. Empty input clears the
+    /// override (reverts to the default).
+    pub fn save(&mut self) -> anyhow::Result<()> {
+        self.save_to(&crate::config::GlobalConfig::default_path()?)
+    }
+
+    pub fn save_to(&mut self, config_path: &std::path::Path) -> anyhow::Result<()> {
+        let mut global = crate::config::GlobalConfig::load_from(config_path)?;
+        let trimmed = self.output_dir.trim();
+        global.output_dir = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+        global.save_to(config_path)?;
+        self.saved = true;
+        self.error = None;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -422,6 +492,7 @@ pub struct MenuState {
     pub pending_delete_profile: Option<String>,
     pub provider_error: Option<String>,
     pub form: ProviderFormState,
+    pub settings: SettingsFormState,
     pub oauth_modal: Option<OAuthModalState>,
     pub project_name: String,
     pub branch_name: String,
@@ -453,6 +524,7 @@ impl MenuState {
             pending_delete_profile: None,
             provider_error: None,
             form: ProviderFormState::default(),
+            settings: Self::load_settings(),
             oauth_modal: None,
             project_name,
             branch_name,
@@ -460,11 +532,29 @@ impl MenuState {
         }
     }
 
+    /// Build the Settings form from the current global config (best-effort —
+    /// falls back to defaults if the config can't be read).
+    fn load_settings() -> SettingsFormState {
+        let output_dir = crate::config::GlobalConfig::load()
+            .ok()
+            .and_then(|g| g.output_dir)
+            .unwrap_or_default();
+        SettingsFormState {
+            output_dir,
+            default_dir: crate::config::GlobalConfig::default_output_base_dir()
+                .display()
+                .to_string(),
+            focused_field: 0,
+            error: None,
+            saved: false,
+        }
+    }
+
     pub fn next(&mut self) {
         let max = match self.screen {
             MenuScreen::Main => MAX_MENU_ACTION,
             MenuScreen::ScannerSelector => 5,
-            MenuScreen::ProviderSelector | MenuScreen::ProviderForm => 0,
+            MenuScreen::ProviderSelector | MenuScreen::ProviderForm | MenuScreen::Settings => 0,
         };
         if self.selected_idx < max {
             self.selected_idx += 1;
@@ -793,6 +883,10 @@ fn run_menu_loop(
                                 ACTION_ADD_PROVIDER => {
                                     state.screen = MenuScreen::ProviderForm;
                                 }
+                                ACTION_SETTINGS => {
+                                    state.settings = MenuState::load_settings();
+                                    state.screen = MenuScreen::Settings;
+                                }
                                 ACTION_EXIT => return Ok(MenuAction::Exit),
                                 _ => {}
                             }
@@ -889,6 +983,26 @@ fn run_menu_loop(
                         }
                         _ => {}
                     },
+                    MenuScreen::Settings => match key.code {
+                        KeyCode::Tab | KeyCode::Down => state.settings.next_field(),
+                        KeyCode::BackTab | KeyCode::Up => state.settings.prev_field(),
+                        KeyCode::Char(c) => state.settings.append_char(c),
+                        KeyCode::Backspace => state.settings.backspace(),
+                        KeyCode::Enter => {
+                            if state.settings.focused_field == SettingsFormState::SAVE_FIELD {
+                                if let Err(e) = state.settings.save() {
+                                    state.settings.error = Some(e.to_string());
+                                }
+                            } else {
+                                state.settings.next_field();
+                            }
+                        }
+                        KeyCode::Esc => {
+                            state.screen = MenuScreen::Main;
+                            state.selected_idx = ACTION_SETTINGS;
+                        }
+                        _ => {}
+                    },
                 }
             }
         }
@@ -905,6 +1019,7 @@ fn render_menu(frame: &mut Frame, state: &MenuState) {
         MenuScreen::ScannerSelector => render_scanner_selector(frame, area, state),
         MenuScreen::ProviderSelector => render_provider_selector(frame, area, state),
         MenuScreen::ProviderForm => render_provider_form(frame, area, state),
+        MenuScreen::Settings => render_settings(frame, area, state),
     }
 }
 
@@ -1013,6 +1128,115 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
         .style(Style::default().fg(Color::DarkGray));
     let hints_center = centered_middle_column(chunks[3]);
     frame.render_widget(keys, hints_center);
+}
+
+fn render_settings(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
+    let s = &state.settings;
+    let form_height = 13;
+
+    let outer = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(HEADER_HEIGHT),
+        Constraint::Length(form_height),
+        Constraint::Fill(1),
+    ])
+    .split(area);
+
+    let header_center = Layout::horizontal([
+        Constraint::Percentage(30),
+        Constraint::Percentage(40),
+        Constraint::Percentage(30),
+    ])
+    .split(outer[1])[1];
+    render_banner_header(frame, header_center, state);
+
+    let form_area = Layout::horizontal([
+        Constraint::Percentage(20),
+        Constraint::Percentage(60),
+        Constraint::Percentage(20),
+    ])
+    .split(outer[2])[1];
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" SETTINGS ")
+        .title_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(form_area);
+    frame.render_widget(block, form_area);
+
+    let field_style = |idx: usize| -> Style {
+        if s.focused_field == idx {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        }
+    };
+
+    let max_field_width = inner.width.saturating_sub(8) as usize;
+    let shown_dir = if s.output_dir.is_empty() {
+        format!("(default: {})", s.default_dir)
+    } else {
+        s.output_dir.clone()
+    };
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "Artifact output directory",
+            Style::default().fg(Color::Cyan),
+        )),
+        Line::from(Span::styled(
+            "Pentest reports & evidence go here. Blank = default.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(Span::styled(
+            "(WSL: e.g. /mnt/c/Users/<you>/Documents/Zentra)",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(Span::raw("")),
+        Line::from(vec![
+            Span::raw(if s.focused_field == SettingsFormState::OUTPUT_DIR_FIELD {
+                "▶ "
+            } else {
+                "  "
+            }),
+            Span::styled("Dir  ", field_style(SettingsFormState::OUTPUT_DIR_FIELD)),
+            Span::styled(
+                clip_with_ellipsis(&shown_dir, max_field_width),
+                field_style(SettingsFormState::OUTPUT_DIR_FIELD),
+            ),
+        ]),
+        Line::from(Span::raw("")),
+    ];
+
+    let save_label = if s.focused_field == SettingsFormState::SAVE_FIELD {
+        "  ▶ Save"
+    } else {
+        "    Save"
+    };
+    lines.push(Line::from(Span::styled(
+        save_label,
+        field_style(SettingsFormState::SAVE_FIELD),
+    )));
+
+    if let Some(err) = &s.error {
+        lines.push(Line::from(Span::styled(
+            format!("  ✗ {}", err),
+            Style::default().fg(Color::Red),
+        )));
+    } else if s.saved {
+        lines.push(Line::from(Span::styled(
+            "  ✓ Saved",
+            Style::default().fg(Color::Green),
+        )));
+    }
+
+    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+
+    let hint = Paragraph::new(" Tab/↑↓ move · type to edit · Enter save · Esc back")
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(hint, outer[3]);
 }
 
 fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
