@@ -152,9 +152,9 @@ fn provider_defaults_ollama_is_keyless() {
 }
 
 #[test]
-fn provider_defaults_litellm_has_empty_base_url() {
-    let d = provider_defaults("litellm");
-    assert!(d.base_url.is_empty());
+fn provider_defaults_custom_prefills_https_scheme() {
+    let d = provider_defaults("custom");
+    assert_eq!(d.base_url, "https://");
     assert!(!d.keyless);
 }
 
@@ -441,6 +441,29 @@ kind = ""
 // ── Keychain File Fallback ─────────────────────────────────────────────────
 
 use zentra_cli::config::keychain;
+
+#[test]
+fn set_key_writes_key_file_by_default() {
+    let profile = "zentra-test-setkey-default";
+    let path = keychain::key_file_path(profile).expect("home dir required");
+    let _ = std::fs::remove_file(&path);
+
+    let storage = keychain::set_key(profile, "sk-default-file-key").expect("set_key should succeed");
+    assert!(
+        matches!(storage, keychain::KeyStorage::File),
+        "keys should be stored in a file by default, not the keychain"
+    );
+    assert!(
+        path.exists(),
+        "API key should be written to the .key file by default"
+    );
+
+    let result = keychain::get_key(profile).expect("get_key should not error");
+    assert_eq!(result, Some("sk-default-file-key".to_string()));
+
+    keychain::delete_key(profile).expect("cleanup should succeed");
+    assert!(!path.exists(), "file should be gone after delete_key");
+}
 
 #[test]
 fn keychain_file_fallback_get_reads_key_file() {
