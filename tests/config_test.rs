@@ -19,6 +19,7 @@ fn global_config_roundtrip() {
             keyless: false,
             auth_method: Default::default(),
             context_window: None,
+            reasoning_effort: None,
         },
     );
 
@@ -210,6 +211,7 @@ fn provider_profile_context_window_round_trips() {
             keyless: false,
             auth_method: Default::default(),
             context_window: Some(64_000),
+            reasoning_effort: None,
         },
     );
     let serialized = toml::to_string_pretty(&cfg).unwrap();
@@ -489,6 +491,44 @@ fn output_base_dir_expands_leading_tilde() {
         ..Default::default()
     };
     assert_eq!(cfg.output_base_dir(), home.join("scans").join("zentra"));
+}
+
+#[test]
+fn provider_profile_reasoning_effort_defaults_to_none() {
+    use zentra_cli::config::GlobalConfig;
+    let toml = r#"
+        [profiles.test]
+        kind = "openai_compat"
+        base_url = "https://api.openai.com/v1"
+        model = "gpt-4o"
+    "#;
+    let cfg: GlobalConfig = toml::from_str(toml).unwrap();
+    let profile = cfg.profiles.get("test").unwrap();
+    assert!(profile.reasoning_effort.is_none());
+}
+
+#[test]
+fn provider_profile_reasoning_effort_round_trips() {
+    use zentra_cli::config::{GlobalConfig, ProviderProfile};
+    let mut cfg = GlobalConfig::default();
+    cfg.profiles.insert(
+        "r".to_string(),
+        ProviderProfile {
+            kind: "openai_compat".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4o".to_string(),
+            keyless: false,
+            auth_method: Default::default(),
+            context_window: None,
+            reasoning_effort: Some("high".to_string()),
+        },
+    );
+    let serialized = toml::to_string_pretty(&cfg).unwrap();
+    let deserialized: GlobalConfig = toml::from_str(&serialized).unwrap();
+    assert_eq!(
+        deserialized.profiles["r"].reasoning_effort.as_deref(),
+        Some("high")
+    );
 }
 
 #[test]

@@ -128,6 +128,7 @@ mod tests {
                 keyless: false,
                 auth_method: AuthMethod::OAuth,
                 context_window: None,
+                reasoning_effort: None,
             },
         );
         GlobalConfig {

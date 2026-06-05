@@ -359,6 +359,7 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
             keyless: defaults.keyless,
             auth_method: auth_method.clone(),
             context_window,
+            reasoning_effort: None,
         },
     );
     if global.default_profile.is_none() {

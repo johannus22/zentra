@@ -1518,6 +1518,7 @@ fn apply_provider_change_persists_default_and_refreshes_state_in_place() {
             keyless: false,
             auth_method: AuthMethod::ApiKey,
             context_window: None,
+            reasoning_effort: None,
         },
     );
     profiles.insert(
@@ -1529,6 +1530,7 @@ fn apply_provider_change_persists_default_and_refreshes_state_in_place() {
             keyless: false,
             auth_method: AuthMethod::ApiKey,
             context_window: None,
+            reasoning_effort: None,
         },
     );
     GlobalConfig {
