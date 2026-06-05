@@ -1064,6 +1064,30 @@ fn provider_form_cycle_provider_updates_defaults() {
 }
 
 #[test]
+fn provider_form_custom_has_empty_name_and_https_base_url() {
+    use zentra_cli::wizard::KNOWN_PROVIDER_NAMES;
+    let custom_idx = KNOWN_PROVIDER_NAMES
+        .iter()
+        .position(|p| *p == "custom")
+        .expect("'custom' provider must exist");
+
+    let mut form = ProviderFormState::default();
+    // Cycle forward until we land on the custom provider.
+    while form.provider_idx != custom_idx {
+        form.cycle_provider(1);
+    }
+
+    assert_eq!(
+        form.profile_name, "",
+        "custom provider should start with an empty name"
+    );
+    assert_eq!(
+        form.base_url, "https://",
+        "custom provider base URL should be pre-filled with the https scheme"
+    );
+}
+
+#[test]
 fn provider_form_masked_key_shows_prefix_only() {
     let form = ProviderFormState {
         api_key: "sk-ant-abc123xyz".to_string(),

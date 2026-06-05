@@ -267,6 +267,21 @@ impl LLMProvider for CliProvider {
     }
 }
 
+/// Resolve a CLI tool name to a directly-spawnable path.
+///
+/// On Windows, npm installs `claude`/`codex` as `.cmd` shims — there is no
+/// `.exe`. `Command::new("claude")` uses `CreateProcess`, which only appends
+/// `.exe` and ignores `PATHEXT`, so a bare name fails with "program not found"
+/// even though the tool is installed (the `which` preflight passes because
+/// `which` *is* PATHEXT-aware, which masks the problem until spawn time).
+/// `which` returns the full `...\claude.cmd` path, which `Command::new` then
+/// launches correctly — Rust >= 1.77.2 routes batch files through cmd.exe with
+/// safe argument escaping. Falls back to the original name when `which` can't
+/// resolve it, preserving the downstream "Is Claude CLI installed?" error.
+pub fn resolve_spawnable(binary: &str) -> std::path::PathBuf {
+    which::which(binary).unwrap_or_else(|_| std::path::PathBuf::from(binary))
+}
+
 pub fn parse_claude_json_output(raw: &str) -> Result<String> {
     let v: serde_json::Value = serde_json::from_str(raw)
         .map_err(|e| anyhow::anyhow!("Failed to parse claude JSON output: {}", e))?;
@@ -325,7 +340,7 @@ async fn claude_complete_with_tools(
 
     let conversation = serialize_messages(messages);
 
-    let mut child = Command::new(binary)
+    let mut child = Command::new(resolve_spawnable(binary))
         .args([
             "-p",
             "-",
@@ -461,7 +476,7 @@ async fn codex_session(
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::process::Command;
 
-    let mut child = Command::new(binary)
+    let mut child = Command::new(resolve_spawnable(binary))
         .args(["app-server", "--model", model])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
