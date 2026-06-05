@@ -2,6 +2,7 @@ use zentra_cli::provider::cli::build_jsonrpc_request;
 use zentra_cli::provider::cli::parse_claude_json_output;
 use zentra_cli::provider::cli::parse_item_tool_call;
 use zentra_cli::provider::cli::parse_ztool_calls;
+use zentra_cli::provider::cli::resolve_spawnable;
 use zentra_cli::provider::cli::serialize_messages;
 use zentra_cli::provider::AgentMessage;
 
@@ -257,6 +258,83 @@ fn parse_item_tool_call_returns_none_for_other_methods() {
     let msg = serde_json::json!({"method": "item/completed", "id": 1, "params": {}});
     let call = parse_item_tool_call(&msg);
     assert!(call.is_none());
+}
+
+#[test]
+fn resolve_spawnable_returns_full_path_for_shim_without_exe() {
+    // Regression (Windows): npm installs `claude`/`codex` as `.cmd` shims with no
+    // `.exe`. `Command::new("claude")` uses CreateProcess, which only appends
+    // `.exe` and ignores PATHEXT, so the bare name fails with "program not found"
+    // even though the tool is installed. `resolve_spawnable` must hand back the
+    // full shim path (e.g. `...\claude.cmd`) so Command::new can actually launch it.
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let dir = tempfile::tempdir().unwrap();
+
+    #[cfg(windows)]
+    let (file_name, body) = ("zentra_probe.cmd", "@echo off\r\nexit /b 0\r\n");
+    #[cfg(not(windows))]
+    let (file_name, body) = ("zentra_probe", "#!/bin/sh\nexit 0\n");
+    let shim_name = "zentra_probe";
+
+    let shim_path = dir.path().join(file_name);
+    {
+        let mut f = std::fs::File::create(&shim_path).unwrap();
+        f.write_all(body.as_bytes()).unwrap();
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&shim_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // Prepend the temp dir to PATH only for the duration of this resolution.
+    // No other test in this binary reads or mutates PATH, so this is safe.
+    let old_path = std::env::var_os("PATH");
+    let mut search = vec![dir.path().to_path_buf()];
+    if let Some(ref p) = old_path {
+        search.extend(std::env::split_paths(p));
+    }
+    std::env::set_var("PATH", std::env::join_paths(search).unwrap());
+
+    let resolved = resolve_spawnable(shim_name);
+
+    match old_path {
+        Some(p) => std::env::set_var("PATH", p),
+        None => std::env::remove_var("PATH"),
+    }
+
+    // It must resolve the bare name to the actual shim file (with `.cmd` extension
+    // on Windows), not leave it as the bare name CreateProcess can't launch.
+    assert_eq!(
+        resolved, shim_path,
+        "resolve_spawnable should return the full shim path"
+    );
+    assert!(resolved.is_absolute());
+
+    // And the resolved path must actually spawn — the whole point of the fix.
+    let status = Command::new(&resolved)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    assert!(
+        status.is_ok(),
+        "Command::new(resolved) must spawn the shim: {:?}",
+        status.err()
+    );
+}
+
+#[test]
+fn resolve_spawnable_falls_back_to_bare_name_when_not_on_path() {
+    // When `which` can't find the binary, we keep the original name so the spawn
+    // still produces the helpful "Is Claude CLI installed?" error downstream.
+    let resolved = resolve_spawnable("zentra_definitely_not_a_real_binary_xyz");
+    assert_eq!(
+        resolved,
+        std::path::PathBuf::from("zentra_definitely_not_a_real_binary_xyz")
+    );
 }
 
 #[test]
