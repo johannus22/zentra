@@ -24,53 +24,47 @@ pub enum KeyStorage {
 }
 
 pub fn set_key(profile: &str, api_key: &str) -> Result<KeyStorage> {
-    let entry = keyring::Entry::new(&service_name(profile), "api_key")
-        .context("Failed to access OS keychain")?;
-
-    // Verify the write by reading back immediately — Windows Credential Manager can
-    // return Ok on set_password but silently fail to persist across process restarts.
-    let keychain_verified = entry.set_password(api_key).is_ok()
-        && entry.get_password().ok().as_deref() == Some(api_key);
-
-    if keychain_verified {
-        // Remove any stale plaintext file from a previous fallback
-        if let Some(path) = key_file_path(profile) {
-            let _ = std::fs::remove_file(path);
-        }
-        return Ok(KeyStorage::Keychain);
+    // Store the key in a plaintext file under ~/.zentra/keys/ by default.
+    // The OS keychain proved unreliable — Windows Credential Manager could return Ok
+    // on set_password (and even pass an in-process read-back) yet fail to persist
+    // across process restarts, leaving later `zentra scan` runs unable to find the key.
+    let path =
+        key_file_path(profile).context("Could not determine key file path (no home directory)")?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).context("Failed to create ~/.zentra/keys directory")?;
+    }
+    std::fs::write(&path, api_key).context("Failed to write API key file")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
 
-    // Keychain unavailable or failed verification — write file as fallback
-    if let Some(path) = key_file_path(profile) {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, api_key)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-        }
+    // Best-effort: drop any stale keychain entry left by an older version so it can't
+    // linger in the OS credential store or confuse `config list`. Ignore all errors.
+    if let Ok(entry) = keyring::Entry::new(&service_name(profile), "api_key") {
+        let _ = entry.delete_credential();
     }
 
     Ok(KeyStorage::File)
 }
 
 pub fn get_key(profile: &str) -> Result<Option<String>> {
-    let entry = keyring::Entry::new(&service_name(profile), "api_key")
-        .context("Failed to access OS keychain")?;
-    match entry.get_password() {
-        Ok(key) => return Ok(Some(key)),
-        Err(keyring::Error::NoEntry) => {}
-        Err(e) => return Err(anyhow::anyhow!("Keychain read failed: {}", e)),
-    }
+    // Prefer the plaintext key file — the default storage location.
     if let Some(path) = key_file_path(profile) {
         if path.exists() {
             let key = std::fs::read_to_string(&path).context("Failed to read API key from file")?;
             return Ok(Some(key.trim().to_string()));
         }
     }
-    Ok(None)
+    // Backward compatibility: fall back to any key previously stored in the OS keychain.
+    let entry = keyring::Entry::new(&service_name(profile), "api_key")
+        .context("Failed to access OS keychain")?;
+    match entry.get_password() {
+        Ok(key) => Ok(Some(key)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(anyhow::anyhow!("Keychain read failed: {}", e)),
+    }
 }
 
 pub fn delete_key(profile: &str) -> Result<()> {

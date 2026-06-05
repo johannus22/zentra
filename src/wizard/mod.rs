@@ -5,7 +5,7 @@ pub const KNOWN_PROVIDER_NAMES: &[&str] = &[
     "anthropic",
     "openai",
     "cerebras",
-    "litellm",
+    "custom",
     "ollama",
     "zhipu",
     "claude_cli",
@@ -62,8 +62,9 @@ pub fn provider_defaults(provider: &str) -> ProviderDefaults {
             kind: "openai_compat".to_string(),
             keyless: false,
         },
-        "litellm" => ProviderDefaults {
-            base_url: String::new(),
+        "custom" => ProviderDefaults {
+            // Pre-fill the scheme so the user only has to type the host/path.
+            base_url: "https://".to_string(),
             models: vec![],
             kind: "openai_compat".to_string(),
             keyless: false,
@@ -131,14 +132,13 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     use std::io::{self, Write};
 
     let (has_claude, has_codex) = detect_cli_binaries();
-    let mut providers: Vec<&str> = vec!["openai", "anthropic", "cerebras", "litellm", "ollama", "zhipu"];
+    let mut providers: Vec<&str> = vec!["openai", "anthropic", "cerebras", "custom", "ollama", "zhipu"];
     if has_claude {
         providers.push("claude_cli");
     }
     if has_codex {
         providers.push("codex_cli");
     }
-    providers.push("other");
     let providers = providers; // freeze
 
     // Load user-defined provider presets from ~/.zentra/providers.toml
@@ -188,7 +188,14 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
 
     let (defaults, default_profile_name) = if idx < providers.len() {
         let key = providers[idx];
-        (provider_defaults(key), key.to_string())
+        // "custom" is a generic provider — there's no sensible default name, so leave
+        // it empty and require the user to choose one.
+        let default_name = if key == "custom" {
+            String::new()
+        } else {
+            key.to_string()
+        };
+        (provider_defaults(key), default_name)
     } else {
         match valid_customs.get(idx - providers.len()) {
             Some(cp) => (ProviderDefaults::from(*cp), cp.name.clone()),
@@ -257,7 +264,30 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     };
     let auth_method = AuthMethod::ApiKey;
 
-    let name = profile_name.unwrap_or(default_profile_name);
+    let name = match profile_name {
+        Some(n) => n,
+        None => {
+            if default_profile_name.is_empty() {
+                print!("Profile name: ");
+            } else {
+                print!("Profile name [{}]: ", default_profile_name);
+            }
+            io::stdout().flush()?;
+            let mut name_input = String::new();
+            io::stdin().read_line(&mut name_input)?;
+            let trimmed = name_input.trim();
+            if trimmed.is_empty() {
+                if default_profile_name.is_empty() {
+                    println!("\n✗ Profile name cannot be empty.");
+                    println!("Aborted.");
+                    return Ok(());
+                }
+                default_profile_name.clone()
+            } else {
+                trimmed.to_string()
+            }
+        }
+    };
     let test_key = api_key_opt.clone().unwrap_or_default();
 
     let verified = if is_cli_provider {
@@ -338,10 +368,10 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     if let Some(ref key) = api_key_opt {
         match keychain::set_key(&name, key)? {
             keychain::KeyStorage::Keychain => {
-                println!("✓ API key saved to OS keychain (never written to disk)");
+                println!("✓ API key saved to OS keychain");
             }
             keychain::KeyStorage::File => {
-                println!("⚠ OS keychain unavailable — API key saved to file (~/.zentra/keys/)");
+                println!("✓ API key saved to ~/.zentra/keys/{name}.key");
             }
         }
     }
