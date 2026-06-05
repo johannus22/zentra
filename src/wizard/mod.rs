@@ -249,6 +249,19 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
     io::stdin().read_line(&mut cw_input)?;
     let context_window: Option<u32> = cw_input.trim().parse().ok();
 
+    print!("Reasoning effort [none|low|medium|high|max] (leave blank for default): ");
+    io::stdout().flush()?;
+    let mut reasoning_input = String::new();
+    io::stdin().read_line(&mut reasoning_input)?;
+    let reasoning_effort: Option<String> = {
+        let t = reasoning_input.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    };
+
     let api_key_opt = if defaults.keyless {
         None
     } else {
@@ -302,14 +315,13 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
                 test_key,
             ))
         } else {
-            // TODO(Task 4): replace None with the wizard-captured reasoning_effort value
             Box::new(
                 provider::openai_compat::OpenAICompatProvider::new(
                     base_url.clone(),
                     model.clone(),
                     test_key,
                 )
-                .with_reasoning(None),
+                .with_reasoning(reasoning_effort.clone()),
             )
         };
 
@@ -363,7 +375,7 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
             keyless: defaults.keyless,
             auth_method: auth_method.clone(),
             context_window,
-            reasoning_effort: None,
+            reasoning_effort: reasoning_effort.clone(),
         },
     );
     if global.default_profile.is_none() {
