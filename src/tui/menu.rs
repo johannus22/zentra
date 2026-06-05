@@ -81,8 +81,6 @@ pub enum MenuAction {
     RunPentest,
     CloneAndScan(String), // repo URL — from RepoInput screen
     ViewLastResults,
-    ChangeProvider(String), // profile name — from ProviderSelector
-    ProviderAdded(String),  // newly created profile name — from ProviderForm
     Exit,
 }
 
@@ -666,6 +664,50 @@ impl MenuState {
         self.selected_idx = ACTION_CHANGE_PROVIDER;
     }
 
+    /// Set `name` as the default provider, persist it, and refresh the
+    /// in-memory view from the saved config — all without leaving the TUI.
+    ///
+    /// Used by the provider selector, the add-provider form, and the OAuth
+    /// modal. Previously these paths returned a `MenuAction` to `main.rs`,
+    /// which tore the whole terminal down (`ratatui::restore()`) and rebuilt
+    /// it (`ratatui::init()`) just to update the default profile — the source
+    /// of the "screen goes blank for a second" flash on every provider change.
+    fn apply_provider_change(&mut self, name: &str) -> Result<()> {
+        self.apply_provider_change_to(name, &crate::config::GlobalConfig::default_path()?)
+    }
+
+    /// Path-injectable core of [`apply_provider_change`] (see that method for
+    /// the rationale). Split out so tests can drive it against a temp config.
+    pub fn apply_provider_change_to(
+        &mut self,
+        name: &str,
+        config_path: &std::path::Path,
+    ) -> Result<()> {
+        let mut global = crate::config::GlobalConfig::load_from(config_path).unwrap_or_default();
+        if global.profiles.contains_key(name) {
+            global.default_profile = Some(name.to_string());
+            global.save_to(config_path)?;
+        }
+        self.profiles = global
+            .profiles
+            .iter()
+            .map(|(n, p)| (n.clone(), p.model.clone()))
+            .collect();
+        self.profiles.sort_by(|a, b| a.0.cmp(&b.0));
+        self.provider_configured = !global.profiles.is_empty();
+        self.active_profile = name.to_string();
+        self.default_profile = name.to_string();
+        self.active_model = global
+            .profiles
+            .get(name)
+            .map(|p| p.model.clone())
+            .unwrap_or_default();
+        self.clear_provider_selector_messages();
+        self.screen = MenuScreen::Main;
+        self.selected_idx = ACTION_CHANGE_PROVIDER;
+        Ok(())
+    }
+
     pub fn handle_provider_delete_key(&mut self) -> Result<bool> {
         let Some((name, _)) = self.profiles.get(self.provider_idx).cloned() else {
             self.clear_provider_selector_messages();
@@ -879,18 +921,38 @@ fn run_menu_loop(
     terminal: &mut ratatui::DefaultTerminal,
     state: &mut MenuState,
 ) -> Result<MenuAction> {
+    // Only redraw when something actually changed (a key press, a resize, or
+    // an OAuth modal update). The old loop redrew every 100ms unconditionally,
+    // burning CPU at idle and reading as flicker on some Windows terminals.
+    let mut dirty = true;
     loop {
         if let Some(name) = state.poll_oauth_modal()? {
-            return Ok(MenuAction::ProviderAdded(name));
+            // OAuth login finished — the profile is already persisted. Apply it
+            // as the default in place instead of returning to main.rs, which
+            // would tear the terminal down and rebuild it.
+            state.apply_provider_change(&name)?;
+            dirty = true;
+        }
+        if state.oauth_modal.is_some() {
+            // The modal shows live phase updates; keep it fresh while active.
+            dirty = true;
         }
 
-        terminal.draw(|f| render_menu(f, state))?;
+        if dirty {
+            terminal.draw(|f| render_menu(f, state))?;
+            dirty = false;
+        }
 
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
+            let ev = event::read()?;
+            if matches!(ev, Event::Resize(_, _)) {
+                dirty = true;
+            }
+            if let Event::Key(key) = ev {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
+                dirty = true;
                 match state.screen {
                     MenuScreen::Main => match key.code {
                         KeyCode::Up => state.prev(),
@@ -979,7 +1041,8 @@ fn run_menu_loop(
                         }
                         KeyCode::Enter => {
                             if let Some((name, _)) = state.profiles.get(state.provider_idx) {
-                                return Ok(MenuAction::ChangeProvider(name.clone()));
+                                let name = name.clone();
+                                state.apply_provider_change(&name)?;
                             }
                         }
                         KeyCode::Esc => state.provider_selector_escape(),
@@ -1018,7 +1081,10 @@ fn run_menu_loop(
                         KeyCode::Enter => {
                             if state.form.focused_field == state.form.save_field_idx() {
                                 match state.form.save() {
-                                    Ok(name) => return Ok(MenuAction::ProviderAdded(name)),
+                                    Ok(name) => {
+                                        state.apply_provider_change(&name)?;
+                                        state.form = ProviderFormState::default();
+                                    }
                                     Err(e) => state.form.error = Some(e.to_string()),
                                 }
                             } else {
