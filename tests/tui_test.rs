@@ -583,19 +583,24 @@ fn menu_state_navigate_wraps() {
         String::new(),
         String::new(),
     );
-    // 8 items: RunFull(0), RunPentest(1), SelectScanners(2), ViewResults(3),
-    // ChangeProvider(4), AddProvider(5), Settings(6), Exit(7)
+    // 9 items: RunFull(0), Clone(1), RunPentest(2), SelectScanners(3),
+    // ViewResults(4), ChangeProvider(5), AddProvider(6), Settings(7), Exit(8)
     state.next();
     assert_eq!(state.selected_idx, 1);
-    state.next();
-    state.next();
-    state.next();
-    state.next();
-    assert_eq!(state.selected_idx, 5);
-    state.next();
+    state.next(); // 2
+    state.next(); // 3
+    state.next(); // 4
+    state.next(); // 5
+    state.next(); // 6
     assert_eq!(state.selected_idx, 6);
+    state.next(); // 7
+    assert_eq!(state.selected_idx, 7);
+    state.next(); // 8
+    assert_eq!(state.selected_idx, 8);
+    state.next(); // clamp at max
+    assert_eq!(state.selected_idx, 8);
     state.prev();
-    assert_eq!(state.selected_idx, 5);
+    assert_eq!(state.selected_idx, 7);
 }
 
 #[test]
@@ -609,13 +614,14 @@ fn menu_state_disabled_items_when_unconfigured() {
         String::new(),
         String::new(),
     ); // no provider, no project
-    assert!(!state.is_item_enabled(0)); // RunFull
-    assert!(state.is_item_enabled(1)); // RunPentest
-    assert!(!state.is_item_enabled(2)); // SelectScanners
-    assert!(state.is_item_enabled(3)); // ViewResults
-    assert!(!state.is_item_enabled(4)); // ChangeProvider
-    assert!(state.is_item_enabled(5)); // AddProvider
-    assert!(state.is_item_enabled(6)); // Exit
+    assert!(!state.is_item_enabled(0)); // Run Full Scan (this directory)
+    assert!(!state.is_item_enabled(1)); // Clone Repo & Scan
+    assert!(state.is_item_enabled(2)); // Run Pentest
+    assert!(!state.is_item_enabled(3)); // Select Scanners
+    assert!(state.is_item_enabled(4)); // View Last Results
+    assert!(!state.is_item_enabled(5)); // Change Provider
+    assert!(state.is_item_enabled(6)); // Add Provider
+    assert!(state.is_item_enabled(7)); // Exit
 }
 
 #[test]
@@ -881,7 +887,7 @@ fn menu_state_new_stores_active_profile() {
 }
 
 #[test]
-fn menu_state_navigate_new_max_is_7() {
+fn menu_state_navigate_new_max_is_8() {
     let mut state = MenuState::new(
         true,
         true,
@@ -891,20 +897,20 @@ fn menu_state_navigate_new_max_is_7() {
         String::new(),
         String::new(),
     );
-    for _ in 0..7 {
+    for _ in 0..8 {
         state.next();
     }
-    assert_eq!(state.selected_idx, 7);
+    assert_eq!(state.selected_idx, 8);
     state.next(); // clamp
-    assert_eq!(state.selected_idx, 7);
+    assert_eq!(state.selected_idx, 8);
 }
 
 #[test]
-fn menu_state_main_menu_has_run_pentest_action() {
+fn menu_state_main_menu_has_clone_action() {
     let actions = main_menu_actions();
-    assert_eq!(actions[0], "Run Full Scan");
-    assert_eq!(actions[1], "Run Pentest");
-    assert!(actions.contains(&"Select Scanners"));
+    assert_eq!(actions[0], "Run Full Scan (this directory)");
+    assert_eq!(actions[1], "Clone Repo & Scan");
+    assert_eq!(actions[2], "Run Pentest");
 }
 
 #[test]
@@ -933,12 +939,13 @@ fn settings_form_save_persists_and_clears_output_dir() {
 }
 
 #[test]
-fn menu_state_main_menu_has_eight_actions() {
-    assert_eq!(main_menu_actions().len(), 8);
+fn menu_state_main_menu_has_nine_actions() {
+    assert_eq!(main_menu_actions().len(), 9);
     assert_eq!(
         main_menu_actions(),
         &[
-            "Run Full Scan",
+            "Run Full Scan (this directory)",
+            "Clone Repo & Scan",
             "Run Pentest",
             "Select Scanners",
             "View Last Results",
@@ -984,7 +991,7 @@ fn menu_state_change_provider_requires_provider() {
         String::new(),
         String::new(),
     );
-    assert!(!state.is_item_enabled(4)); // Change Provider = index 4
+    assert!(!state.is_item_enabled(5)); // Change Provider = index 5
 }
 
 use zentra_cli::tui::menu::{clip_with_ellipsis, ProviderFormState};
@@ -1490,7 +1497,40 @@ fn provider_selector_navigation_clears_pending_delete() {
     state.provider_selector_escape();
     assert!(state.pending_delete_profile.is_none());
     assert_eq!(state.screen, MenuScreen::Main);
-    assert_eq!(state.selected_idx, 4);
+    assert_eq!(state.selected_idx, 5);
+}
+
+#[test]
+fn entering_clone_screen_sets_repo_input() {
+    let mut state = MenuState::new(
+        true,
+        true,
+        vec![],
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+    );
+    state.open_repo_input();
+    assert_eq!(state.screen, MenuScreen::RepoInput);
+    assert_eq!(state.repo_url, "");
+    assert!(state.repo_input_error.is_none());
+}
+
+#[test]
+fn repo_input_edit_and_validate() {
+    let mut state = MenuState::new(
+        true, true, vec![], String::new(), String::new(), String::new(), String::new(),
+    );
+    state.open_repo_input();
+    for c in "https://github.com/foo/bar.git".chars() {
+        state.repo_url.push(c);
+    }
+    assert!(state.validate_repo_input().is_ok());
+
+    state.repo_url.clear();
+    state.repo_url.push_str("garbage");
+    assert!(state.validate_repo_input().is_err());
 }
 
 #[test]
@@ -1568,4 +1608,34 @@ fn uistate_mcp_status_updates_on_event() {
     );
     state.apply_event(ScanEvent::McpChannelStatus(McpStatus::Disconnected));
     assert!(matches!(state.mcp_status, Some(McpStatus::Disconnected)));
+}
+
+#[test]
+fn error_span_toggle_and_dismiss() {
+    let mut state = MenuState::new(
+        true, true, vec![], String::new(), String::new(), String::new(), String::new(),
+    );
+    assert!(state.last_error.is_none());
+
+    state.last_error = Some("boom".to_string());
+    assert!(!state.error_expanded);
+
+    state.toggle_error_expanded();
+    assert!(state.error_expanded);
+    state.toggle_error_expanded();
+    assert!(!state.error_expanded);
+
+    state.error_expanded = true;
+    state.dismiss_error();
+    assert!(state.last_error.is_none());
+    assert!(!state.error_expanded);
+}
+
+#[test]
+fn toggle_error_is_noop_without_error() {
+    let mut state = MenuState::new(
+        true, true, vec![], String::new(), String::new(), String::new(), String::new(),
+    );
+    state.toggle_error_expanded();
+    assert!(!state.error_expanded);
 }
