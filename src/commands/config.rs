@@ -133,6 +133,7 @@ mod tests {
         GlobalConfig {
             profiles,
             default_profile: Some("oauth".to_string()),
+            output_dir: None,
         }
         .save_to(&path)
         .unwrap();
