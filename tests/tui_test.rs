@@ -1069,9 +1069,21 @@ fn provider_form_default_uses_first_known_provider() {
 }
 
 #[test]
-fn provider_form_append_char_to_api_key() {
+fn provider_form_append_char_to_reasoning_field() {
     let mut form = ProviderFormState {
         focused_field: 3,
+        ..Default::default()
+    }; // reasoning field
+    form.append_char('l');
+    form.append_char('o');
+    form.append_char('w');
+    assert_eq!(form.reasoning_effort, "low");
+}
+
+#[test]
+fn provider_form_append_char_to_api_key() {
+    let mut form = ProviderFormState {
+        focused_field: 4,
         ..Default::default()
     }; // api_key field
     form.append_char('s');
@@ -1082,7 +1094,7 @@ fn provider_form_append_char_to_api_key() {
 #[test]
 fn provider_form_backspace_removes_last_char() {
     let mut form = ProviderFormState {
-        focused_field: 4,
+        focused_field: 5,
         profile_name: "test".to_string(),
         ..Default::default()
     }; // profile_name field
