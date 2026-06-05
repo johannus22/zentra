@@ -1501,6 +1501,76 @@ fn provider_selector_navigation_clears_pending_delete() {
 }
 
 #[test]
+fn apply_provider_change_persists_default_and_refreshes_state_in_place() {
+    use std::collections::HashMap;
+    use zentra_cli::config::ProviderProfile;
+
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+
+    let mut profiles = HashMap::new();
+    profiles.insert(
+        "anthropic".to_string(),
+        ProviderProfile {
+            kind: "anthropic".to_string(),
+            base_url: "https://api.anthropic.com".to_string(),
+            model: "claude-opus-4-1".to_string(),
+            keyless: false,
+            auth_method: AuthMethod::ApiKey,
+            context_window: None,
+        },
+    );
+    profiles.insert(
+        "openai".to_string(),
+        ProviderProfile {
+            kind: "openai_compat".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4o".to_string(),
+            keyless: false,
+            auth_method: AuthMethod::ApiKey,
+            context_window: None,
+        },
+    );
+    GlobalConfig {
+        profiles,
+        default_profile: Some("anthropic".to_string()),
+        output_dir: None,
+    }
+    .save_to(&config_path)
+    .unwrap();
+
+    let mut state = MenuState::new(
+        true,
+        true,
+        vec![
+            ("anthropic".to_string(), "claude-opus-4-1".to_string()),
+            ("openai".to_string(), "gpt-4o".to_string()),
+        ],
+        "claude-opus-4-1".to_string(),
+        "anthropic".to_string(),
+        String::new(),
+        String::new(),
+    );
+    state.screen = MenuScreen::ProviderSelector;
+    state.provider_idx = 1;
+
+    state
+        .apply_provider_change_to("openai", &config_path)
+        .unwrap();
+
+    // In-memory state refreshed without leaving the TUI.
+    assert_eq!(state.active_profile, "openai");
+    assert_eq!(state.default_profile, "openai");
+    assert_eq!(state.active_model, "gpt-4o");
+    assert!(state.provider_configured);
+    assert_eq!(state.screen, MenuScreen::Main);
+
+    // And the new default is durably persisted to the config file.
+    let saved = GlobalConfig::load_from(&config_path).unwrap();
+    assert_eq!(saved.default_profile.as_deref(), Some("openai"));
+}
+
+#[test]
 fn entering_clone_screen_sets_repo_input() {
     let mut state = MenuState::new(
         true,
