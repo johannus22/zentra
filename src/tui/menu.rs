@@ -28,20 +28,22 @@ pub fn clip_with_ellipsis(s: &str, max_width: usize) -> String {
 }
 
 const ACTION_RUN_FULL_SCAN: usize = 0;
-const ACTION_RUN_PENTEST: usize = 1;
-const ACTION_SELECT_SCANNERS: usize = 2;
-const ACTION_VIEW_RESULTS: usize = 3;
-const ACTION_CHANGE_PROVIDER: usize = 4;
-const ACTION_ADD_PROVIDER: usize = 5;
-const ACTION_SETTINGS: usize = 6;
-const ACTION_EXIT: usize = 7;
+const ACTION_CLONE_AND_SCAN: usize = 1;
+const ACTION_RUN_PENTEST: usize = 2;
+const ACTION_SELECT_SCANNERS: usize = 3;
+const ACTION_VIEW_RESULTS: usize = 4;
+const ACTION_CHANGE_PROVIDER: usize = 5;
+const ACTION_ADD_PROVIDER: usize = 6;
+const ACTION_SETTINGS: usize = 7;
+const ACTION_EXIT: usize = 8;
 
-/// Highest selectable action index in the main menu (8 items: 0-7).
-const MAX_MENU_ACTION: usize = 7;
+/// Highest selectable action index in the main menu (9 items: 0-8).
+const MAX_MENU_ACTION: usize = 8;
 
 pub fn main_menu_actions() -> &'static [&'static str] {
     &[
-        "Run Full Scan",
+        "Run Full Scan (this directory)",
+        "Clone Repo & Scan",
         "Run Pentest",
         "Select Scanners",
         "View Last Results",
@@ -77,6 +79,7 @@ pub fn provider_selector_footer_hint(state: &MenuState) -> &'static str {
 pub enum MenuAction {
     RunScan(Vec<ScannerType>),
     RunPentest,
+    CloneAndScan(String), // repo URL — from RepoInput screen
     ViewLastResults,
     ChangeProvider(String), // profile name — from ProviderSelector
     ProviderAdded(String),  // newly created profile name — from ProviderForm
@@ -90,6 +93,7 @@ pub enum MenuScreen {
     ProviderSelector,
     ProviderForm,
     Settings,
+    RepoInput,
 }
 
 /// State for the Settings screen. Currently a single editable field: the base
@@ -496,6 +500,10 @@ pub struct MenuState {
     pub oauth_modal: Option<OAuthModalState>,
     pub project_name: String,
     pub branch_name: String,
+    pub repo_url: String,
+    pub repo_input_error: Option<String>,
+    pub last_error: Option<String>,
+    pub error_expanded: bool,
     oauth_modal_rx: Option<Receiver<OAuthModalEvent>>,
 }
 
@@ -528,6 +536,10 @@ impl MenuState {
             oauth_modal: None,
             project_name,
             branch_name,
+            repo_url: String::new(),
+            repo_input_error: None,
+            last_error: None,
+            error_expanded: false,
             oauth_modal_rx: None,
         }
     }
@@ -550,11 +562,35 @@ impl MenuState {
         }
     }
 
+    pub fn open_repo_input(&mut self) {
+        self.screen = MenuScreen::RepoInput;
+        self.repo_url.clear();
+        self.repo_input_error = None;
+    }
+
+    pub fn validate_repo_input(&self) -> anyhow::Result<()> {
+        crate::commands::clone::validate_repo_url(&self.repo_url)
+    }
+
+    pub fn toggle_error_expanded(&mut self) {
+        if self.last_error.is_some() {
+            self.error_expanded = !self.error_expanded;
+        }
+    }
+
+    pub fn dismiss_error(&mut self) {
+        self.last_error = None;
+        self.error_expanded = false;
+    }
+
     pub fn next(&mut self) {
         let max = match self.screen {
             MenuScreen::Main => MAX_MENU_ACTION,
             MenuScreen::ScannerSelector => 5,
-            MenuScreen::ProviderSelector | MenuScreen::ProviderForm | MenuScreen::Settings => 0,
+            MenuScreen::ProviderSelector
+            | MenuScreen::ProviderForm
+            | MenuScreen::Settings
+            | MenuScreen::RepoInput => 0,
         };
         if self.selected_idx < max {
             self.selected_idx += 1;
@@ -570,6 +606,7 @@ impl MenuState {
     pub fn is_item_enabled(&self, idx: usize) -> bool {
         match idx {
             i if i == ACTION_RUN_FULL_SCAN
+                || i == ACTION_CLONE_AND_SCAN
                 || i == ACTION_SELECT_SCANNERS
                 || i == ACTION_CHANGE_PROVIDER =>
             {
@@ -791,6 +828,7 @@ pub async fn run_menu(
     active_profile: String,
     project_name: String,
     branch_name: String,
+    last_error: Option<String>,
 ) -> Result<MenuAction> {
     tokio::task::spawn_blocking(move || {
         run_menu_blocking(
@@ -801,6 +839,7 @@ pub async fn run_menu(
             active_profile,
             project_name,
             branch_name,
+            last_error,
         )
     })
     .await?
@@ -814,6 +853,7 @@ fn run_menu_blocking(
     active_profile: String,
     project_name: String,
     branch_name: String,
+    last_error: Option<String>,
 ) -> Result<MenuAction> {
     debug_assert!(
         main_menu_actions().len() == MAX_MENU_ACTION + 1,
@@ -829,6 +869,7 @@ fn run_menu_blocking(
         project_name,
         branch_name,
     );
+    state.last_error = last_error;
     let result = run_menu_loop(&mut terminal, &mut state);
     ratatui::restore();
     result
@@ -869,6 +910,11 @@ fn run_menu_loop(
                                         ScannerType::Report,
                                     ]));
                                 }
+                                ACTION_CLONE_AND_SCAN => {
+                                    state.last_error = None;
+                                    state.error_expanded = false;
+                                    state.open_repo_input();
+                                }
                                 ACTION_RUN_PENTEST => return Ok(MenuAction::RunPentest),
                                 ACTION_SELECT_SCANNERS => {
                                     state.screen = MenuScreen::ScannerSelector;
@@ -892,6 +938,9 @@ fn run_menu_loop(
                             }
                         }
                         KeyCode::Char('q') => return Ok(MenuAction::Exit),
+                        KeyCode::Char('e') => state.toggle_error_expanded(),
+                        KeyCode::Char('x') => state.dismiss_error(),
+                        KeyCode::Esc => state.dismiss_error(),
                         _ => {}
                     },
                     MenuScreen::ScannerSelector => match key.code {
@@ -1003,6 +1052,28 @@ fn run_menu_loop(
                         }
                         _ => {}
                     },
+                    MenuScreen::RepoInput => match key.code {
+                        KeyCode::Char(c) => {
+                            state.repo_input_error = None;
+                            state.repo_url.push(c);
+                        }
+                        KeyCode::Backspace => {
+                            state.repo_input_error = None;
+                            state.repo_url.pop();
+                        }
+                        KeyCode::Enter => match state.validate_repo_input() {
+                            Ok(()) => {
+                                let url = state.repo_url.trim().to_string();
+                                return Ok(MenuAction::CloneAndScan(url));
+                            }
+                            Err(e) => state.repo_input_error = Some(e.to_string()),
+                        },
+                        KeyCode::Esc => {
+                            state.screen = MenuScreen::Main;
+                            state.selected_idx = ACTION_CLONE_AND_SCAN;
+                        }
+                        _ => {}
+                    },
                 }
             }
         }
@@ -1020,6 +1091,7 @@ fn render_menu(frame: &mut Frame, state: &MenuState) {
         MenuScreen::ProviderSelector => render_provider_selector(frame, area, state),
         MenuScreen::ProviderForm => render_provider_form(frame, area, state),
         MenuScreen::Settings => render_settings(frame, area, state),
+        MenuScreen::RepoInput => render_repo_input(frame, area, state),
     }
 }
 
@@ -1086,8 +1158,9 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
         Constraint::Fill(1),
         Constraint::Length(HEADER_HEIGHT),
         Constraint::Min(12),   // menu list
+        Constraint::Length(1), // error summary (blank when no error)
         Constraint::Length(1), // key hints
-        Constraint::Fill(1),
+        Constraint::Fill(1),   // expanded error details
     ])
     .split(area);
 
@@ -1124,10 +1197,45 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
     let menu_area = centered_middle_column(chunks[2]);
     frame.render_widget(list, menu_area);
 
+    // Collapsible error summary line.
+    if let Some(err) = &state.last_error {
+        let first_line = err.lines().next().unwrap_or("");
+        let toggle = if state.error_expanded { "collapse" } else { "expand" };
+        let summary_area = centered_middle_column(chunks[3]);
+        // Reserve room for the "✗ {} · e {toggle} · x dismiss" chrome (20 fixed
+        // chars + the toggle word) so the dismiss hint isn't truncated on
+        // narrow terminals; derive the message budget from the actual row width.
+        let chrome = 20 + toggle.chars().count();
+        let budget = (summary_area.width as usize).saturating_sub(chrome).max(1);
+        let summary = format!(
+            "✗ {}  · e {} · x dismiss",
+            clip_with_ellipsis(first_line, budget),
+            toggle
+        );
+        frame.render_widget(
+            Paragraph::new(summary).style(Style::default().fg(Color::Red)),
+            summary_area,
+        );
+    }
+
     let keys = Paragraph::new(" ↑↓ navigate · Enter select · q quit")
         .style(Style::default().fg(Color::DarkGray));
-    let hints_center = centered_middle_column(chunks[3]);
-    frame.render_widget(keys, hints_center);
+    frame.render_widget(keys, centered_middle_column(chunks[4]));
+
+    // Expanded details box.
+    if state.error_expanded {
+        if let Some(err) = &state.last_error {
+            let details = Paragraph::new(err.clone())
+                .style(Style::default().fg(Color::Red))
+                .wrap(Wrap { trim: false })
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Error details "),
+                );
+            frame.render_widget(details, centered_middle_column(chunks[5]));
+        }
+    }
 }
 
 fn render_settings(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
@@ -1393,6 +1501,63 @@ fn render_provider_selector(frame: &mut Frame, area: ratatui::layout::Rect, stat
         let error = Paragraph::new(format!("  ✗ {}", error)).style(Style::default().fg(Color::Red));
         frame.render_widget(error, centered_middle_column(chunks[4]));
     }
+}
+
+fn render_repo_input(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
+    let outer = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(HEADER_HEIGHT),
+        Constraint::Length(7),
+        Constraint::Fill(1),
+    ])
+    .split(area);
+
+    let header_center = Layout::horizontal([
+        Constraint::Percentage(30),
+        Constraint::Percentage(40),
+        Constraint::Percentage(30),
+    ])
+    .split(outer[1])[1];
+    render_banner_header(frame, header_center, state);
+
+    let form_area = Layout::horizontal([
+        Constraint::Percentage(20),
+        Constraint::Percentage(60),
+        Constraint::Percentage(20),
+    ])
+    .split(outer[2])[1];
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" CLONE & SCAN ")
+        .title_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(form_area);
+    frame.render_widget(block, form_area);
+
+    let max_w = inner.width.saturating_sub(11) as usize;
+    let mut lines = vec![
+        Line::from(vec![
+            Span::raw("  Repo URL  "),
+            Span::styled(
+                clip_with_ellipsis(&state.repo_url, max_w),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            " Enter clone & scan · Esc cancel",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    if let Some(err) = &state.repo_input_error {
+        lines.push(Line::from(Span::styled(
+            format!(" ✗ {}", err),
+            Style::default().fg(Color::Red),
+        )));
+    }
+    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
 fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
