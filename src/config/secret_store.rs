@@ -12,7 +12,8 @@ pub fn write_secret(path: &Path, plaintext: &[u8]) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .context("Failed to set 0o600 permissions on secret file")?;
     }
     Ok(())
 }
@@ -37,6 +38,12 @@ fn decrypt(bytes: Vec<u8>) -> Result<Vec<u8>> {
 fn encrypt(plaintext: &[u8]) -> Result<Vec<u8>> {
     use windows::Win32::Foundation::{LocalFree, HLOCAL};
     use windows::Win32::Security::Cryptography::{CryptProtectData, CRYPT_INTEGER_BLOB};
+    // SAFETY:
+    // - `pbData` is read-only per the DPAPI contract, so casting the immutable
+    //   `plaintext` slice's pointer to `*mut u8` is never written through (no aliasing UB).
+    // - `plaintext` outlives the call (borrowed for the full scope of this fn).
+    // - On success `output.pbData` is valid for `output.cbData` bytes; we copy it into
+    //   an owned Vec before freeing it exactly once via LocalFree.
     unsafe {
         let input = CRYPT_INTEGER_BLOB {
             cbData: plaintext.len() as u32,
@@ -55,6 +62,12 @@ fn encrypt(plaintext: &[u8]) -> Result<Vec<u8>> {
 fn decrypt(bytes: Vec<u8>) -> Result<Vec<u8>> {
     use windows::Win32::Foundation::{LocalFree, HLOCAL};
     use windows::Win32::Security::Cryptography::{CryptUnprotectData, CRYPT_INTEGER_BLOB};
+    // SAFETY:
+    // - `pbData` is read-only per the DPAPI contract, so casting the immutable
+    //   `bytes` slice's pointer to `*mut u8` is never written through (no aliasing UB).
+    // - `bytes` outlives the call (owned for the full scope of this fn).
+    // - On success `output.pbData` is valid for `output.cbData` bytes; we copy it into
+    //   an owned Vec before freeing it exactly once via LocalFree.
     unsafe {
         let input = CRYPT_INTEGER_BLOB {
             cbData: bytes.len() as u32,
@@ -68,9 +81,30 @@ fn decrypt(bytes: Vec<u8>) -> Result<Vec<u8>> {
                 let _ = LocalFree(HLOCAL(output.pbData as *mut _));
                 Ok(out)
             }
-            Err(_) => Ok(bytes), // legacy plaintext fallback
+            Err(e) => {
+                if looks_like_dpapi(&bytes) {
+                    Err(anyhow::anyhow!(
+                        "Failed to decrypt DPAPI-protected secret (corrupted, or written by a different user): {e}"
+                    ))
+                } else {
+                    // Not a DPAPI blob — a legacy unencrypted file from before
+                    // encryption was added. Return it as-is for transparent migration.
+                    Ok(bytes)
+                }
+            }
         }
     }
+}
+
+#[cfg(windows)]
+fn looks_like_dpapi(bytes: &[u8]) -> bool {
+    // DPAPI blobs start with dwVersion (0x00000001 LE) followed by the default
+    // provider GUID {df9d8cd0-1115-11d1-8c7a-00c04fc297eb}.
+    const DPAPI_MAGIC: [u8; 20] = [
+        0x01, 0x00, 0x00, 0x00, 0xd0, 0x8c, 0x9d, 0xdf, 0x01, 0x15, 0xd1, 0x11, 0x8c, 0x7a,
+        0x00, 0xc0, 0x4f, 0xc2, 0x97, 0xeb,
+    ];
+    bytes.len() >= DPAPI_MAGIC.len() && bytes[..DPAPI_MAGIC.len()] == DPAPI_MAGIC
 }
 
 #[cfg(test)]
@@ -108,6 +142,21 @@ mod tests {
         std::fs::write(&path, b"sk-legacy-plaintext").unwrap();
         let got = read_secret(&path).unwrap();
         assert_eq!(got, b"sk-legacy-plaintext");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn read_errors_on_corrupted_dpapi_blob() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("corrupt.bin");
+        write_secret(&path, b"a-real-secret").unwrap();
+        // Corrupt a byte in the ciphertext body (past the 20-byte header) so it
+        // still looks like a DPAPI blob but fails to decrypt.
+        let mut bytes = std::fs::read(&path).unwrap();
+        let i = bytes.len() - 5;
+        bytes[i] ^= 0xff;
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(read_secret(&path).is_err(), "corrupted DPAPI blob must error, not return garbage");
     }
 
     #[cfg(windows)]
