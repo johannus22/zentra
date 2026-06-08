@@ -12,7 +12,7 @@ The binary is named `zentra`.
 - Focused PR/MR scanning with changed-file impact analysis.
 - Dynamic browser pentest mode for authorized targets.
 - Markdown and JSON output under `.zentra/`.
-- OS keychain storage for API keys.
+- Encrypted-at-rest credential storage (DPAPI on Windows, `0600` files on Unix).
 
 ## Install from source
 
@@ -332,7 +332,16 @@ cargo run -- pentest --url https://target.test --authorized
 
 ## Security notes
 
-- API keys should be stored in the OS keychain or CI secret store, not in project files.
+- API keys and OAuth tokens are stored under `~/.zentra/keys/`, encrypted at rest with DPAPI on Windows and written with `0600` permissions on Unix. Use a CI secret store in automated environments, not project files.
 - PR/MR comments are best-effort; reports and logs are still generated if comments cannot be posted.
 - File tools block path traversal and cap file reads.
 - Git history and dependency audit tools degrade gracefully when the required binaries/history are unavailable.
+
+### Dependency audit
+
+Dependency advisories are checked in CI via [`cargo-audit`](https://github.com/rustsec/rustsec) (`.github/workflows/audit.yml`), which runs on pushes/PRs that touch `Cargo.toml`/`Cargo.lock` and on a weekly schedule. To run it locally:
+
+```bash
+cargo install cargo-audit
+cargo audit
+```
