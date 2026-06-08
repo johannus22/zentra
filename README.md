@@ -332,7 +332,7 @@ cargo run -- pentest --url https://target.test --authorized
 
 ## Security notes
 
-- API keys and OAuth tokens are stored under `~/.zentra/keys/`, encrypted at rest with DPAPI on Windows and written with `0600` permissions on Unix. Use a CI secret store in automated environments, not project files.
+- API keys and OAuth tokens are stored under `~/.zentra/keys/`, encrypted at rest with DPAPI on Windows and written with `0600` permissions on Unix. Credentials saved by an older version (plaintext key files, or OAuth tokens in the OS keychain) keep working and are migrated the next time they're saved. Use a CI secret store in automated environments, not project files.
 - PR/MR comments are best-effort; reports and logs are still generated if comments cannot be posted.
 - File tools block path traversal and cap file reads.
 - Git history and dependency audit tools degrade gracefully when the required binaries/history are unavailable.
