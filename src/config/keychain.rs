@@ -60,8 +60,9 @@ pub fn get_key(profile: &str) -> Result<Option<String>> {
     if let Some(path) = key_file_path(profile) {
         if path.exists() {
             let bytes = secret_store::read_secret(&path)?;
-            let key = String::from_utf8_lossy(&bytes).trim().to_string();
-            return Ok(Some(key));
+            let key = String::from_utf8(bytes)
+                .context("API key file contains invalid UTF-8 — the file may be corrupt")?;
+            return Ok(Some(key.trim().to_string()));
         }
     }
     // Backward compatibility: fall back to any key previously stored in the OS keychain.
@@ -125,14 +126,17 @@ pub fn get_oauth_tokens(profile: &str) -> Result<Option<crate::auth::OAuthTokens
             return Ok(Some(tokens));
         }
     }
-    // Backward compatibility: fall back to tokens previously stored in the keychain.
-    let entry = keyring::Entry::new(&service_name(profile), "oauth_tokens")
-        .context("Failed to access OS keychain")?;
-    match entry.get_password() {
-        Ok(json) => Ok(Some(serde_json::from_str(&json)?)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(anyhow::anyhow!("Keychain read failed: {}", e)),
+    // Backward compatibility: best-effort read of tokens left in the OS keychain by an
+    // older version. The keychain is unreliable (the reason tokens moved to files), so
+    // any failure here degrades to "no tokens" rather than failing the whole operation.
+    if let Ok(entry) = keyring::Entry::new(&service_name(profile), "oauth_tokens") {
+        if let Ok(json) = entry.get_password() {
+            if let Ok(tokens) = serde_json::from_str(&json) {
+                return Ok(Some(tokens));
+            }
+        }
     }
+    Ok(None)
 }
 
 pub fn delete_oauth_tokens(profile: &str) -> Result<()> {
