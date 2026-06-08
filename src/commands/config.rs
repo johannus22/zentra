@@ -93,6 +93,10 @@ pub async fn show() -> Result<()> {
     println!("  model        : {}", profile.model);
     println!("  base_url     : {}", profile.base_url);
     println!("  kind         : {}", profile.kind);
+    println!(
+        "  reasoning    : {}",
+        profile.reasoning_effort.as_deref().unwrap_or("(default)")
+    );
     let key_display = match keychain::get_key(name)? {
         Some(_) => keychain::masked_display().to_string(),
         None => "not set".to_string(),
@@ -128,6 +132,7 @@ mod tests {
                 keyless: false,
                 auth_method: AuthMethod::OAuth,
                 context_window: None,
+                reasoning_effort: None,
             },
         );
         GlobalConfig {
