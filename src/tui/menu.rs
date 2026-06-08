@@ -191,6 +191,7 @@ pub struct ProviderFormState {
     pub auth_method: AuthMethod,
     pub api_key: String,
     pub profile_name: String,
+    pub reasoning_effort: String,
     pub focused_field: usize,
     pub error: Option<String>,
 }
@@ -216,6 +217,7 @@ impl Default for ProviderFormState {
             auth_method: AuthMethod::ApiKey,
             api_key: String::new(),
             profile_name: default_profile_name(name),
+            reasoning_effort: String::new(),
             focused_field: 0,
             error: None,
         }
@@ -231,6 +233,7 @@ impl std::fmt::Debug for ProviderFormState {
             .field("auth_method", &self.auth_method)
             .field("api_key", &"[REDACTED]")
             .field("profile_name", &self.profile_name)
+            .field("reasoning_effort", &self.reasoning_effort)
             .field("focused_field", &self.focused_field)
             .field("error", &self.error)
             .finish()
@@ -242,16 +245,20 @@ impl ProviderFormState {
         None
     }
 
-    fn api_key_field_idx(&self) -> usize {
+    fn reasoning_field_idx(&self) -> usize {
         3
     }
 
-    fn profile_name_field_idx(&self) -> usize {
+    fn api_key_field_idx(&self) -> usize {
         4
     }
 
-    fn save_field_idx(&self) -> usize {
+    fn profile_name_field_idx(&self) -> usize {
         5
+    }
+
+    fn save_field_idx(&self) -> usize {
+        6
     }
 
     fn field_count(&self) -> usize {
@@ -273,6 +280,7 @@ impl ProviderFormState {
         self.base_url = d.base_url;
         self.auth_method = AuthMethod::ApiKey;
         self.profile_name = default_profile_name(name);
+        self.reasoning_effort.clear();
         self.focused_field = self.focused_field.min(self.save_field_idx());
         self.error = None;
     }
@@ -296,6 +304,7 @@ impl ProviderFormState {
         match self.focused_field {
             1 => self.model.push(c),
             2 => self.base_url.push(c),
+            field if field == self.reasoning_field_idx() => self.reasoning_effort.push(c),
             field if field == self.api_key_field_idx() => self.api_key.push(c),
             field if field == self.profile_name_field_idx() => self.profile_name.push(c),
             _ => {}
@@ -309,6 +318,9 @@ impl ProviderFormState {
             }
             2 => {
                 self.base_url.pop();
+            }
+            field if field == self.reasoning_field_idx() => {
+                self.reasoning_effort.pop();
             }
             field if field == self.api_key_field_idx() => {
                 self.api_key.pop();
@@ -439,6 +451,10 @@ impl ProviderFormState {
             keyless: d.keyless,
             auth_method: AuthMethod::ApiKey,
             context_window: Some(cw),
+            reasoning_effort: {
+                let t = self.reasoning_effort.trim();
+                if t.is_empty() { None } else { Some(t.to_string()) }
+            },
         };
 
         if let Some(ref tokens) = oauth_tokens {
@@ -1712,6 +1728,31 @@ fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &
             ),
         ]),
     ];
+
+    let reasoning_field_idx = form.reasoning_field_idx();
+    fields.push(Line::from(vec![
+        Span::raw(if form.focused_field == reasoning_field_idx {
+            "▶ "
+        } else {
+            "  "
+        }),
+        Span::styled("Reasoning  ", field_style(reasoning_field_idx)),
+        Span::styled(
+            format!(
+                "{:width$}",
+                clip_with_ellipsis(
+                    if form.reasoning_effort.is_empty() {
+                        "(blank = default)"
+                    } else {
+                        &form.reasoning_effort
+                    },
+                    max_field_width
+                ),
+                width = max_field_width
+            ),
+            field_style(reasoning_field_idx),
+        ),
+    ]));
 
     let api_key_field_idx = form.api_key_field_idx();
     fields.push(Line::from(vec![
