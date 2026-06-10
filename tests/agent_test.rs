@@ -211,22 +211,32 @@ fn read_file_blocks_path_traversal() {
 
 #[test]
 fn list_files_finds_files_in_dir() {
+    let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("a.rs"), "").unwrap();
     std::fs::write(dir.path().join("b.rs"), "").unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
 
-    let result = list_files(dir.path().to_str().unwrap(), None);
+    let result = list_files(".", None);
+
+    std::env::set_current_dir(original).unwrap();
     assert!(result.contains("a.rs"), "should list a.rs");
     assert!(result.contains("b.rs"), "should list b.rs");
 }
 
 #[test]
 fn list_files_filters_by_pattern() {
+    let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("main.rs"), "").unwrap();
     std::fs::write(dir.path().join("config.toml"), "").unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
 
-    let result = list_files(dir.path().to_str().unwrap(), Some(".rs"));
+    let result = list_files(".", Some(".rs"));
+
+    std::env::set_current_dir(original).unwrap();
     assert!(result.contains("main.rs"), "should include .rs files");
     assert!(
         !result.contains("config.toml"),
@@ -236,27 +246,34 @@ fn list_files_filters_by_pattern() {
 
 #[test]
 fn grep_code_finds_pattern() {
+    let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().unwrap();
     std::fs::write(
         dir.path().join("main.rs"),
         "fn main() {\n    let secret = \"abc\";\n}\n",
     )
     .unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
 
-    let result = grep_code("secret", Some(dir.path().to_str().unwrap()));
+    let result = grep_code("secret", Some("."));
+
+    std::env::set_current_dir(original).unwrap();
     assert!(result.contains("secret"), "should find 'secret'");
     assert!(result.contains("main.rs"), "should reference the file");
 }
 
 #[test]
 fn grep_code_returns_no_matches_message() {
+    let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("a.rs"), "fn main() {}").unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
 
-    let result = grep_code(
-        "VERY_UNLIKELY_PATTERN_XYZ123",
-        Some(dir.path().to_str().unwrap()),
-    );
+    let result = grep_code("VERY_UNLIKELY_PATTERN_XYZ123", Some("."));
+
+    std::env::set_current_dir(original).unwrap();
     assert!(result.contains("No matches"), "should say no matches");
 }
 
@@ -718,4 +735,20 @@ async fn scanner_agent_emits_tokens_used_event() {
         }
     }
     assert!(found_tokens, "should have emitted TokensUsed event");
+}
+
+#[cfg(unix)]
+#[test]
+fn read_file_rejects_symlink_escaping_cwd() {
+    use std::os::unix::fs::symlink;
+    let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::TempDir::new().unwrap();
+    let outside = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(outside.path(), b"SECRET").unwrap();
+    symlink(outside.path(), dir.path().join("link")).unwrap();
+    let prev = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let out = read_file("link");
+    std::env::set_current_dir(prev).unwrap();
+    assert!(out.contains("escapes the scan root"), "got: {out}");
 }
