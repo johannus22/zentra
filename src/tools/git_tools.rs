@@ -20,6 +20,12 @@ pub fn git_diff(since: &str) -> String {
     if !since.chars().all(allowed) {
         return "Error: 'since' contains characters outside the allowed revision charset (alphanumeric and . - _ / ~ ^ @ :)".to_string();
     }
+    // `since` sits before any `--` separator, so a leading '-' would be parsed as
+    // a git option (e.g. --ext-diff, -G). Reject it — git revisions never start
+    // with '-'. Closes option injection even when the tool gate is disabled.
+    if since.starts_with('-') {
+        return "Error: 'since' must not start with '-'".to_string();
+    }
     run_git(&["diff", since, "--stat", "--no-color"])
 }
 
@@ -75,5 +81,11 @@ mod tests {
     fn git_diff_rejects_overlong() {
         let out = git_diff(&"a".repeat(200));
         assert!(out.starts_with("Error:"), "got: {out}");
+    }
+
+    #[test]
+    fn git_diff_rejects_leading_dash() {
+        assert!(git_diff("--ext-diff").starts_with("Error:"));
+        assert!(git_diff("-Gpassword").starts_with("Error:"));
     }
 }
