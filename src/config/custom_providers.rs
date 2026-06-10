@@ -104,7 +104,8 @@ impl CustomProvidersFile {
             }
         }
         // Every retained provider is openai_compat/anthropic (the loop above
-        // normalizes any other kind), so all must have a valid HTTPS base URL.
+        // normalizes any other kind), so all must have a valid base URL
+        // (HTTPS, or http only on loopback — see validate_provider_base_url).
         file.providers
             .retain(|p| match validate_provider_base_url(&p.base_url) {
                 Ok(()) => true,
