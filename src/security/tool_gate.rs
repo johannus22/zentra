@@ -232,6 +232,12 @@ impl ArgValidator {
     }
 
     fn validate_path(&self, path: &str) -> Result<()> {
+        if std::path::Path::new(path)
+            .components()
+            .any(|c| c == std::path::Component::ParentDir)
+        {
+            bail!("Path '{}' contains a '..' component", path);
+        }
         let lower = path.to_lowercase().replace('\\', "/");
         for fragment in SENSITIVE_PATH_FRAGMENTS {
             if lower.contains(fragment) {
