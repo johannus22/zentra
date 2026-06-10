@@ -752,3 +752,19 @@ fn read_file_rejects_symlink_escaping_cwd() {
     std::env::set_current_dir(prev).unwrap();
     assert!(out.contains("escapes the scan root"), "got: {out}");
 }
+
+#[cfg(unix)]
+#[test]
+fn list_files_rejects_symlinked_root_escaping_cwd() {
+    use std::os::unix::fs::symlink;
+    let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let dir = tempfile::TempDir::new().unwrap();
+    let outside = tempfile::TempDir::new().unwrap();
+    std::fs::write(outside.path().join("secret.txt"), b"SECRET").unwrap();
+    symlink(outside.path(), dir.path().join("out")).unwrap();
+    let prev = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+    let out = list_files("out", None);
+    std::env::set_current_dir(prev).unwrap();
+    assert!(out.contains("escapes the scan root"), "got: {out}");
+}
