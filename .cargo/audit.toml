@@ -1,0 +1,11 @@
+# cargo-audit configuration (honored by the rustsec/audit-check CI workflow).
+#
+# Each ignored advisory is a documented, reviewed acceptance — see SECURITY.md
+# "Accepted Risks and Future Work". Re-review on the date noted below.
+
+[advisories]
+ignore = [
+    # ring is in maintenance mode (no CVE). Transitive via rustls -> reqwest.
+    # Monitored; migrate to aws-lc-rs when rustls supports it. Review: 2026-12-10.
+    "RUSTSEC-2025-0029",
+]
