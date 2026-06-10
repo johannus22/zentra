@@ -3729,6 +3729,7 @@ dependencies = [
  "which",
  "windows",
  "wiremock",
+ "zeroize",
 ]
 
 [[package]]

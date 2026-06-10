@@ -41,6 +41,7 @@ toml = "0.8"
 totp-rs = { version = "5", features = ["gen_secret", "serde_support"] }
 walkdir = "2"
 which = "6"
+zeroize = "1"
 
 [dev-dependencies]
 wiremock = "0.6"
