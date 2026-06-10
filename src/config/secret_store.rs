@@ -1,6 +1,16 @@
-//! Platform credential storage. On Windows, secrets are encrypted at rest with
-//! DPAPI (user scope). On Unix, secrets are written as plaintext with 0o600
-//! permissions (the home directory already restricts access).
+//! Platform credential storage.
+//!
+//! On Windows, secrets are encrypted at rest with DPAPI (user scope).
+//!
+//! On Unix (Linux/macOS), secrets are sealed with AES-256-GCM under a random
+//! data-encryption key (DEK) that lives in the OS secret store (Secret Service
+//! on Linux, Keychain on macOS) via the `keyring` crate — envelope encryption
+//! that mirrors DPAPI: the file on disk is useless without the local OS store.
+//! When the OS store is unavailable (headless/SSH/CI, locked keyring) we fall
+//! back to writing plaintext, still guarded by 0o600 file permissions.
+//!
+//! Both platforms transparently read pre-existing (legacy/fallback) plaintext
+//! files, distinguished by a magic prefix, so old key files keep working.
 
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -26,12 +36,121 @@ pub fn read_secret(path: &Path) -> Result<Vec<u8>> {
 
 #[cfg(not(windows))]
 fn encrypt(plaintext: &[u8]) -> Result<Vec<u8>> {
-    Ok(plaintext.to_vec())
+    // Envelope-encrypt under a DEK held in the OS secret store. If the store is
+    // unavailable (headless/SSH/CI, locked keyring), fall back to plaintext —
+    // write_secret still applies 0o600. Mirrors the Windows DPAPI design.
+    match envelope::load_or_create_dek() {
+        Ok(key) => envelope::seal(&key, plaintext),
+        Err(_) => Ok(plaintext.to_vec()),
+    }
 }
 
 #[cfg(not(windows))]
 fn decrypt(bytes: Vec<u8>) -> Result<Vec<u8>> {
-    Ok(bytes)
+    if envelope::looks_like_envelope(&bytes) {
+        let key = envelope::load_dek()?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "Secret is envelope-encrypted but its data key is missing from the OS secret \
+                 store — it may have been cleared, or written under a different login session"
+            )
+        })?;
+        envelope::open(&key, &bytes)
+    } else {
+        // Not an envelope blob — a legacy/fallback plaintext file. Return as-is
+        // for transparent migration (mirror of the Windows legacy path).
+        Ok(bytes)
+    }
+}
+
+/// AES-256-GCM envelope encryption with a data key held in the OS secret store.
+///
+/// The crypto core (`seal`/`open`/`looks_like_envelope`) is compiled on all
+/// platforms so it can be unit-tested anywhere; only the Unix `encrypt`/`decrypt`
+/// above actually call it (Windows uses DPAPI), hence `dead_code` on Windows.
+#[allow(dead_code)]
+mod envelope {
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Key, Nonce};
+    use anyhow::{Context, Result};
+    use base64::Engine;
+    use rand::RngCore;
+
+    /// Marks a file written by this module. Bytes without it are legacy plaintext.
+    const MAGIC: &[u8; 4] = b"ZSE1";
+    const NONCE_LEN: usize = 12;
+    const KEY_LEN: usize = 32;
+    const KEYRING_SERVICE: &str = "zentra";
+    const KEYRING_USER: &str = "secret-store-key-v1";
+
+    pub(super) fn looks_like_envelope(bytes: &[u8]) -> bool {
+        bytes.len() >= MAGIC.len() && &bytes[..MAGIC.len()] == MAGIC
+    }
+
+    /// Seal `plaintext` under `key` → `MAGIC || nonce || ciphertext+tag`.
+    pub(super) fn seal(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Result<Vec<u8>> {
+        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+        let mut nonce_bytes = [0u8; NONCE_LEN];
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        let ct = cipher
+            .encrypt(Nonce::from_slice(&nonce_bytes), plaintext)
+            .map_err(|e| anyhow::anyhow!("AES-GCM encryption failed: {e}"))?;
+        let mut out = Vec::with_capacity(MAGIC.len() + NONCE_LEN + ct.len());
+        out.extend_from_slice(MAGIC);
+        out.extend_from_slice(&nonce_bytes);
+        out.extend_from_slice(&ct);
+        Ok(out)
+    }
+
+    /// Reverse `seal`. Errors on a malformed blob or failed authentication.
+    pub(super) fn open(key: &[u8; KEY_LEN], blob: &[u8]) -> Result<Vec<u8>> {
+        let header = MAGIC.len() + NONCE_LEN;
+        if blob.len() < header {
+            anyhow::bail!("secret envelope is truncated");
+        }
+        let nonce = Nonce::from_slice(&blob[MAGIC.len()..header]);
+        let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+        cipher
+            .decrypt(nonce, &blob[header..])
+            .map_err(|e| anyhow::anyhow!("Failed to decrypt secret (wrong key or corrupted): {e}"))
+    }
+
+    fn dek_entry() -> Result<keyring::Entry> {
+        keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
+            .context("Failed to access OS secret store for the data key")
+    }
+
+    /// Fetch the existing DEK, or generate and store a new one. Errors only if the
+    /// OS secret store is unavailable (callers treat that as "fall back to plaintext").
+    pub(super) fn load_or_create_dek() -> Result<[u8; KEY_LEN]> {
+        if let Some(key) = load_dek()? {
+            return Ok(key);
+        }
+        let mut key = [0u8; KEY_LEN];
+        rand::thread_rng().fill_bytes(&mut key);
+        dek_entry()?
+            .set_password(&base64::engine::general_purpose::STANDARD.encode(key))
+            .context("Failed to store data key in OS secret store")?;
+        Ok(key)
+    }
+
+    /// Fetch the DEK. `Ok(None)` if it was never created; `Err` if the store is
+    /// unavailable or the stored value is malformed.
+    pub(super) fn load_dek() -> Result<Option<[u8; KEY_LEN]>> {
+        match dek_entry()?.get_password() {
+            Ok(encoded) => {
+                let raw = base64::engine::general_purpose::STANDARD
+                    .decode(encoded.trim())
+                    .context("Stored data key is not valid base64")?;
+                let key: [u8; KEY_LEN] = raw
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| anyhow::anyhow!("Stored data key has the wrong length"))?;
+                Ok(Some(key))
+            }
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(anyhow::anyhow!("OS secret store read failed: {e}")),
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -120,6 +239,41 @@ mod tests {
         write_secret(&path, secret).unwrap();
         let got = read_secret(&path).unwrap();
         assert_eq!(got, secret);
+    }
+
+    #[test]
+    fn envelope_seal_open_roundtrips() {
+        let key = [7u8; 32];
+        let plaintext = b"sk-secret-value-xyz";
+        let blob = super::envelope::seal(&key, plaintext).unwrap();
+        assert!(super::envelope::looks_like_envelope(&blob));
+        assert_ne!(blob.as_slice(), plaintext.as_slice(), "sealed blob must not be plaintext");
+        assert_eq!(super::envelope::open(&key, &blob).unwrap(), plaintext);
+    }
+
+    #[test]
+    fn envelope_open_rejects_corrupted_blob() {
+        let key = [7u8; 32];
+        let mut blob = super::envelope::seal(&key, b"a-real-secret").unwrap();
+        let last = blob.len() - 1;
+        blob[last] ^= 0xff;
+        assert!(super::envelope::open(&key, &blob).is_err(), "corrupted tag must fail auth");
+    }
+
+    #[test]
+    fn envelope_open_rejects_wrong_key() {
+        let blob = super::envelope::seal(&[1u8; 32], b"x").unwrap();
+        assert!(super::envelope::open(&[2u8; 32], &blob).is_err(), "wrong key must fail auth");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn read_falls_back_to_plaintext_for_legacy_files_on_unix() {
+        // A pre-existing unencrypted key file (no magic prefix) must still be readable.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("legacy.key");
+        std::fs::write(&path, b"sk-legacy-plaintext").unwrap();
+        assert_eq!(read_secret(&path).unwrap(), b"sk-legacy-plaintext");
     }
 
     #[cfg(unix)]
