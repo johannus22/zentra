@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 pub struct AnthropicProvider {
     base_url: String,
     model: String,
-    api_key: String,
+    api_key: zeroize::Zeroizing<String>,
     client: reqwest::Client,
 }
 
@@ -27,7 +27,7 @@ impl AnthropicProvider {
         Self {
             base_url,
             model,
-            api_key,
+            api_key: zeroize::Zeroizing::new(api_key),
             client,
         }
     }
@@ -41,7 +41,7 @@ impl AnthropicProvider {
         let request = self
             .client
             .post(&url)
-            .header("x-api-key", &self.api_key)
+            .header("x-api-key", self.api_key.as_str())
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
             .json(&body)

@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 pub struct OpenAICompatProvider {
     base_url: String,
     model: String,
-    api_key: String,
+    api_key: zeroize::Zeroizing<String>,
     client: reqwest::Client,
     reasoning_effort: Option<String>,
 }
@@ -16,7 +16,7 @@ impl OpenAICompatProvider {
         Self {
             base_url,
             model,
-            api_key,
+            api_key: zeroize::Zeroizing::new(api_key),
             client: reqwest::Client::builder()
                 .danger_accept_invalid_certs(false)
                 .min_tls_version(reqwest::tls::Version::TLS_1_2)
@@ -54,7 +54,7 @@ impl OpenAICompatProvider {
         let request = self
             .client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Authorization", format!("Bearer {}", self.api_key.as_str()))
             .header("Content-Type", "application/json")
             .json(&body)
             .build()

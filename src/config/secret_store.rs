@@ -18,12 +18,26 @@ use std::path::Path;
 /// Encrypt (Windows) or pass through (Unix) and write `plaintext` to `path`.
 pub fn write_secret(path: &Path, plaintext: &[u8]) -> Result<()> {
     let bytes = encrypt(plaintext)?;
-    std::fs::write(path, &bytes).context("Failed to write secret file")?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        // Create with 0o600 from the start — no world-readable TOCTOU window.
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .context("Failed to create secret file")?;
+        f.write_all(&bytes).context("Failed to write secret file")?;
+        // Backstop for a pre-existing file whose mode predates this write.
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
             .context("Failed to set 0o600 permissions on secret file")?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, &bytes).context("Failed to write secret file")?;
     }
     Ok(())
 }
