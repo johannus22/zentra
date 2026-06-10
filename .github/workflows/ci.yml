@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test & clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Install clippy
+        run: rustup component add clippy
+
+      # Hard gate. The secret-store (DPAPI / Keychain / Secret-Service), path,
+      # and other cfg-gated code differs per OS — and the per-target dependency
+      # sets in Cargo.toml only compile on their platform — so a single-OS run
+      # would never build or exercise the Windows/macOS/Linux branches.
+      - name: Test
+        run: cargo test --locked
+
+      # Advisory only for now: the tree has ~17 pre-existing clippy lints, so
+      # this deliberately omits `-- -D warnings` to avoid a red-on-arrival gate.
+      # Once those are cleared, append `-- -D warnings` to make clippy blocking.
+      - name: Clippy
+        run: cargo clippy --all-targets --locked
