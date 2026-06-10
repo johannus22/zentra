@@ -15,6 +15,7 @@ use crate::config::{keychain, AuthMethod, GlobalConfig, ProjectConfig, ProviderP
 use crate::provider::{
     anthropic::AnthropicProvider, openai_compat::OpenAICompatProvider, LLMProvider,
 };
+use crate::security::{self, AuditEvent, AuditLog, SecurityConfig, SecurityContext};
 use crate::state::{Finding, Severity, StateWriter};
 use crate::tools::ToolRegistry;
 
@@ -135,15 +136,47 @@ pub async fn run_headless_scan_with_provider(
     let (tx, mut rx) = mpsc::channel(128);
     let cancel_token = CancellationToken::new();
 
-    let orchestrator =
-        OrchestratorAgent::new(provider, tool_registry, state_writer, tx, cancel_token)
-            .with_ci_focus_context(ci_focus_context);
+    // Cancel on SIGINT/SIGTERM so provider connections + tool subprocesses don't
+    // orphan if the CI job is cancelled or times out.
+    let signal_token = cancel_token.clone();
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.ok();
+        signal_token.cancel();
+    });
+
+    // Security envelope: parity with the TUI scan path (scan.rs). ZENTRA_SECURITY
+    // still controls strictness; the default profile is unchanged for CI.
+    let security_config = SecurityConfig::load();
+    let session_id = security::new_session_id();
+    let zentra_dir = project_root.join(".zentra");
+    let mut audit = AuditLog::new(&zentra_dir, &session_id, security_config.audit_log)
+        .context("Failed to open security audit log")?;
+    audit
+        .record(AuditEvent::SessionStart {
+            provider_kind: "ci".to_string(),
+            model: String::new(),
+            scanner: "orchestrator".to_string(),
+        })
+        .ok();
+    let security_ctx = SecurityContext::new(security_config, audit);
+    let provider = security::GuardedProvider::wrap(provider, &security_ctx);
+
+    let orchestrator = OrchestratorAgent::new(
+        provider,
+        tool_registry,
+        state_writer,
+        tx,
+        cancel_token.clone(),
+    )
+    .with_ci_focus_context(ci_focus_context)
+    .with_security(security_ctx);
 
     let scan_task = tokio::spawn(async move { orchestrator.run(&scanners).await });
     let mut events = Vec::new();
     while let Some(event) = rx.recv().await {
         events.push(event);
     }
+    cancel_token.cancel(); // clean up on normal completion too
 
     scan_task.await??;
 
