@@ -89,6 +89,7 @@ async fn run_once(
     // For CLI providers, verify the binary is reachable before starting the TUI
     if profile.kind == "claude_cli" || profile.kind == "codex_cli" {
         let binary = resolve_cli_binary(&profile.kind, &profile.base_url);
+        validate_cli_binary(&binary)?;
         if which::which(&binary).is_err() {
             anyhow::bail!(
                 "CLI provider '{}' requires '{}' on PATH.\n\
@@ -252,6 +253,32 @@ fn resolve_cli_binary(kind: &str, base_url: &str) -> String {
     .to_string()
 }
 
+/// Reject a CLI provider binary that is a relative path with separators (a
+/// repo-supplied `base_url` could otherwise point at an in-tree executable).
+/// Bare names (resolved via PATH) and absolute paths are allowed.
+fn validate_cli_binary(binary: &str) -> Result<()> {
+    let p = Path::new(binary);
+    if p.is_absolute() {
+        return Ok(());
+    }
+    // On Windows "C:evil" is drive-relative — not absolute per std::path and it
+    // contains no separator, so it would otherwise slip past as a "bare name".
+    #[cfg(windows)]
+    if binary.len() >= 2 && binary.as_bytes()[1] == b':' {
+        anyhow::bail!(
+            "CLI provider binary '{}' must be a bare name or an absolute path, not a relative path",
+            binary
+        );
+    }
+    if binary.contains('/') || binary.contains('\\') {
+        anyhow::bail!(
+            "CLI provider binary '{}' must be a bare name or an absolute path, not a relative path",
+            binary
+        );
+    }
+    Ok(())
+}
+
 fn ensure_supported_scan_auth(
     profile_name: &str,
     profile: &crate::config::ProviderProfile,
@@ -327,5 +354,18 @@ mod tests {
         assert!(msg.contains("now require an API key"), "got: {msg}");
         assert!(msg.contains("zentra config setup"), "got: {msg}");
         assert!(msg.contains("API key"), "got: {msg}");
+    }
+
+    #[test]
+    fn validate_cli_binary_rejects_relative_path() {
+        assert!(validate_cli_binary("./evil").is_err());
+        assert!(validate_cli_binary("sub/dir/evil").is_err());
+        assert!(validate_cli_binary("claude").is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn validate_cli_binary_rejects_windows_drive_relative() {
+        assert!(validate_cli_binary("C:evil").is_err());
     }
 }

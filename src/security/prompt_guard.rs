@@ -13,7 +13,7 @@ fn injection_patterns() -> &'static Vec<Regex> {
             r"<ztool_call>",
             r"(?i)call\s+(read_file|write_finding|run_audit|write_report|git_diff|nmap|browser_navigate)\s*\(",
             // Credential exfiltration patterns
-            r"(?i)(read|cat|get|fetch|open)\s+[~./]*(\.ssh[/\\]|\.aws[/\\]|id_rsa|id_ed25519|credentials|shadow|\.env\b|passwd)",
+            r"(?i)(read|cat|get|fetch|open)\s+[~./]{0,32}(\.ssh[/\\]|\.aws[/\\]|id_rsa|id_ed25519|credentials|shadow|\.env\b|passwd)",
             // Role/directive override
             r"(?i)\bnew\s+(system|instruction|directive)\s*:",
             // Attempts to forge our own trust markers
@@ -48,9 +48,25 @@ impl PromptGuard {
             return (content.to_string(), false);
         }
 
+        // Bound worst-case regex CPU on hostile tool output. Truncate the SCANNED
+        // slice only (the full `content` is still what gets wrapped/returned below).
+        // NOTE: content beyond MAX_SCAN_BYTES is NOT scanned — an adversary who can
+        // emit tool output larger than this can place an injection payload past the
+        // cap. Accepted tradeoff: the ToolRegistry gate is the primary defense; this
+        // is a secondary, CPU-bounded layer.
+        const MAX_SCAN_BYTES: usize = 256 * 1024;
+        let scan_slice = if content.len() > MAX_SCAN_BYTES {
+            let mut end = MAX_SCAN_BYTES;
+            while end > 0 && !content.is_char_boundary(end) {
+                end -= 1;
+            }
+            &content[..end]
+        } else {
+            content
+        };
         let injection_detected = injection_patterns()
             .iter()
-            .any(|re| re.is_match(content));
+            .any(|re| re.is_match(scan_slice));
 
         if injection_detected {
             self.anomaly_count += 1;

@@ -1,6 +1,8 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
+use crate::config::validation::validate_provider_base_url;
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct CustomProvider {
     #[serde(default)]
@@ -101,6 +103,56 @@ impl CustomProvidersFile {
                 p.kind = "openai_compat".to_string();
             }
         }
+        // Every retained provider is openai_compat/anthropic (the loop above
+        // normalizes any other kind), so all must have a valid HTTPS base URL.
+        file.providers
+            .retain(|p| match validate_provider_base_url(&p.base_url) {
+                Ok(()) => true,
+                Err(e) => {
+                    eprintln!(
+                        "⚠ {}: provider '{}' base_url rejected ({}) — skipped",
+                        path.display(),
+                        p.name,
+                        e
+                    );
+                    false
+                }
+            });
         file
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_from_skips_http_remote_provider() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("providers.toml");
+        std::fs::write(
+            &path,
+            "[[providers]]\nname=\"bad\"\nbase_url=\"http://evil.example\"\ndefault_model=\"m\"\nkind=\"openai_compat\"\n",
+        )
+        .unwrap();
+        let file = CustomProvidersFile::load_from(&path);
+        assert!(file.providers.is_empty(), "http remote should be skipped");
+    }
+
+    #[test]
+    fn load_from_normalizes_unknown_kind_then_validates_url() {
+        // A non-openai_compat/anthropic kind is normalized to openai_compat by the
+        // loop above; a valid https URL then keeps it. This pins the
+        // normalize-then-validate invariant the URL-retain relies on.
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("providers.toml");
+        std::fs::write(
+            &path,
+            "[[providers]]\nname=\"local\"\nbase_url=\"https://example.test\"\ndefault_model=\"m\"\nkind=\"claude_cli\"\n",
+        )
+        .unwrap();
+        let file = CustomProvidersFile::load_from(&path);
+        assert_eq!(file.providers.len(), 1);
+        assert_eq!(file.providers[0].kind, "openai_compat");
     }
 }
