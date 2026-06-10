@@ -10,6 +10,16 @@ pub fn git_log(n: u32) -> String {
 }
 
 pub fn git_diff(since: &str) -> String {
+    if since.len() > 100 {
+        return "Error: 'since' argument too long (max 100)".to_string();
+    }
+    // Conservative git-revision charset — holds even when the tool gate is off.
+    let allowed = |c: char| {
+        c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '/' | '~' | '^' | '@' | ':')
+    };
+    if !since.chars().all(allowed) {
+        return "Error: 'since' contains characters outside the allowed revision charset (alphanumeric and . - _ / ~ ^ @ :)".to_string();
+    }
     run_git(&["diff", since, "--stat", "--no-color"])
 }
 
@@ -48,5 +58,22 @@ fn run_git(args: &[&str]) -> String {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_diff_rejects_metacharacters() {
+        let out = git_diff("HEAD;rm -rf /");
+        assert!(out.starts_with("Error:"), "got: {out}");
+    }
+
+    #[test]
+    fn git_diff_rejects_overlong() {
+        let out = git_diff(&"a".repeat(200));
+        assert!(out.starts_with("Error:"), "got: {out}");
     }
 }
