@@ -7,7 +7,10 @@ const MAX_FILE_BYTES: u64 = 100_000;
 const MAX_GREP_RESULTS: usize = 100;
 const MAX_LIST_ENTRIES: usize = 10_000;
 
-/// Reject absolute paths and any `..` component, matching `read_file`.
+/// Reject absolute paths, `..` components, and — for paths that exist — any
+/// path that resolves (via symlinks) outside the current working directory,
+/// which is the scan root. Keeps the file tools safe even when the security
+/// tool gate is disabled.
 fn reject_unsafe_path(p: &str) -> Option<String> {
     let path = Path::new(p);
     if path.is_absolute() || path.components().any(|c| c == Component::ParentDir) {
@@ -15,23 +18,28 @@ fn reject_unsafe_path(p: &str) -> Option<String> {
             "Error: path must be relative (no absolute paths or '..' components)".to_string(),
         );
     }
+    // If the path exists, require its canonical form to stay within the CWD.
+    // A path that exists but cannot be canonicalized/contained is rejected.
+    if path.symlink_metadata().is_ok() {
+        let contained = match (
+            path.canonicalize(),
+            std::env::current_dir().and_then(|c| c.canonicalize()),
+        ) {
+            (Ok(canon), Ok(cwd)) => canon.starts_with(&cwd),
+            _ => false,
+        };
+        if !contained {
+            return Some("Error: path escapes the scan root (symlink not allowed)".to_string());
+        }
+    }
     None
 }
 
 pub fn read_file(path: &str) -> String {
+    if let Some(err) = reject_unsafe_path(path) {
+        return err;
+    }
     let p = Path::new(path);
-    if p.is_absolute() || p.components().any(|c| c == Component::ParentDir) {
-        return "Error: path must be relative (no absolute paths or '..' components)".to_string();
-    }
-    // Defend clone-and-scan: a symlink inside an untrusted repo could point at
-    // host files. Canonicalize and require the target to stay within the CWD.
-    if let (Ok(canon), Ok(cwd)) = (p.canonicalize(), std::env::current_dir()) {
-        if let Ok(cwd_canon) = cwd.canonicalize() {
-            if !canon.starts_with(&cwd_canon) {
-                return "Error: path escapes the scan root (symlink not allowed)".to_string();
-            }
-        }
-    }
     match p.metadata() {
         Err(e) => format!("Error: {}", e),
         Ok(m) if m.is_dir() => format!("Error: '{}' is a directory, not a file", path),
@@ -96,6 +104,7 @@ pub fn grep_code(pattern: &str, path: Option<&str>) -> String {
 
     for entry in WalkBuilder::new(search_root)
         .hidden(false)
+        .follow_links(false)
         .build()
         .flatten()
     {
