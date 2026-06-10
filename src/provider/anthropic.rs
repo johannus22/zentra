@@ -20,6 +20,8 @@ impl AnthropicProvider {
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(false)
             .min_tls_version(reqwest::tls::Version::TLS_1_2)
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .read_timeout(std::time::Duration::from_secs(150))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self {

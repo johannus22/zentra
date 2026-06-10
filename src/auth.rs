@@ -210,7 +210,10 @@ pub async fn exchange_code_with_url(
 ) -> anyhow::Result<OAuthTokens> {
     let redirect_uri = format!("http://localhost:{}/callback", REDIRECT_PORT);
     let url = token_endpoint_url(token_url);
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
     let resp = client
         .post(&url)
         .form(&[
@@ -240,7 +243,10 @@ pub async fn refresh_access_token_with_url(
     token_url: &str,
 ) -> anyhow::Result<OAuthTokens> {
     let url = token_endpoint_url(token_url);
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
     let resp = client
         .post(&url)
         .form(&[
