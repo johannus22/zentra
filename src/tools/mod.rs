@@ -203,6 +203,7 @@ data entry points, security middleware already present, and known safety guarant
                     description: args["description"].as_str().unwrap_or("").to_string(),
                     location: args["location"].as_str().map(str::to_string),
                     recommendation: args["recommendation"].as_str().unwrap_or("").to_string(),
+                    corroborated_by: Vec::new(),
                 };
                 if let Err(e) = state_writer.write_finding(&finding) {
                     return format!("Error writing finding: {}", e);

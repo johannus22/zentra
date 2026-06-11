@@ -76,6 +76,7 @@ fn ui_state_apply_finding_added() {
         description: "desc".to_string(),
         location: Some("src/main.rs:1".to_string()),
         recommendation: "fix it".to_string(),
+        corroborated_by: vec![],
     };
     state.apply_event(ScanEvent::FindingAdded(f));
     assert_eq!(state.findings.len(), 1);
@@ -511,6 +512,7 @@ fn ui_state_select_next_wraps() {
         description: "d".to_string(),
         location: None,
         recommendation: "r".to_string(),
+        corroborated_by: vec![],
     };
     state.apply_event(ScanEvent::FindingAdded(f.clone()));
     state.apply_event(ScanEvent::FindingAdded(f));

@@ -12,63 +12,7 @@ use ratatui::{
 };
 use std::time::Duration;
 
-pub fn parse_findings(raw: &str) -> Vec<Finding> {
-    raw.split("\n\n---\n")
-        .map(|b| b.trim())
-        .filter(|block| block.contains("## ["))
-        .filter_map(parse_finding_block)
-        .collect()
-}
-
-fn parse_finding_block(block: &str) -> Option<Finding> {
-    let mut lines = block.lines();
-    let header = lines.next()?.trim_start_matches('#').trim();
-    let rest = header.strip_prefix('[')?;
-    let (sev_str, title) = rest.split_once(']')?;
-    let title = title.trim().to_string();
-    let severity = parse_severity(sev_str)?;
-
-    let mut scanner = String::new();
-    let mut location = None;
-    let mut description = String::new();
-    let mut recommendation = String::new();
-
-    for line in lines {
-        if let Some(v) = line.strip_prefix("**Scanner:** ") {
-            scanner = v.trim().to_string();
-        } else if let Some(v) = line.strip_prefix("**Location:** ") {
-            location = Some(v.trim().to_string());
-        } else if let Some(v) = line.strip_prefix("**Description:** ") {
-            description = v.trim().to_string();
-        } else if let Some(v) = line.strip_prefix("**Recommendation:** ") {
-            recommendation = v.trim().to_string();
-        }
-    }
-
-    if scanner.is_empty() || description.is_empty() {
-        return None;
-    }
-
-    Some(Finding {
-        scanner,
-        severity,
-        title,
-        description,
-        location,
-        recommendation,
-    })
-}
-
-fn parse_severity(s: &str) -> Option<Severity> {
-    match s {
-        "CRITICAL" => Some(Severity::Critical),
-        "HIGH" => Some(Severity::High),
-        "MEDIUM" => Some(Severity::Medium),
-        "LOW" => Some(Severity::Low),
-        "INFO" => Some(Severity::Info),
-        _ => None,
-    }
-}
+pub use crate::state::parse_findings;
 
 pub async fn run_results() -> Result<()> {
     let raw = match std::fs::read_to_string(".zentra/detailed-findings.md") {
@@ -180,9 +124,17 @@ fn render_results(frame: &mut Frame, state: &mut UiState) {
                 .as_deref()
                 .map(|l| format!(" · {}", l))
                 .unwrap_or_default();
+            let corroborated = if f.corroborated_by.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "\nCorroborated by: {} (independently confirmed)",
+                    f.corroborated_by.join(", ")
+                )
+            };
             format!(
-                "[{}] {}{}\n{}\nFIX: {}",
-                f.severity, f.title, loc, f.description, f.recommendation
+                "[{}] {}{}{}\n{}\nFIX: {}",
+                f.severity, f.title, loc, corroborated, f.description, f.recommendation
             )
         })
         .unwrap_or_default();
@@ -243,10 +195,19 @@ fn render_findings_list(frame: &mut Frame, area: ratatui::layout::Rect, state: &
                     format!("{:<8}", format!("{}", f.severity)),
                     Style::default().fg(sev_color).add_modifier(Modifier::BOLD),
                 ),
-                Span::raw(format!(
-                    "{:<8}",
-                    f.scanner.chars().take(6).collect::<String>()
-                )),
+                Span::raw({
+                    // Show "scanner+N" when corroborated by N other scanners.
+                    let label = if f.corroborated_by.is_empty() {
+                        f.scanner.chars().take(6).collect::<String>()
+                    } else {
+                        format!(
+                            "{}+{}",
+                            f.scanner.chars().take(4).collect::<String>(),
+                            f.corroborated_by.len()
+                        )
+                    };
+                    format!("{:<8}", label)
+                }),
                 Span::raw(format!("{:<width$}", title, width = title_width)),
                 Span::styled(loc, Style::default().fg(Color::DarkGray)),
             ]);

@@ -146,6 +146,17 @@ Delete this file and re-run the scan to retry.",
             }
         }
 
+        // Phase 2.5: correlate/dedup findings before the report consumes them.
+        // Best-effort — never fatal, and never drops findings on failure.
+        if scanners.contains(&ScannerType::Report) {
+            let raw = self.state_writer.read_findings_raw().unwrap_or_default();
+            let parsed = crate::state::parse_findings(&raw);
+            if parsed.len() > 1 {
+                let merged = crate::agent::correlation::correlate(&self.provider, parsed).await;
+                let _ = self.state_writer.rewrite_findings(&merged);
+            }
+        }
+
         // Phase 3: Report — sequential, runs last
         if scanners.contains(&ScannerType::Report) {
             let _ = self
