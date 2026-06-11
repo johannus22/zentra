@@ -8,6 +8,22 @@ use zentra_cli::{
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Global crash/error log (~/.zentra/logs/zentra.log). On by default; opt out
+    // with ZENTRA_NO_ERROR_LOG. Best-effort: failure to set it up is non-fatal.
+    let log_enabled = std::env::var("ZENTRA_NO_ERROR_LOG").is_err();
+    if let Ok(dir) = zentra_cli::config::global_zentra_dir() {
+        zentra_cli::logging::init(&dir, log_enabled);
+        zentra_cli::logging::install_panic_hook();
+    }
+
+    let result = run().await;
+    if let Err(e) = &result {
+        zentra_cli::logging::error("cli", format!("{e:#}"));
+    }
+    result
+}
+
+async fn run() -> anyhow::Result<()> {
     if std::env::args().len() == 1 {
         let mut last_error: Option<String> = None;
 
@@ -68,6 +84,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 MenuAction::CloneAndScan(url) => {
                     if let Err(e) = commands::clone::run_clone_and_scan(url).await {
+                        zentra_cli::logging::error("menu", format!("clone-and-scan failed: {e:#}"));
                         last_error = Some(e.to_string());
                     }
                     // loop continues; error (if any) renders on the next menu draw

@@ -24,6 +24,14 @@ pub struct GlobalConfig {
     pub output_dir: Option<String>,
 }
 
+/// Resolve the global zentra directory (`~/.zentra`). Centralizes the inline
+/// `home_dir().join(".zentra")` pattern used across config/keychain modules.
+pub fn global_zentra_dir() -> Result<PathBuf> {
+    let home =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
+    Ok(home.join(".zentra"))
+}
+
 /// Expand a leading `~` / `~/` / `~\` to the user's home directory.
 fn expand_tilde(path: &str) -> PathBuf {
     if path == "~" {
