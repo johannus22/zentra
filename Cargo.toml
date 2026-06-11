@@ -3,6 +3,7 @@ name = "zentra-cli"
 version = "0.8.26"
 edition = "2021"
 license = "Apache-2.0"
+repository = "https://github.com/johannus22/zentra-cli"
 
 [[bin]]
 name = "zentra"
@@ -65,3 +66,8 @@ keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

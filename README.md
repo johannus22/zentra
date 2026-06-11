@@ -14,7 +14,37 @@ The binary is named `zentra`.
 - Markdown and JSON output under `.zentra/`.
 - Encrypted-at-rest credential storage (DPAPI on Windows, `0600` files on Unix).
 
-## Install from source
+## Installation
+
+### Quick install (recommended)
+
+Prebuilt binaries — no Rust toolchain, no cloning, no build step.
+
+**Linux and macOS:**
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/johannus22/zentra-cli/releases/latest/download/zentra-cli-installer.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/johannus22/zentra-cli/releases/latest/download/zentra-cli-installer.ps1 | iex"
+```
+
+The installer detects your OS and CPU architecture, downloads the matching release binary, installs `zentra`, and puts it on your `PATH`. Open a new terminal afterward (or follow the on-screen instructions) so `zentra` is available, then verify:
+
+```bash
+zentra --help
+```
+
+Prefer to do it by hand? Download a build directly from the [Releases page](https://github.com/johannus22/zentra-cli/releases) and extract the `zentra` binary.
+
+> **Linux note:** the binary dynamically links `libdbus` for OS keyring access. Desktop distributions already ship it; on a minimal or headless image install it first (`sudo apt-get install -y libdbus-1-3`, or your distro's equivalent). You can also set `ZENTRA_NO_OS_KEYCHAIN=1` to use the encrypted file-based credential store.
+
+A configured LLM provider key is still required unless you use a keyless/local provider — see [Quick start](#quick-start).
+
+### Install from source
 
 Prerequisites:
 
