@@ -130,6 +130,10 @@ Delete this file and re-run the scan to retry.",
                 match handle.await {
                     Ok(Ok(())) | Ok(Err(_)) => {}
                     Err(e) => {
+                        crate::logging::error(
+                            "scan",
+                            format!("scanner={scanner_type:?} task failed: {e}"),
+                        );
                         self.tx
                             .send(ScanEvent::Error {
                                 scanner: scanner_type,

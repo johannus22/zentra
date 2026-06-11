@@ -6,5 +6,5 @@ pub mod secret_store;
 pub mod validation;
 
 pub use custom_providers::CustomProvider;
-pub use global::{AuthMethod, GlobalConfig, ProviderProfile};
+pub use global::{global_zentra_dir, AuthMethod, GlobalConfig, ProviderProfile};
 pub use project::ProjectConfig;
