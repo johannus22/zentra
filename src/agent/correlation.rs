@@ -158,10 +158,19 @@ Call report_clusters with groups of indices that describe the same underlying vu
     );
 
     let messages = vec![AgentMessage::User(user)];
-    let resp = provider
+    let resp = match provider
         .complete_with_tools(system, &messages, std::slice::from_ref(&tool), 1024, None)
         .await
-        .ok()?;
+    {
+        Ok(r) => r,
+        Err(e) => {
+            crate::logging::warn(
+                "scan",
+                format!("finding correlation skipped: LLM call failed: {e}"),
+            );
+            return None;
+        }
+    };
 
     let call = resp
         .tool_calls

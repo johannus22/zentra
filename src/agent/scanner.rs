@@ -122,6 +122,10 @@ for example, do not flag SQL injection if the ORM listed here auto-parameterises
             {
                 Ok(r) => r,
                 Err(e) => {
+                    crate::logging::error(
+                        "scan",
+                        format!("scanner={:?} LLM request failed: {e}", self.scanner_type),
+                    );
                     self.tx
                         .send(ScanEvent::Error {
                             scanner: self.scanner_type,
@@ -237,6 +241,13 @@ for example, do not flag SQL injection if the ORM listed here auto-parameterises
                     category: "prompt_injection".to_string(),
                     detail: "injection threshold exceeded — aborting scanner".to_string(),
                 });
+                crate::logging::warn(
+                    "scan",
+                    format!(
+                        "scanner={:?} aborted: repeated prompt-injection attempts",
+                        self.scanner_type
+                    ),
+                );
                 self.tx
                     .send(ScanEvent::Error {
                         scanner: self.scanner_type,
