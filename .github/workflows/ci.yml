@@ -14,6 +14,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # CI has no usable OS keychain: macOS shows an interactive "allow access" prompt
+  # (hangs headless), Linux has no secret-service daemon. Use the 0600-plaintext
+  # fallback so secret_store tests are deterministic. (No effect on Windows/DPAPI.)
+  ZENTRA_NO_OS_KEYCHAIN: "1"
 
 jobs:
   test:
