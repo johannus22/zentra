@@ -1221,7 +1221,7 @@ fn render_banner_header(frame: &mut Frame, area: ratatui::layout::Rect, state: &
             Style::default().fg(Color::Green),
         )]),
         Line::from(vec![Span::styled(
-            state.active_profile.chars().take(22).collect::<String>(),
+            format!("v{}", env!("CARGO_PKG_VERSION")),
             Style::default().fg(Color::DarkGray),
         )]),
         Line::from(vec![Span::styled(

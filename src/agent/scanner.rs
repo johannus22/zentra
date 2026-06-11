@@ -122,10 +122,14 @@ for example, do not flag SQL injection if the ORM listed here auto-parameterises
             {
                 Ok(r) => r,
                 Err(e) => {
-                    crate::logging::error(
-                        "scan",
-                        format!("scanner={:?} LLM request failed: {e}", self.scanner_type),
-                    );
+                    // A cancelled request is user/system-initiated, not a failure
+                    // worth recording — skip the crash log on cancellation.
+                    if !self.cancel_token.is_cancelled() {
+                        crate::logging::error(
+                            "scan",
+                            format!("scanner={:?} LLM request failed: {e}", self.scanner_type),
+                        );
+                    }
                     self.tx
                         .send(ScanEvent::Error {
                             scanner: self.scanner_type,

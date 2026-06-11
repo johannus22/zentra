@@ -1,5 +1,5 @@
-//! Global crash/error log — human-readable debug telemetry written to
-//! `~/.zentra/logs/zentra.log`.
+//! Global crash/error log — human-readable debug telemetry written to a
+//! per-session file `~/.zentra/logs/zentra-<timestamp>-<pid>.log`.
 //!
 //! This is intentionally distinct from [`crate::security::audit_log`], which
 //! SHA-256-hashes every argument for tamper-evidence and is therefore useless
@@ -22,10 +22,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-const LOG_FILE: &str = "zentra.log";
-const BACKUP_FILE: &str = "zentra.log.1";
-/// Rotate once the active log passes this size, keeping a single backup.
-const DEFAULT_MAX_BYTES: u64 = 5 * 1024 * 1024;
+/// Keep at most this many session log files; older ones are pruned on startup.
+const MAX_SESSION_LOGS: usize = 20;
 
 static LOG: OnceLock<CrashLog> = OnceLock::new();
 
@@ -47,37 +45,26 @@ impl Level {
     }
 }
 
-/// Append-only, size-rotated plaintext log. Holds its file handle behind a
-/// `Mutex` so it can be shared immutably (e.g. via a global `OnceLock`) while
-/// still writing.
+/// Append-only plaintext log for a single session. Holds its file handle behind
+/// a `Mutex` so it can be shared immutably (e.g. via a global `OnceLock`) while
+/// still writing. The file is created lazily on the first entry, so a clean run
+/// that logs nothing leaves no file behind.
 pub struct CrashLog {
     path: PathBuf,
-    backup_path: PathBuf,
-    max_bytes: u64,
-    /// `None` when disabled or when the file could not be opened.
+    enabled: bool,
+    /// `None` until the first write opens the file (or stays `None` if disabled
+    /// or the file can't be opened).
     writer: Mutex<Option<File>>,
 }
 
 impl CrashLog {
-    /// Create a log writing to `<logs_dir>/zentra.log`. When `enabled` is
-    /// false, or the directory/file can't be opened, the log is a silent no-op.
+    /// Create a log writing to `<logs_dir>/zentra-<timestamp>-<pid>.log`. When
+    /// `enabled` is false the log is a silent no-op and no file is created.
     pub fn new(logs_dir: &Path, enabled: bool) -> Self {
-        Self::with_max_bytes(logs_dir, enabled, DEFAULT_MAX_BYTES)
-    }
-
-    fn with_max_bytes(logs_dir: &Path, enabled: bool, max_bytes: u64) -> Self {
-        let path = logs_dir.join(LOG_FILE);
-        let backup_path = logs_dir.join(BACKUP_FILE);
-        let writer = if enabled {
-            open_log_file(logs_dir, &path)
-        } else {
-            None
-        };
         Self {
-            path,
-            backup_path,
-            max_bytes,
-            writer: Mutex::new(writer),
+            path: logs_dir.join(session_filename()),
+            enabled,
+            writer: Mutex::new(None),
         }
     }
 
@@ -97,11 +84,19 @@ impl CrashLog {
     }
 
     fn write_entry(&self, level: Level, component: &str, msg: &str) {
+        if !self.enabled {
+            return;
+        }
         let Ok(mut guard) = self.writer.lock() else {
             return;
         };
+        // Open the session file lazily on the first entry.
         if guard.is_none() {
-            return;
+            let logs_dir = self.path.parent().unwrap_or_else(|| Path::new("."));
+            *guard = open_log_file(logs_dir, &self.path);
+            if guard.is_none() {
+                return;
+            }
         }
 
         let ts = Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
@@ -115,39 +110,13 @@ impl CrashLog {
             buf.push('\n');
         }
 
-        // Write + flush in a scope so the `&mut File` borrow ends before we may
-        // need `&mut guard` to rotate.
-        let over_limit = {
-            let Some(file) = guard.as_mut() else {
-                return;
-            };
-            if file.write_all(buf.as_bytes()).is_err() {
-                return;
-            }
-            let _ = file.flush();
-            file.metadata()
-                .map(|m| m.len() >= self.max_bytes)
-                .unwrap_or(false)
+        let Some(file) = guard.as_mut() else {
+            return;
         };
-
-        if over_limit {
-            self.rotate(&mut guard);
+        if file.write_all(buf.as_bytes()).is_err() {
+            return;
         }
-    }
-
-    fn rotate(&self, guard: &mut Option<File>) {
-        // Drop the current handle so the rename can proceed (Windows can't
-        // rename an open file), then reopen a fresh empty log.
-        *guard = None;
-        let _ = fs::rename(&self.path, &self.backup_path);
-        if let Some(parent) = self.path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        *guard = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .ok();
+        let _ = file.flush();
     }
 }
 
@@ -156,10 +125,51 @@ fn open_log_file(logs_dir: &Path, path: &Path) -> Option<File> {
     OpenOptions::new().create(true).append(true).open(path).ok()
 }
 
-/// Initialize the process-global crash log under `<zentra_dir>/logs/`. Safe to
-/// call once; subsequent calls are ignored.
+/// Filename for this session's log: `zentra-<UTC timestamp>-<pid>.log`. The
+/// timestamp uses no colons so it is valid on Windows, and is lexically
+/// sortable (chronological); the pid avoids same-second collisions.
+fn session_filename() -> String {
+    format!(
+        "zentra-{}-{}.log",
+        Utc::now().format("%Y-%m-%dT%H%M%SZ"),
+        std::process::id()
+    )
+}
+
+/// Delete the oldest session logs, keeping the `keep` most recent. Best-effort:
+/// any IO error is ignored (logging must never crash or block). Newest is
+/// decided by filename, which sorts chronologically thanks to [`session_filename`].
+fn prune_old_logs(logs_dir: &Path, keep: usize) {
+    let Ok(entries) = fs::read_dir(logs_dir) else {
+        return;
+    };
+    let mut logs: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("zentra-") && n.ends_with(".log"))
+                .unwrap_or(false)
+        })
+        .collect();
+    if logs.len() <= keep {
+        return;
+    }
+    logs.sort(); // ascending by path (chronological); oldest first
+    let remove_count = logs.len() - keep;
+    for path in logs.into_iter().take(remove_count) {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// Initialize the process-global crash log under `<zentra_dir>/logs/`. Prunes
+/// old session logs first. Safe to call once; subsequent calls are ignored.
 pub fn init(zentra_dir: &Path, enabled: bool) {
     let logs_dir = zentra_dir.join("logs");
+    if enabled {
+        prune_old_logs(&logs_dir, MAX_SESSION_LOGS);
+    }
     let _ = LOG.set(CrashLog::new(&logs_dir, enabled));
 }
 
@@ -302,7 +312,23 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let log = CrashLog::new(tmp.path(), false);
         log.error("scan", "boom");
-        assert!(!tmp.path().join(LOG_FILE).exists());
+        assert!(!log.path().exists());
+    }
+
+    #[test]
+    fn clean_run_creates_no_file() {
+        // Enabled but nothing logged → file is opened lazily, so none exists.
+        let tmp = tempfile::tempdir().unwrap();
+        let log = CrashLog::new(tmp.path(), true);
+        assert!(!log.path().exists());
+    }
+
+    #[test]
+    fn session_filename_is_windows_safe_and_prefixed() {
+        let name = session_filename();
+        assert!(name.starts_with("zentra-"), "got: {name}");
+        assert!(name.ends_with(".log"), "got: {name}");
+        assert!(!name.contains(':'), "colons are invalid on Windows: {name}");
     }
 
     #[test]
@@ -322,17 +348,38 @@ mod tests {
     }
 
     #[test]
-    fn rotation_creates_backup_and_fresh_log() {
+    fn prune_keeps_newest_n() {
         let tmp = tempfile::tempdir().unwrap();
-        // Tiny limit so a couple of entries trip rotation.
-        let log = CrashLog::with_max_bytes(tmp.path(), true, 64);
-        for i in 0..20 {
-            log.error(
-                "scan",
-                &format!("failure number {i} with some padding text"),
-            );
+        let dir = tmp.path();
+        // Names sort chronologically; create 5 "sessions".
+        let names = [
+            "zentra-2026-06-11T080000Z-1.log",
+            "zentra-2026-06-11T081000Z-2.log",
+            "zentra-2026-06-11T082000Z-3.log",
+            "zentra-2026-06-11T083000Z-4.log",
+            "zentra-2026-06-11T084000Z-5.log",
+        ];
+        for n in &names {
+            fs::write(dir.join(n), b"x").unwrap();
         }
-        assert!(tmp.path().join(BACKUP_FILE).exists(), "no backup created");
-        assert!(tmp.path().join(LOG_FILE).exists(), "no active log");
+        // An unrelated file must be left untouched.
+        fs::write(dir.join("notes.txt"), b"keep me").unwrap();
+
+        prune_old_logs(dir, 2);
+
+        assert!(!dir.join(names[0]).exists(), "oldest should be pruned");
+        assert!(!dir.join(names[1]).exists());
+        assert!(!dir.join(names[2]).exists());
+        assert!(dir.join(names[3]).exists(), "newest 2 should remain");
+        assert!(dir.join(names[4]).exists());
+        assert!(dir.join("notes.txt").exists(), "non-log untouched");
+    }
+
+    #[test]
+    fn prune_noop_when_under_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("zentra-2026-06-11T080000Z-1.log"), b"x").unwrap();
+        prune_old_logs(tmp.path(), 20);
+        assert!(tmp.path().join("zentra-2026-06-11T080000Z-1.log").exists());
     }
 }

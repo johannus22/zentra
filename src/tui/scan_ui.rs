@@ -13,6 +13,25 @@ use ratatui::{
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+/// Format a token count compactly for the scan UI: `999`, `12.9k`, `13M`.
+/// One decimal place, with a trailing `.0` dropped (so `13000` → `13k`).
+fn fmt_tokens(n: u32) -> String {
+    let n = n as f64;
+    let (val, suffix) = if n < 1_000.0 {
+        return format!("{}", n as u64);
+    } else if n < 1_000_000.0 {
+        (n / 1_000.0, "k")
+    } else {
+        (n / 1_000_000.0, "M")
+    };
+    let rounded = (val * 10.0).round() / 10.0;
+    if rounded.fract().abs() < f64::EPSILON {
+        format!("{}{}", rounded as u64, suffix)
+    } else {
+        format!("{:.1}{}", rounded, suffix)
+    }
+}
+
 pub fn popup_items(scan_done: bool) -> Vec<&'static str> {
     let mut items = vec![
         "Change Provider and Restart Scan",
@@ -250,14 +269,14 @@ fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
     };
 
     let left_text = format!(
-        "{}\n{}{} · peak: {} / {} {}  total: {}{}",
+        "{}\n{}{} · peak tok/agent: {} / {} {}  total tokens: {}{}",
         banner,
         state.model_info,
         mcp_badge,
-        state.peak_input_tokens,
-        state.context_window,
+        fmt_tokens(state.peak_input_tokens),
+        fmt_tokens(state.context_window),
         bar,
-        state.total_tokens,
+        fmt_tokens(state.total_tokens),
         experimental_warning,
     );
 
@@ -659,4 +678,21 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
     Rect::new(x, y, width.min(area.width), height.min(area.height))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fmt_tokens;
+
+    #[test]
+    fn fmt_tokens_abbreviates_as_expected() {
+        assert_eq!(fmt_tokens(0), "0");
+        assert_eq!(fmt_tokens(999), "999");
+        assert_eq!(fmt_tokens(1_000), "1k");
+        assert_eq!(fmt_tokens(12_900), "12.9k");
+        assert_eq!(fmt_tokens(13_000), "13k");
+        assert_eq!(fmt_tokens(200_000), "200k");
+        assert_eq!(fmt_tokens(12_500_000), "12.5M");
+        assert_eq!(fmt_tokens(13_000_000), "13M");
+    }
 }
