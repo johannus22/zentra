@@ -22,6 +22,7 @@ pub fn write_secret(path: &Path, plaintext: &[u8]) -> Result<()> {
     {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::PermissionsExt; // for Permissions::from_mode
         // Create with 0o600 from the start — no world-readable TOCTOU window.
         let mut f = std::fs::OpenOptions::new()
             .create(true)

@@ -54,8 +54,12 @@ windows = { version = "0.58", features = [
 ] }
 
 # Real OS secret-store backends for the envelope-encryption data key (src/config/secret_store.rs).
-# keyring 3.x uses a no-op mock store unless a backend feature is enabled; on Windows the base
+# keyring 3.x is a no-op mock unless a backend feature is enabled; on Windows the base
 # `keyring = "3"` dep stays featureless (DPAPI is used instead, so the mock is harmless).
+# NOTE: in keyring 3.6 `sync-secret-service` = the blocking `dbus-secret-service` backend, which
+# links the system libdbus (`libdbus-1-dev` at build time). We use the sync backend deliberately —
+# keyring's API is called synchronously from inside the tokio runtime, and the async/zbus backend
+# would require block-on-in-runtime. CI installs libdbus-1-dev on Linux (see ci.yml).
 [target.'cfg(target_os = "linux")'.dependencies]
 keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
 
