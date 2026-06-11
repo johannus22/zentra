@@ -65,22 +65,24 @@ pub fn get_key(profile: &str) -> Result<Option<String>> {
             return Ok(Some(key.trim().to_string()));
         }
     }
-    // Backward compatibility: fall back to any key previously stored in the OS keychain.
-    let entry = keyring::Entry::new(&service_name(profile), "api_key")
-        .context("Failed to access OS keychain")?;
-    match entry.get_password() {
-        Ok(key) => Ok(Some(key)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(anyhow::anyhow!("Keychain read failed: {}", e)),
+    // Backward compatibility: best-effort read of a key left in the OS keychain by an
+    // older version. The file above is the source of truth; the keychain is unreliable
+    // and may be entirely unavailable (headless Linux with no secret-service daemon,
+    // locked keyring), so any failure degrades to "no key" rather than erroring.
+    if let Ok(entry) = keyring::Entry::new(&service_name(profile), "api_key") {
+        if let Ok(key) = entry.get_password() {
+            return Ok(Some(key));
+        }
     }
+    Ok(None)
 }
 
 pub fn delete_key(profile: &str) -> Result<()> {
-    let entry = keyring::Entry::new(&service_name(profile), "api_key")
-        .context("Failed to access OS keychain")?;
-    match entry.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => {}
-        Err(e) => return Err(anyhow::anyhow!("Keychain delete failed: {}", e)),
+    // Best-effort: drop any stale keychain entry from an older version. The keychain
+    // may be unavailable (headless Linux with no secret-service, locked keyring), so
+    // ignore errors — removing the key file below is the authoritative operation.
+    if let Ok(entry) = keyring::Entry::new(&service_name(profile), "api_key") {
+        let _ = entry.delete_credential();
     }
     if let Some(path) = key_file_path(profile) {
         match std::fs::remove_file(&path) {
@@ -147,12 +149,12 @@ pub fn delete_oauth_tokens(profile: &str) -> Result<()> {
             Err(e) => return Err(anyhow::anyhow!("Failed to remove OAuth token file: {}", e)),
         }
     }
-    let entry = keyring::Entry::new(&service_name(profile), "oauth_tokens")
-        .context("Failed to access OS keychain")?;
-    match entry.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(anyhow::anyhow!("Keychain delete failed: {}", e)),
+    // Best-effort stale-entry cleanup, same rationale as delete_key: the keychain
+    // may be unavailable, and the file removal above is the authoritative operation.
+    if let Ok(entry) = keyring::Entry::new(&service_name(profile), "oauth_tokens") {
+        let _ = entry.delete_credential();
     }
+    Ok(())
 }
 
 #[cfg(test)]
