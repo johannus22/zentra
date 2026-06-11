@@ -82,6 +82,7 @@ fn sample_finding(severity: Severity, title: &str) -> Finding {
         description: "User-controlled input reaches SQL query construction.".to_string(),
         location: Some("src/auth.rs:42".to_string()),
         recommendation: "Use parameterized queries.".to_string(),
+        corroborated_by: vec![],
     }
 }
 

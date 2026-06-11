@@ -36,6 +36,7 @@ fn state_writer_creates_findings_file() {
             description: "User input concatenated into SQL".to_string(),
             location: Some("src/db.rs:42".to_string()),
             recommendation: "Use parameterized queries.".to_string(),
+            corroborated_by: vec![],
         })
         .unwrap();
 
@@ -65,6 +66,7 @@ fn state_writer_appends_multiple_findings() {
                 description: "desc".to_string(),
                 location: None,
                 recommendation: "fix it".to_string(),
+                corroborated_by: vec![],
             })
             .unwrap();
     }
@@ -89,6 +91,7 @@ fn state_writer_sorts_findings_by_severity_in_markdown() {
             description: "low".to_string(),
             location: None,
             recommendation: "fix low".to_string(),
+            corroborated_by: vec![],
         })
         .unwrap();
     writer
@@ -99,6 +102,7 @@ fn state_writer_sorts_findings_by_severity_in_markdown() {
             description: "critical".to_string(),
             location: None,
             recommendation: "fix critical".to_string(),
+            corroborated_by: vec![],
         })
         .unwrap();
 
@@ -165,6 +169,7 @@ fn read_findings_raw_returns_written_findings() {
             description: "desc".to_string(),
             location: None,
             recommendation: "fix".to_string(),
+            corroborated_by: vec![],
         })
         .unwrap();
 
@@ -767,4 +772,174 @@ fn list_files_rejects_symlinked_root_escaping_cwd() {
     let out = list_files("out", None);
     std::env::set_current_dir(prev).unwrap();
     assert!(out.contains("escapes the scan root"), "got: {out}");
+}
+
+// ---- Finding correlation / corroboration ----
+
+#[test]
+fn finding_block_roundtrips_corroboration() {
+    let dir = TempDir::new().unwrap();
+    let writer = StateWriter::new(dir.path()).unwrap();
+    writer
+        .write_finding(&Finding {
+            scanner: "sast".to_string(),
+            severity: Severity::High,
+            title: "Missing auth on admin route".to_string(),
+            description: "No authorization guard.".to_string(),
+            location: Some("src/admin.rs:5".to_string()),
+            recommendation: "Add an auth middleware.".to_string(),
+            corroborated_by: vec!["threat_model".to_string(), "api_scan".to_string()],
+        })
+        .unwrap();
+
+    let raw = writer.read_findings_raw().unwrap();
+    assert!(raw.contains("**Corroborated by:** threat_model, api_scan"));
+
+    let parsed = zentra_cli::state::parse_findings(&raw);
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(
+        parsed[0].corroborated_by,
+        vec!["threat_model".to_string(), "api_scan".to_string()]
+    );
+}
+
+#[test]
+fn legacy_markdown_without_corroboration_parses() {
+    // Block in the pre-feature format — no "Corroborated by" line.
+    let legacy = "## [HIGH] Old finding\n\
+**Scanner:** sast\n\
+**Location:** src/x.rs:1\n\
+**Description:** something\n\
+**Recommendation:** fix it\n\n---\n";
+    let parsed = zentra_cli::state::parse_findings(legacy);
+    assert_eq!(parsed.len(), 1);
+    assert!(parsed[0].corroborated_by.is_empty());
+}
+
+#[test]
+fn singleton_finding_markdown_has_no_corroboration_line() {
+    let dir = TempDir::new().unwrap();
+    let writer = StateWriter::new(dir.path()).unwrap();
+    writer
+        .write_finding(&Finding {
+            scanner: "sast".to_string(),
+            severity: Severity::Low,
+            title: "Lone finding".to_string(),
+            description: "desc".to_string(),
+            location: None,
+            recommendation: "fix".to_string(),
+            corroborated_by: vec![],
+        })
+        .unwrap();
+    let raw = writer.read_findings_raw().unwrap();
+    assert!(
+        !raw.contains("Corroborated by"),
+        "singleton output must be unchanged, got:\n{raw}"
+    );
+}
+
+#[tokio::test]
+async fn correlate_merges_semantic_duplicates_via_llm() {
+    let server = MockServer::start().await;
+    // One LLM call returns a cluster joining the two findings.
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "report_clusters",
+                            "arguments": "{\"clusters\": [[0, 1]]}"
+                        }
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
+        })))
+        .mount(&server)
+        .await;
+
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(OpenAICompatProvider::new(
+        server.uri(),
+        "gpt-4o".to_string(),
+        "key".to_string(),
+    ));
+
+    // Distinct wording + locations so the deterministic pre-pass does NOT merge them;
+    // only the LLM clustering can.
+    let findings = vec![
+        Finding {
+            scanner: "threat_model".to_string(),
+            severity: Severity::Critical,
+            title: "Broken access control on admin surface".to_string(),
+            description: "Privileged routes lack authorization.".to_string(),
+            location: None,
+            recommendation: "Enforce RBAC.".to_string(),
+            corroborated_by: vec![],
+        },
+        Finding {
+            scanner: "sast".to_string(),
+            severity: Severity::Medium,
+            title: "Missing authorization guard".to_string(),
+            description: "Handler does not check the caller's role.".to_string(),
+            location: Some("src/admin.rs:5".to_string()),
+            recommendation: "Add a role check.".to_string(),
+            corroborated_by: vec![],
+        },
+    ];
+
+    let out = zentra_cli::agent::correlation::correlate(&provider, findings).await;
+    assert_eq!(out.len(), 1, "the two findings should collapse into one");
+    // Primary prefers the member with a concrete location (sast).
+    assert_eq!(out[0].scanner, "sast");
+    assert_eq!(out[0].location.as_deref(), Some("src/admin.rs:5"));
+    // Highest severity is preserved.
+    assert!(matches!(out[0].severity, Severity::Critical));
+    // The other scanner is recorded as corroborating.
+    assert_eq!(out[0].corroborated_by, vec!["threat_model".to_string()]);
+}
+
+#[tokio::test]
+async fn correlate_preserves_findings_on_llm_failure() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("bad request"))
+        .mount(&server)
+        .await;
+
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(OpenAICompatProvider::new(
+        server.uri(),
+        "gpt-4o".to_string(),
+        "key".to_string(),
+    ));
+
+    let findings = vec![
+        Finding {
+            scanner: "threat_model".to_string(),
+            severity: Severity::High,
+            title: "Issue one".to_string(),
+            description: "d1".to_string(),
+            location: None,
+            recommendation: "r1".to_string(),
+            corroborated_by: vec![],
+        },
+        Finding {
+            scanner: "sast".to_string(),
+            severity: Severity::Low,
+            title: "Completely different issue two".to_string(),
+            description: "d2".to_string(),
+            location: Some("src/two.rs:9".to_string()),
+            recommendation: "r2".to_string(),
+            corroborated_by: vec![],
+        },
+    ];
+
+    let out = zentra_cli::agent::correlation::correlate(&provider, findings).await;
+    assert_eq!(out.len(), 2, "no findings may be dropped when correlation fails");
 }

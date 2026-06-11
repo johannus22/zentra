@@ -46,6 +46,16 @@ impl StateWriter {
         Ok(())
     }
 
+    /// Replace the entire findings file with the given set, then re-sort by
+    /// severity. Used by the correlation pass to write back the deduped findings.
+    pub fn rewrite_findings(&self, findings: &[Finding]) -> Result<()> {
+        let path = self.zentra_dir.join("detailed-findings.md");
+        let body: String = findings.iter().map(format_finding_block).collect();
+        std::fs::write(&path, body)?;
+        self.sort_findings_file()?;
+        Ok(())
+    }
+
     pub fn read_findings_raw(&self) -> Result<String> {
         let path = self.zentra_dir.join("detailed-findings.md");
         match std::fs::read_to_string(&path) {
@@ -105,15 +115,93 @@ fn format_finding_block(finding: &Finding) -> String {
         .map(|l| format!("**Location:** {}\n", l))
         .unwrap_or_default();
 
+    // Emitted only when present, so singleton findings produce identical output.
+    let corroborated_line = if finding.corroborated_by.is_empty() {
+        String::new()
+    } else {
+        format!("**Corroborated by:** {}\n", finding.corroborated_by.join(", "))
+    };
+
     format!(
-        "## [{}] {}\n**Scanner:** {}\n{}**Description:** {}\n**Recommendation:** {}\n\n---\n",
+        "## [{}] {}\n**Scanner:** {}\n{}{}**Description:** {}\n**Recommendation:** {}\n\n---\n",
         finding.severity,
         finding.title,
         finding.scanner,
+        corroborated_line,
         location_line,
         finding.description,
         finding.recommendation,
     )
+}
+
+/// Parse the markdown produced by [`format_finding_block`] back into findings.
+/// Inverse of `format_finding_block`; kept beside it so the on-disk format has a
+/// single owner. Blocks missing required fields are skipped; a missing
+/// `**Corroborated by:**` line (legacy files) yields an empty `corroborated_by`.
+pub fn parse_findings(raw: &str) -> Vec<Finding> {
+    raw.split("\n\n---\n")
+        .map(str::trim)
+        .filter(|block| block.contains("## ["))
+        .filter_map(parse_finding_block)
+        .collect()
+}
+
+fn parse_finding_block(block: &str) -> Option<Finding> {
+    let mut lines = block.lines();
+    let header = lines.next()?.trim_start_matches('#').trim();
+    let rest = header.strip_prefix('[')?;
+    let (sev_str, title) = rest.split_once(']')?;
+    let title = title.trim().to_string();
+    let severity = parse_severity(sev_str)?;
+
+    let mut scanner = String::new();
+    let mut location = None;
+    let mut description = String::new();
+    let mut recommendation = String::new();
+    let mut corroborated_by = Vec::new();
+
+    for line in lines {
+        if let Some(v) = line.strip_prefix("**Scanner:** ") {
+            scanner = v.trim().to_string();
+        } else if let Some(v) = line.strip_prefix("**Corroborated by:** ") {
+            corroborated_by = v
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        } else if let Some(v) = line.strip_prefix("**Location:** ") {
+            location = Some(v.trim().to_string());
+        } else if let Some(v) = line.strip_prefix("**Description:** ") {
+            description = v.trim().to_string();
+        } else if let Some(v) = line.strip_prefix("**Recommendation:** ") {
+            recommendation = v.trim().to_string();
+        }
+    }
+
+    if scanner.is_empty() || description.is_empty() {
+        return None;
+    }
+
+    Some(Finding {
+        scanner,
+        severity,
+        title,
+        description,
+        location,
+        recommendation,
+        corroborated_by,
+    })
+}
+
+fn parse_severity(s: &str) -> Option<Severity> {
+    match s {
+        "CRITICAL" => Some(Severity::Critical),
+        "HIGH" => Some(Severity::High),
+        "MEDIUM" => Some(Severity::Medium),
+        "LOW" => Some(Severity::Low),
+        "INFO" => Some(Severity::Info),
+        _ => None,
+    }
 }
 
 fn finding_block_order(block: &str) -> u8 {

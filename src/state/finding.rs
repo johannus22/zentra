@@ -43,4 +43,9 @@ pub struct Finding {
     pub description: String,
     pub location: Option<String>,
     pub recommendation: String,
+    /// Other scanners that independently reported the same underlying issue.
+    /// Empty for singleton findings. Populated by the correlation pass as a
+    /// confidence signal (independent corroboration ⇒ likely true positive).
+    #[serde(default)]
+    pub corroborated_by: Vec<String>,
 }
