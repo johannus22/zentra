@@ -91,3 +91,9 @@ In memory, provider API keys and the pentest password are wrapped in
 `zeroize::Zeroizing` so the process's own copies are wiped on drop — note this is
 defense-in-depth, not a guarantee that transient copies (e.g. inside the HTTP
 client) never linger.
+
+Set `ZENTRA_NO_OS_KEYCHAIN=1` to skip the OS secret store entirely and use the
+`0600`-plaintext fallback. This is for headless/CI environments where the keychain
+is unusable — macOS shows an interactive "allow access" prompt (which blocks with
+no GUI to answer) and headless Linux has no secret-service daemon. CI sets it so
+the `secret_store` tests are deterministic.

@@ -49,11 +49,25 @@ pub fn read_secret(path: &Path) -> Result<Vec<u8>> {
     decrypt(bytes)
 }
 
+/// When set, skip the OS secret store entirely and use the 0o600-plaintext
+/// fallback — identical to when the store is genuinely unavailable. Intended for
+/// CI and headless environments where the OS keychain hangs (macOS shows an
+/// interactive "allow access" prompt with no GUI to answer) or is absent (Linux
+/// without a secret-service daemon).
+#[cfg(not(windows))]
+fn os_secret_store_disabled() -> bool {
+    std::env::var_os("ZENTRA_NO_OS_KEYCHAIN").is_some()
+}
+
 #[cfg(not(windows))]
 fn encrypt(plaintext: &[u8]) -> Result<Vec<u8>> {
     // Envelope-encrypt under a DEK held in the OS secret store. If the store is
-    // unavailable (headless/SSH/CI, locked keyring), fall back to plaintext —
-    // write_secret still applies 0o600. Mirrors the Windows DPAPI design.
+    // unavailable (headless/SSH/CI, locked keyring) — or explicitly disabled via
+    // ZENTRA_NO_OS_KEYCHAIN — fall back to plaintext; write_secret still applies
+    // 0o600. Mirrors the Windows DPAPI design.
+    if os_secret_store_disabled() {
+        return Ok(plaintext.to_vec());
+    }
     match envelope::load_or_create_dek() {
         Ok(key) => envelope::seal(&key, plaintext),
         Err(_) => Ok(plaintext.to_vec()),
@@ -63,6 +77,12 @@ fn encrypt(plaintext: &[u8]) -> Result<Vec<u8>> {
 #[cfg(not(windows))]
 fn decrypt(bytes: Vec<u8>) -> Result<Vec<u8>> {
     if envelope::looks_like_envelope(&bytes) {
+        if os_secret_store_disabled() {
+            anyhow::bail!(
+                "Secret is envelope-encrypted but ZENTRA_NO_OS_KEYCHAIN is set — unset it to read \
+                 this key from the OS secret store, or re-run setup to rewrite it as plaintext"
+            );
+        }
         let key = envelope::load_dek()?.ok_or_else(|| {
             anyhow::anyhow!(
                 "Secret is envelope-encrypted but its data key is missing from the OS secret \
