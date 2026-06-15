@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Zentra global config (~/.zentra/config.toml)",
+  "type": "object",
+  "properties": {
+    "default_profile": { "type": "string", "description": "Name of the profile used by default. Must match a key under [profiles]." },
+    "theme": { "type": "string", "description": "UI theme id: muted_slate (default), dawn, matrix, nord, tokyo_night, dracula, gruvbox_dark, monokai, or a custom theme file stem from ~/.zentra/themes/." },
+    "output_dir": { "type": "string", "description": "Base directory for pentest run artifacts. Blank/unset = <Documents>/Zentra." },
+    "profiles": {
+      "type": "object",
+      "description": "Provider profiles keyed by name. A profile name containing '.' MUST be quoted, e.g. [profiles.\"ag-glm5.1\"] — otherwise TOML treats the dot as table nesting and the file fails to load.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["kind", "base_url", "model"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["anthropic", "openai_compat", "claude_cli", "codex_cli"], "description": "Provider backend." },
+          "base_url": { "type": "string", "description": "API base URL (http/https). For claude_cli/codex_cli this holds the binary name/path instead of a URL." },
+          "model": { "type": "string" },
+          "keyless": { "type": "boolean", "description": "True for CLI subscription providers (no API key required)." },
+          "auth_method": { "type": "string", "enum": ["api_key", "oauth"], "default": "api_key" },
+          "context_window": { "type": "integer", "minimum": 1 },
+          "reasoning_effort": { "type": "string" }
+        }
+      }
+    }
+  }
+}
