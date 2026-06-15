@@ -980,6 +980,7 @@ fn new_menu_state() -> MenuState {
 #[test]
 fn theme_picker_cycles_and_previews() {
     let mut state = new_menu_state();
+    state.theme = state.theme_options[0].clone();
     state.open_theme_picker();
     assert!(state.theme_picker_open);
     let first = state.theme.id.clone();
@@ -993,6 +994,7 @@ fn theme_picker_cycles_and_previews() {
 #[test]
 fn theme_picker_esc_restores_previous() {
     let mut state = new_menu_state();
+    state.theme = state.theme_options[0].clone();
     let original = state.theme.id.clone();
     state.open_theme_picker();
     state.theme_picker_next();
@@ -1006,6 +1008,7 @@ fn theme_picker_enter_persists() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("config.toml");
     let mut state = new_menu_state();
+    state.theme = state.theme_options[0].clone();
     state.open_theme_picker();
     state.theme_picker_next();
     let chosen = state.theme.id.clone();

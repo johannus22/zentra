@@ -143,8 +143,142 @@ pub fn matrix() -> Theme {
     }
 }
 
+pub fn nord() -> Theme {
+    Theme {
+        id: "nord".into(),
+        name: "Nord".into(),
+        bg: Color::Rgb(0x2e, 0x34, 0x40),
+        surface: Color::Rgb(0x3b, 0x42, 0x52),
+        border: Color::Rgb(0x4c, 0x56, 0x6a),
+        text: Color::Rgb(0xd8, 0xde, 0xe9),
+        text_dim: Color::Rgb(0x7b, 0x88, 0xa1),
+        text_muted: Color::Rgb(0x4c, 0x56, 0x6a),
+        accent: Color::Rgb(0x88, 0xc0, 0xd0),
+        accent_alt: Color::Rgb(0xb4, 0x8e, 0xad),
+        selection_bg: Color::Rgb(0x43, 0x4c, 0x5e),
+        selection_fg: Color::Rgb(0xec, 0xef, 0xf4),
+        success: Color::Rgb(0xa3, 0xbe, 0x8c),
+        warning: Color::Rgb(0xeb, 0xcb, 0x8b),
+        error: Color::Rgb(0xbf, 0x61, 0x6a),
+        crit: Color::Rgb(0xbf, 0x61, 0x6a),
+        high: Color::Rgb(0xd0, 0x87, 0x70),
+        medium: Color::Rgb(0xeb, 0xcb, 0x8b),
+        low: Color::Rgb(0x81, 0xa1, 0xc1),
+        info: Color::Rgb(0x6b, 0x74, 0x88),
+    }
+}
+
+pub fn tokyo_night() -> Theme {
+    Theme {
+        id: "tokyo_night".into(),
+        name: "Tokyo Night".into(),
+        bg: Color::Rgb(0x1a, 0x1b, 0x26),
+        surface: Color::Rgb(0x24, 0x28, 0x3b),
+        border: Color::Rgb(0x3b, 0x42, 0x61),
+        text: Color::Rgb(0xc0, 0xca, 0xf5),
+        text_dim: Color::Rgb(0xa9, 0xb1, 0xd6),
+        text_muted: Color::Rgb(0x56, 0x5f, 0x89),
+        accent: Color::Rgb(0x7a, 0xa2, 0xf7),
+        accent_alt: Color::Rgb(0xbb, 0x9a, 0xf7),
+        selection_bg: Color::Rgb(0x2e, 0x3c, 0x64),
+        selection_fg: Color::Rgb(0xc0, 0xca, 0xf5),
+        success: Color::Rgb(0x9e, 0xce, 0x6a),
+        warning: Color::Rgb(0xe0, 0xaf, 0x68),
+        error: Color::Rgb(0xf7, 0x76, 0x8e),
+        crit: Color::Rgb(0xf7, 0x76, 0x8e),
+        high: Color::Rgb(0xff, 0x9e, 0x64),
+        medium: Color::Rgb(0xe0, 0xaf, 0x68),
+        low: Color::Rgb(0x7d, 0xcf, 0xff),
+        info: Color::Rgb(0x56, 0x5f, 0x89),
+    }
+}
+
+pub fn dracula() -> Theme {
+    Theme {
+        id: "dracula".into(),
+        name: "Dracula".into(),
+        bg: Color::Rgb(0x28, 0x2a, 0x36),
+        surface: Color::Rgb(0x34, 0x37, 0x46),
+        border: Color::Rgb(0x44, 0x47, 0x5a),
+        text: Color::Rgb(0xf8, 0xf8, 0xf2),
+        text_dim: Color::Rgb(0xa8, 0xa8, 0xc0),
+        text_muted: Color::Rgb(0x62, 0x72, 0xa4),
+        accent: Color::Rgb(0xbd, 0x93, 0xf9),
+        accent_alt: Color::Rgb(0xff, 0x79, 0xc6),
+        selection_bg: Color::Rgb(0x44, 0x47, 0x5a),
+        selection_fg: Color::Rgb(0xf8, 0xf8, 0xf2),
+        success: Color::Rgb(0x50, 0xfa, 0x7b),
+        warning: Color::Rgb(0xf1, 0xfa, 0x8c),
+        error: Color::Rgb(0xff, 0x55, 0x55),
+        crit: Color::Rgb(0xff, 0x55, 0x55),
+        high: Color::Rgb(0xff, 0xb8, 0x6c),
+        medium: Color::Rgb(0xf1, 0xfa, 0x8c),
+        low: Color::Rgb(0x8b, 0xe9, 0xfd),
+        info: Color::Rgb(0x62, 0x72, 0xa4),
+    }
+}
+
+pub fn gruvbox_dark() -> Theme {
+    Theme {
+        id: "gruvbox_dark".into(),
+        name: "Gruvbox Dark".into(),
+        bg: Color::Rgb(0x28, 0x28, 0x28),
+        surface: Color::Rgb(0x3c, 0x38, 0x36),
+        border: Color::Rgb(0x50, 0x49, 0x45),
+        text: Color::Rgb(0xeb, 0xdb, 0xb2),
+        text_dim: Color::Rgb(0xa8, 0x99, 0x84),
+        text_muted: Color::Rgb(0x66, 0x5c, 0x54),
+        accent: Color::Rgb(0x83, 0xa5, 0x98),
+        accent_alt: Color::Rgb(0xd3, 0x86, 0x9b),
+        selection_bg: Color::Rgb(0x3c, 0x38, 0x36),
+        selection_fg: Color::Rgb(0xfb, 0xf1, 0xc7),
+        success: Color::Rgb(0xb8, 0xbb, 0x26),
+        warning: Color::Rgb(0xfa, 0xbd, 0x2f),
+        error: Color::Rgb(0xfb, 0x49, 0x34),
+        crit: Color::Rgb(0xfb, 0x49, 0x34),
+        high: Color::Rgb(0xfe, 0x80, 0x19),
+        medium: Color::Rgb(0xfa, 0xbd, 0x2f),
+        low: Color::Rgb(0x83, 0xa5, 0x98),
+        info: Color::Rgb(0x92, 0x83, 0x74),
+    }
+}
+
+pub fn monokai() -> Theme {
+    Theme {
+        id: "monokai".into(),
+        name: "Monokai".into(),
+        bg: Color::Rgb(0x27, 0x28, 0x22),
+        surface: Color::Rgb(0x3e, 0x3d, 0x32),
+        border: Color::Rgb(0x49, 0x48, 0x3e),
+        text: Color::Rgb(0xf8, 0xf8, 0xf2),
+        text_dim: Color::Rgb(0xa5, 0x9f, 0x85),
+        text_muted: Color::Rgb(0x75, 0x71, 0x5e),
+        accent: Color::Rgb(0x66, 0xd9, 0xef),
+        accent_alt: Color::Rgb(0xae, 0x81, 0xff),
+        selection_bg: Color::Rgb(0x49, 0x48, 0x3e),
+        selection_fg: Color::Rgb(0xf8, 0xf8, 0xf2),
+        success: Color::Rgb(0xa6, 0xe2, 0x2e),
+        warning: Color::Rgb(0xe6, 0xdb, 0x74),
+        error: Color::Rgb(0xf9, 0x26, 0x72),
+        crit: Color::Rgb(0xf9, 0x26, 0x72),
+        high: Color::Rgb(0xfd, 0x97, 0x1f),
+        medium: Color::Rgb(0xe6, 0xdb, 0x74),
+        low: Color::Rgb(0x66, 0xd9, 0xef),
+        info: Color::Rgb(0x75, 0x71, 0x5e),
+    }
+}
+
 pub fn builtin_themes() -> Vec<Theme> {
-    vec![muted_slate(), dawn(), matrix()]
+    vec![
+        muted_slate(),
+        dawn(),
+        matrix(),
+        nord(),
+        tokyo_night(),
+        dracula(),
+        gruvbox_dark(),
+        monokai(),
+    ]
 }
 
 /// `~/.zentra/themes`
@@ -272,7 +406,19 @@ mod tests {
     #[test]
     fn builtins_present() {
         let ids: Vec<_> = builtin_themes().into_iter().map(|t| t.id).collect();
-        assert_eq!(ids, ["muted_slate", "dawn", "matrix"]);
+        assert_eq!(
+            ids,
+            [
+                "muted_slate",
+                "dawn",
+                "matrix",
+                "nord",
+                "tokyo_night",
+                "dracula",
+                "gruvbox_dark",
+                "monokai"
+            ]
+        );
     }
 
     #[test]

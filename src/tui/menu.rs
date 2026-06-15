@@ -65,19 +65,17 @@ pub fn centered_middle_column(area: Rect) -> Rect {
     .split(area)[1]
 }
 
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::vertical([
-        Constraint::Percentage((100 - percent_y) / 2),
-        Constraint::Percentage(percent_y),
-        Constraint::Percentage((100 - percent_y) / 2),
-    ])
-    .split(area)[1];
-    Layout::horizontal([
-        Constraint::Percentage((100 - percent_x) / 2),
-        Constraint::Percentage(percent_x),
-        Constraint::Percentage((100 - percent_x) / 2),
-    ])
-    .split(vertical)[1]
+fn centered_fixed(width: u16, height: u16, area: Rect) -> Rect {
+    let w = width.min(area.width);
+    let h = height.min(area.height);
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    }
 }
 
 pub fn scanner_selector_footer_hint() -> &'static str {
@@ -1437,7 +1435,7 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
     }
 
     if state.theme_picker_open {
-        let popup = centered_rect(50, 40, area);
+        let popup = centered_fixed(34, state.theme_options.len() as u16 + 2, area);
         frame.render_widget(Clear, popup);
         let rows: Vec<ListItem> = state
             .theme_options
