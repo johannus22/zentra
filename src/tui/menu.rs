@@ -7,7 +7,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::layout::Alignment;
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
     Frame,
@@ -1170,6 +1170,12 @@ const BANNER: &str = " ____        _ \n|_  /___ _ _| |_ _ _ __ _\n / // -_) ' \\
 pub(crate) const HEADER_HEIGHT: u16 = 7;
 
 fn render_menu(frame: &mut Frame, state: &MenuState) {
+    // Paint the whole frame with the theme background first.
+    frame.render_widget(
+        ratatui::widgets::Block::default().style(ratatui::style::Style::default().bg(state.theme.bg)),
+        frame.area(),
+    );
+
     let area = frame.area();
     match state.screen {
         MenuScreen::Main => render_main_menu(frame, area, state),
@@ -1184,13 +1190,14 @@ fn render_menu(frame: &mut Frame, state: &MenuState) {
 fn render_banner_header(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
     let header_block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(state.theme.border))
+        .style(Style::default().bg(state.theme.bg));
     let inner = header_block.inner(area);
     frame.render_widget(header_block, area);
 
     let header_cols = Layout::horizontal([Constraint::Min(28), Constraint::Min(10)]).split(inner);
 
-    let banner_para = Paragraph::new(BANNER).style(Style::default().fg(Color::Cyan));
+    let banner_para = Paragraph::new(BANNER).style(Style::default().fg(state.theme.accent));
     frame.render_widget(banner_para, header_cols[0]);
 
     let warning = if !state.provider_configured {
@@ -1213,24 +1220,24 @@ fn render_banner_header(frame: &mut Frame, area: ratatui::layout::Rect, state: &
         Line::from(vec![Span::styled(
             project_display,
             Style::default()
-                .fg(Color::Green)
+                .fg(state.theme.success)
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(vec![Span::styled(
             format!("⎇ {}", branch_display),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(state.theme.text_dim),
         )]),
         Line::from(vec![Span::styled(
             provider_model,
-            Style::default().fg(Color::Green),
+            Style::default().fg(state.theme.success),
         )]),
         Line::from(vec![Span::styled(
             format!("v{}", env!("CARGO_PKG_VERSION")),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(state.theme.text_dim),
         )]),
         Line::from(vec![Span::styled(
             warning.to_string(),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(state.theme.warning),
         )]),
     ]);
     frame.render_widget(
@@ -1267,19 +1274,25 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
             let selected = state.selected_idx == action;
             let prefix = if selected { "▶ " } else { "  " };
             let style = if !enabled {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(state.theme.text_muted)
             } else if selected {
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(state.theme.selection_fg)
+                    .bg(state.theme.selection_bg)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default()
+                Style::default().fg(state.theme.text)
             };
             ListItem::new(format!("{}{}", prefix, label)).style(style)
         })
         .collect();
 
-    let list = List::new(items).block(Block::default().borders(Borders::ALL));
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(state.theme.border))
+            .style(Style::default().bg(state.theme.bg)),
+    );
     let menu_area = centered_middle_column(chunks[2]);
     frame.render_widget(list, menu_area);
 
@@ -1299,25 +1312,27 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
             toggle
         );
         frame.render_widget(
-            Paragraph::new(summary).style(Style::default().fg(Color::Red)),
+            Paragraph::new(summary).style(Style::default().fg(state.theme.error)),
             summary_area,
         );
     }
 
     let keys = Paragraph::new(" ↑↓ navigate · Enter select · q quit")
-        .style(Style::default().fg(Color::DarkGray));
+        .style(Style::default().fg(state.theme.text_dim));
     frame.render_widget(keys, centered_middle_column(chunks[4]));
 
     // Expanded details box.
     if state.error_expanded {
         if let Some(err) = &state.last_error {
             let details = Paragraph::new(err.clone())
-                .style(Style::default().fg(Color::Red))
+                .style(Style::default().fg(state.theme.error))
                 .wrap(Wrap { trim: false })
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(" Error details "),
+                        .title(" Error details ")
+                        .border_style(Style::default().fg(state.theme.border))
+                        .style(Style::default().bg(state.theme.bg)),
                 );
             frame.render_widget(details, centered_middle_column(chunks[5]));
         }
@@ -1354,17 +1369,19 @@ fn render_settings(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuS
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" SETTINGS ")
-        .title_style(Style::default().fg(Color::Cyan));
+        .title_style(Style::default().fg(state.theme.accent))
+        .border_style(Style::default().fg(state.theme.border))
+        .style(Style::default().bg(state.theme.bg));
     let inner = block.inner(form_area);
     frame.render_widget(block, form_area);
 
     let field_style = |idx: usize| -> Style {
         if s.focused_field == idx {
             Style::default()
-                .fg(Color::Yellow)
+                .fg(state.theme.warning)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(state.theme.text_dim)
         }
     };
 
@@ -1378,15 +1395,15 @@ fn render_settings(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuS
     let mut lines = vec![
         Line::from(Span::styled(
             "Artifact output directory",
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(state.theme.accent),
         )),
         Line::from(Span::styled(
             "Pentest reports & evidence go here. Blank = default.",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(state.theme.text_dim),
         )),
         Line::from(Span::styled(
             "(WSL: e.g. /mnt/c/Users/<you>/Documents/Zentra)",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(state.theme.text_dim),
         )),
         Line::from(Span::raw("")),
         Line::from(vec![
@@ -1417,19 +1434,19 @@ fn render_settings(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuS
     if let Some(err) = &s.error {
         lines.push(Line::from(Span::styled(
             format!("  ✗ {}", err),
-            Style::default().fg(Color::Red),
+            Style::default().fg(state.theme.error),
         )));
     } else if s.saved {
         lines.push(Line::from(Span::styled(
             "  ✓ Saved",
-            Style::default().fg(Color::Green),
+            Style::default().fg(state.theme.success),
         )));
     }
 
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 
     let hint = Paragraph::new(" Tab/↑↓ move · type to edit · Enter save · Esc back")
-        .style(Style::default().fg(Color::DarkGray));
+        .style(Style::default().fg(state.theme.text_dim));
     frame.render_widget(hint, outer[3]);
 }
 
@@ -1471,13 +1488,16 @@ fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state
             let selected = state.scanner_idx == i;
             let prefix = if selected { "▶" } else { " " };
             let style = if selected {
-                Style::default().add_modifier(Modifier::BOLD)
-            } else {
                 Style::default()
+                    .fg(state.theme.selection_fg)
+                    .bg(state.theme.selection_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(state.theme.text)
             };
             ListItem::new(Line::from(vec![
                 Span::raw(format!("{} [{}] {:<16}", prefix, check, name)),
-                Span::styled(desc.to_string(), Style::default().fg(Color::DarkGray)),
+                Span::styled(desc.to_string(), Style::default().fg(state.theme.text_dim)),
             ]))
             .style(style)
         })
@@ -1485,33 +1505,38 @@ fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state
 
     items.push(
         ListItem::new("  ─────────────────────────────────────────")
-            .style(Style::default().fg(Color::DarkGray)),
+            .style(Style::default().fg(state.theme.text_muted)),
     );
     items.push(
         ListItem::new("  [✓] Report              Always included   [locked]")
-            .style(Style::default().fg(Color::DarkGray)),
+            .style(Style::default().fg(state.theme.text_muted)),
     );
     let run_label = format!(
         "▶ Run Selected ({} scanners)",
         state.scanner_selected.iter().filter(|&&b| b).count() + 1
     );
     let run_style = if state.scanner_idx == 5 {
-        Style::default().add_modifier(Modifier::BOLD)
-    } else {
         Style::default()
+            .fg(state.theme.selection_fg)
+            .bg(state.theme.selection_bg)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(state.theme.text)
     };
     items.push(ListItem::new(run_label).style(run_style));
 
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title("SELECT SCANNERS"),
+            .title("SELECT SCANNERS")
+            .border_style(Style::default().fg(state.theme.border))
+            .style(Style::default().bg(state.theme.bg)),
     );
     let list_area = centered_middle_column(chunks[2]);
     frame.render_widget(list, list_area);
 
     let keys =
-        Paragraph::new(scanner_selector_footer_hint()).style(Style::default().fg(Color::DarkGray));
+        Paragraph::new(scanner_selector_footer_hint()).style(Style::default().fg(state.theme.text_dim));
     frame.render_widget(keys, centered_middle_column(chunks[3]));
 }
 
@@ -1546,14 +1571,17 @@ fn render_provider_selector(frame: &mut Frame, area: ratatui::layout::Rect, stat
             let bullet = if is_active { "●" } else { " " };
             let prefix = if selected { "▶" } else { " " };
             let style = if selected {
-                Style::default().add_modifier(Modifier::BOLD)
-            } else {
                 Style::default()
+                    .fg(state.theme.selection_fg)
+                    .bg(state.theme.selection_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(state.theme.text)
             };
             let bullet_style = Style::default().fg(if is_active {
-                Color::Green
+                state.theme.success
             } else {
-                Color::DarkGray
+                state.theme.text_muted
             });
             ListItem::new(Line::from(vec![
                 Span::raw(format!("{} ", prefix)),
@@ -1564,7 +1592,7 @@ fn render_provider_selector(frame: &mut Frame, area: ratatui::layout::Rect, stat
                 ),
                 Span::styled(
                     model.chars().take(20).collect::<String>(),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(state.theme.text_dim),
                 ),
             ]))
         })
@@ -1573,18 +1601,20 @@ fn render_provider_selector(frame: &mut Frame, area: ratatui::layout::Rect, stat
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title("SELECT PROVIDER"),
+            .title("SELECT PROVIDER")
+            .border_style(Style::default().fg(state.theme.border))
+            .style(Style::default().bg(state.theme.bg)),
     );
     let list_area = centered_middle_column(chunks[2]);
     frame.render_widget(list, list_area);
 
     let keys = Paragraph::new(provider_selector_footer_hint(state))
-        .style(Style::default().fg(Color::DarkGray));
+        .style(Style::default().fg(state.theme.text_dim));
     let hints_center = centered_middle_column(chunks[3]);
     frame.render_widget(keys, hints_center);
 
     if let Some(error) = &state.provider_error {
-        let error = Paragraph::new(format!("  ✗ {}", error)).style(Style::default().fg(Color::Red));
+        let error = Paragraph::new(format!("  ✗ {}", error)).style(Style::default().fg(state.theme.error));
         frame.render_widget(error, centered_middle_column(chunks[4]));
     }
 }
@@ -1616,7 +1646,9 @@ fn render_repo_input(frame: &mut Frame, area: ratatui::layout::Rect, state: &Men
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" CLONE & SCAN ")
-        .title_style(Style::default().fg(Color::Cyan));
+        .title_style(Style::default().fg(state.theme.accent))
+        .border_style(Style::default().fg(state.theme.border))
+        .style(Style::default().bg(state.theme.bg));
     let inner = block.inner(form_area);
     frame.render_widget(block, form_area);
 
@@ -1627,20 +1659,20 @@ fn render_repo_input(frame: &mut Frame, area: ratatui::layout::Rect, state: &Men
             Span::styled(
                 clip_with_ellipsis(&state.repo_url, max_w),
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(state.theme.warning)
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(""),
         Line::from(Span::styled(
             " Enter clone & scan · Esc cancel",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(state.theme.text_dim),
         )),
     ];
     if let Some(err) = &state.repo_input_error {
         lines.push(Line::from(Span::styled(
             format!(" ✗ {}", err),
-            Style::default().fg(Color::Red),
+            Style::default().fg(state.theme.error),
         )));
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
@@ -1654,10 +1686,10 @@ fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &
     let field_style = |field_idx: usize| -> Style {
         if form.focused_field == field_idx {
             Style::default()
-                .fg(Color::Yellow)
+                .fg(state.theme.warning)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(state.theme.text_dim)
         }
     };
 
@@ -1690,7 +1722,9 @@ fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" ADD PROVIDER ")
-        .title_style(Style::default().fg(Color::Cyan));
+        .title_style(Style::default().fg(state.theme.accent))
+        .border_style(Style::default().fg(state.theme.border))
+        .style(Style::default().bg(state.theme.bg));
     let inner = block.inner(form_area);
     let max_field_width = inner.width.saturating_sub(15) as usize;
 
@@ -1823,24 +1857,29 @@ fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &
 
     let cancel = Paragraph::new(Line::from(Span::styled(
         "Esc Cancel",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(state.theme.text_dim),
     )));
     frame.render_widget(cancel, button_chunks[1]);
 
     if let Some(ref err) = form.error {
         let error = Paragraph::new(Line::from(Span::styled(
             format!("  ✗ {}", err),
-            Style::default().fg(Color::Red),
+            Style::default().fg(state.theme.error),
         )));
         frame.render_widget(error, bottom_rows[1]);
     }
 
     if let Some(modal) = &state.oauth_modal {
-        render_oauth_modal(frame, area, modal);
+        render_oauth_modal(frame, area, modal, &state.theme);
     }
 }
 
-fn render_oauth_modal(frame: &mut Frame, area: Rect, modal: &OAuthModalState) {
+fn render_oauth_modal(
+    frame: &mut Frame,
+    area: Rect,
+    modal: &OAuthModalState,
+    theme: &crate::tui::theme::Theme,
+) {
     let modal_area = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(11),
@@ -1865,13 +1904,13 @@ fn render_oauth_modal(frame: &mut Frame, area: Rect, modal: &OAuthModalState) {
         Line::from(Span::styled(
             status,
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme.warning)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
             "Open this URL if the browser does not open:",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme.text_dim),
         )),
         Line::from(modal.auth_url.clone()),
     ];
@@ -1880,7 +1919,7 @@ fn render_oauth_modal(frame: &mut Frame, area: Rect, modal: &OAuthModalState) {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             format!("Browser launch failed: {error}"),
-            Style::default().fg(Color::Red),
+            Style::default().fg(theme.error),
         )));
     }
 
@@ -1891,7 +1930,9 @@ fn render_oauth_modal(frame: &mut Frame, area: Rect, modal: &OAuthModalState) {
                 Block::default()
                     .borders(Borders::ALL)
                     .title(" OPENAI LOGIN ")
-                    .title_style(Style::default().fg(Color::Cyan)),
+                    .title_style(Style::default().fg(theme.accent))
+                    .border_style(Style::default().fg(theme.border))
+                    .style(Style::default().bg(theme.surface)),
             )
             .wrap(Wrap { trim: false }),
         modal_area,
