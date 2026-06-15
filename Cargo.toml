@@ -17,7 +17,7 @@ path = "src/lib.rs"
 aes-gcm = "0.10"
 anyhow = "1"
 base64 = "0.22"
-crossterm = { version = "0.28", features = ["event-stream"] }
+crossterm = "0.28"
 futures = "0.3"
 ratatui = "0.29"
 async-trait = "0.1"

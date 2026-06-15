@@ -1,8 +1,7 @@
 use crate::agent::{McpStatus, ScanEvent, ScannerType};
 use crate::tui::{ScanOutcome, ScanStatus, UiState};
 use anyhow::Result;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind};
-use futures::StreamExt;
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
@@ -117,8 +116,7 @@ async fn run_loop(
     state.theme = crate::tui::theme::resolve(
         crate::config::GlobalConfig::load().ok().and_then(|g| g.theme).as_deref(),
     );
-    let mut keys = EventStream::new();
-    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(80));
+    let mut input_ticker = tokio::time::interval(std::time::Duration::from_millis(25));
     let mut animation_ticker = tokio::time::interval(std::time::Duration::from_millis(80));
 
     loop {
@@ -126,76 +124,82 @@ async fn run_loop(
             Some(event) = rx.recv() => {
                 state.apply_event(event);
             }
-            Some(Ok(evt)) = keys.next() => {
-                if let Event::Key(key) = evt {
-                    if key.kind != KeyEventKind::Press {
-                        // ignore release / repeat events to prevent double-step
-                    } else if state.provider_popup_open {
-                        match key.code {
-                            KeyCode::Esc => state.toggle_provider_popup(),
-                            KeyCode::Up => state.provider_popup.prev(),
-                            KeyCode::Down => state.provider_popup.next(state.profiles.len()),
-                            KeyCode::Enter => {
-                                if let Some(name) = state.profiles.get(state.provider_popup.selected) {
+            _ = input_ticker.tick() => {
+                // Poll input without blocking. We deliberately avoid crossterm's
+                // EventStream: on Windows its reader thread blocks in the native
+                // console read and is not torn down on drop, leaking a thread per
+                // scan that then contends with the menu's event::poll and makes
+                // navigation sluggish.
+                while event::poll(std::time::Duration::from_millis(0))? {
+                    if let Event::Key(key) = event::read()? {
+                        if key.kind != KeyEventKind::Press {
+                            // ignore release / repeat events to prevent double-step
+                        } else if state.provider_popup_open {
+                            match key.code {
+                                KeyCode::Esc => state.toggle_provider_popup(),
+                                KeyCode::Up => state.provider_popup.prev(),
+                                KeyCode::Down => state.provider_popup.next(state.profiles.len()),
+                                KeyCode::Enter => {
+                                    if let Some(name) = state.profiles.get(state.provider_popup.selected) {
+                                        cancel_token.cancel();
+                                        return Ok(ScanOutcome::ChangeProvider(name.clone()));
+                                    }
+                                }
+                                _ => {}
+                            }
+                        } else if state.popup_open {
+                            match key.code {
+                                KeyCode::Esc => state.toggle_popup(),
+                                KeyCode::Up => state.popup.prev(),
+                                KeyCode::Down => {
+                                    let len = popup_items(state.scan_done).len();
+                                    state.popup.next(len);
+                                }
+                                KeyCode::Enter => {
+                                    let items = popup_items(state.scan_done);
+                                    // Clamp selected in case list shrank (e.g. scan completed while popup was open)
+                                    if state.popup.selected >= items.len() {
+                                        state.popup.selected = items.len().saturating_sub(1);
+                                    }
+                                    match items.get(state.popup.selected).copied().unwrap_or("") {
+                                        "Change Provider and Restart Scan" => {
+                                            cancel_token.cancel();
+                                            state.toggle_popup();
+                                            state.toggle_provider_popup();
+                                        }
+                                        "Add Provider" => {
+                                            return Ok(ScanOutcome::Reconfigure);
+                                        }
+                                        "Abort Scan" => {
+                                            cancel_token.cancel();
+                                            state.abort_scan();
+                                            state.activity = "✗ Scan aborted — browse findings · q to exit".to_string();
+                                            state.toggle_popup();
+                                        }
+                                        "Back to Menu" => {
+                                            cancel_token.cancel();
+                                            return Ok(ScanOutcome::BackToMenu);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            match key.code {
+                                KeyCode::Char('q') | KeyCode::Esc => {
                                     cancel_token.cancel();
-                                    return Ok(ScanOutcome::ChangeProvider(name.clone()));
+                                    return Ok(ScanOutcome::BackToMenu);
                                 }
+                                KeyCode::Char('p') | KeyCode::Char('?') => state.toggle_popup(),
+                                KeyCode::Down => state.select_next(),
+                                KeyCode::Up => state.select_prev(),
+                                _ => {}
                             }
-                            _ => {}
-                        }
-                    } else if state.popup_open {
-                        match key.code {
-                            KeyCode::Esc => state.toggle_popup(),
-                            KeyCode::Up => state.popup.prev(),
-                            KeyCode::Down => {
-                                let len = popup_items(state.scan_done).len();
-                                state.popup.next(len);
-                            }
-                            KeyCode::Enter => {
-                                let items = popup_items(state.scan_done);
-                                // Clamp selected in case list shrank (e.g. scan completed while popup was open)
-                                if state.popup.selected >= items.len() {
-                                    state.popup.selected = items.len().saturating_sub(1);
-                                }
-                                match items.get(state.popup.selected).copied().unwrap_or("") {
-                                    "Change Provider and Restart Scan" => {
-                                        cancel_token.cancel();
-                                        state.toggle_popup();
-                                        state.toggle_provider_popup();
-                                    }
-                                    "Add Provider" => {
-                                        return Ok(ScanOutcome::Reconfigure);
-                                    }
-                                    "Abort Scan" => {
-                                        cancel_token.cancel();
-                                        state.abort_scan();
-                                        state.activity = "✗ Scan aborted — browse findings · q to exit".to_string();
-                                        state.toggle_popup();
-                                    }
-                                    "Back to Menu" => {
-                                        cancel_token.cancel();
-                                        return Ok(ScanOutcome::BackToMenu);
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            _ => {}
-                        }
-                    } else {
-                        match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc => {
-                                cancel_token.cancel();
-                                return Ok(ScanOutcome::BackToMenu);
-                            }
-                            KeyCode::Char('p') | KeyCode::Char('?') => state.toggle_popup(),
-                            KeyCode::Down => state.select_next(),
-                            KeyCode::Up => state.select_prev(),
-                            _ => {}
                         }
                     }
                 }
             }
-            _ = ticker.tick() => {}
             _ = animation_ticker.tick() => {
                 state.animation_index = state.animation_index.wrapping_add(1);
             }

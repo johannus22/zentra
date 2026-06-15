@@ -232,6 +232,7 @@ async fn run_once(
         }
         _ => {
             cancel_token.cancel();
+            scan_task.abort();
             let _ = scan_task.await;
         }
     }
