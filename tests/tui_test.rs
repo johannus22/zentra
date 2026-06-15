@@ -585,8 +585,9 @@ fn menu_state_navigate_wraps() {
         String::new(),
         String::new(),
     );
-    // 9 items: RunFull(0), Clone(1), RunPentest(2), SelectScanners(3),
-    // ViewResults(4), ChangeProvider(5), AddProvider(6), Settings(7), Exit(8)
+    // 10 items: RunFull(0), Clone(1), RunPentest(2), SelectScanners(3),
+    // ViewResults(4), ChangeProvider(5), AddProvider(6), Settings(7),
+    // Theme(8), Exit(9)
     state.next();
     assert_eq!(state.selected_idx, 1);
     state.next(); // 2
@@ -599,10 +600,12 @@ fn menu_state_navigate_wraps() {
     assert_eq!(state.selected_idx, 7);
     state.next(); // 8
     assert_eq!(state.selected_idx, 8);
+    state.next(); // 9
+    assert_eq!(state.selected_idx, 9);
     state.next(); // clamp at max
-    assert_eq!(state.selected_idx, 8);
+    assert_eq!(state.selected_idx, 9);
     state.prev();
-    assert_eq!(state.selected_idx, 7);
+    assert_eq!(state.selected_idx, 8);
 }
 
 #[test]
@@ -623,7 +626,9 @@ fn menu_state_disabled_items_when_unconfigured() {
     assert!(state.is_item_enabled(4)); // View Last Results
     assert!(!state.is_item_enabled(5)); // Change Provider
     assert!(state.is_item_enabled(6)); // Add Provider
-    assert!(state.is_item_enabled(7)); // Exit
+    assert!(state.is_item_enabled(7)); // Settings
+    assert!(state.is_item_enabled(8)); // Theme
+    assert!(state.is_item_enabled(9)); // Exit
 }
 
 #[test]
@@ -889,7 +894,7 @@ fn menu_state_new_stores_active_profile() {
 }
 
 #[test]
-fn menu_state_navigate_new_max_is_8() {
+fn menu_state_navigate_new_max_is_9() {
     let mut state = MenuState::new(
         true,
         true,
@@ -899,12 +904,12 @@ fn menu_state_navigate_new_max_is_8() {
         String::new(),
         String::new(),
     );
-    for _ in 0..8 {
+    for _ in 0..9 {
         state.next();
     }
-    assert_eq!(state.selected_idx, 8);
+    assert_eq!(state.selected_idx, 9);
     state.next(); // clamp
-    assert_eq!(state.selected_idx, 8);
+    assert_eq!(state.selected_idx, 9);
 }
 
 #[test]
@@ -941,8 +946,8 @@ fn settings_form_save_persists_and_clears_output_dir() {
 }
 
 #[test]
-fn menu_state_main_menu_has_nine_actions() {
-    assert_eq!(main_menu_actions().len(), 9);
+fn menu_state_main_menu_has_ten_actions() {
+    assert_eq!(main_menu_actions().len(), 10);
     assert_eq!(
         main_menu_actions(),
         &[
@@ -954,9 +959,59 @@ fn menu_state_main_menu_has_nine_actions() {
             "Change Provider",
             "Add Provider",
             "Settings",
+            "Theme",
             "Exit",
         ]
     );
+}
+
+fn new_menu_state() -> MenuState {
+    MenuState::new(
+        true,
+        true,
+        vec![],
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+    )
+}
+
+#[test]
+fn theme_picker_cycles_and_previews() {
+    let mut state = new_menu_state();
+    state.open_theme_picker();
+    assert!(state.theme_picker_open);
+    let first = state.theme.id.clone();
+    state.theme_picker_next();
+    assert_ne!(
+        state.theme.id, first,
+        "next() should live-apply a different theme"
+    );
+}
+
+#[test]
+fn theme_picker_esc_restores_previous() {
+    let mut state = new_menu_state();
+    let original = state.theme.id.clone();
+    state.open_theme_picker();
+    state.theme_picker_next();
+    state.cancel_theme();
+    assert!(!state.theme_picker_open);
+    assert_eq!(state.theme.id, original);
+}
+
+#[test]
+fn theme_picker_enter_persists() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let mut state = new_menu_state();
+    state.open_theme_picker();
+    state.theme_picker_next();
+    let chosen = state.theme.id.clone();
+    state.confirm_theme_to(&path).unwrap();
+    let saved = zentra_cli::config::GlobalConfig::load_from(&path).unwrap();
+    assert_eq!(saved.theme.as_deref(), Some(chosen.as_str()));
 }
 
 #[test]

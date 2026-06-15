@@ -35,10 +35,11 @@ const ACTION_VIEW_RESULTS: usize = 4;
 const ACTION_CHANGE_PROVIDER: usize = 5;
 const ACTION_ADD_PROVIDER: usize = 6;
 const ACTION_SETTINGS: usize = 7;
-const ACTION_EXIT: usize = 8;
+const ACTION_THEME: usize = 8;
+const ACTION_EXIT: usize = 9;
 
-/// Highest selectable action index in the main menu (9 items: 0-8).
-const MAX_MENU_ACTION: usize = 8;
+/// Highest selectable action index in the main menu (10 items: 0-9).
+const MAX_MENU_ACTION: usize = 9;
 
 pub fn main_menu_actions() -> &'static [&'static str] {
     &[
@@ -50,6 +51,7 @@ pub fn main_menu_actions() -> &'static [&'static str] {
         "Change Provider",
         "Add Provider",
         "Settings",
+        "Theme",
         "Exit",
     ]
 }
@@ -61,6 +63,21 @@ pub fn centered_middle_column(area: Rect) -> Rect {
         Constraint::Percentage(30),
     ])
     .split(area)[1]
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::vertical([
+        Constraint::Percentage((100 - percent_y) / 2),
+        Constraint::Percentage(percent_y),
+        Constraint::Percentage((100 - percent_y) / 2),
+    ])
+    .split(area)[1];
+    Layout::horizontal([
+        Constraint::Percentage((100 - percent_x) / 2),
+        Constraint::Percentage(percent_x),
+        Constraint::Percentage((100 - percent_x) / 2),
+    ])
+    .split(vertical)[1]
 }
 
 pub fn scanner_selector_footer_hint() -> &'static str {
@@ -519,6 +536,11 @@ pub struct MenuState {
     pub last_error: Option<String>,
     pub error_expanded: bool,
     pub theme: crate::tui::theme::Theme,
+    pub theme_picker_open: bool,
+    pub theme_options: Vec<crate::tui::theme::Theme>,
+    pub theme_idx: usize,
+    /// The theme that was active before the picker opened (restored on Esc).
+    theme_before_picker: Option<crate::tui::theme::Theme>,
     oauth_modal_rx: Option<Receiver<OAuthModalEvent>>,
 }
 
@@ -558,8 +580,66 @@ impl MenuState {
             theme: crate::tui::theme::resolve(
                 crate::config::GlobalConfig::load().ok().and_then(|g| g.theme).as_deref(),
             ),
+            theme_picker_open: false,
+            theme_options: crate::tui::theme::load_all(),
+            theme_idx: 0,
+            theme_before_picker: None,
             oauth_modal_rx: None,
         }
+    }
+
+    pub fn open_theme_picker(&mut self) {
+        self.theme_before_picker = Some(self.theme.clone());
+        self.theme_idx = self
+            .theme_options
+            .iter()
+            .position(|t| t.id == self.theme.id)
+            .unwrap_or(0);
+        self.theme_picker_open = true;
+    }
+
+    /// Move the highlight and live-apply the highlighted theme.
+    pub fn theme_picker_next(&mut self) {
+        if self.theme_idx + 1 < self.theme_options.len() {
+            self.theme_idx += 1;
+        }
+        self.apply_highlighted_theme();
+    }
+
+    pub fn theme_picker_prev(&mut self) {
+        if self.theme_idx > 0 {
+            self.theme_idx -= 1;
+        }
+        self.apply_highlighted_theme();
+    }
+
+    fn apply_highlighted_theme(&mut self) {
+        if let Some(t) = self.theme_options.get(self.theme_idx) {
+            self.theme = t.clone();
+        }
+    }
+
+    /// Persist the highlighted theme and close.
+    pub fn confirm_theme(&mut self) -> anyhow::Result<()> {
+        self.confirm_theme_to(&crate::config::GlobalConfig::default_path()?)
+    }
+
+    pub fn confirm_theme_to(&mut self, config_path: &std::path::Path) -> anyhow::Result<()> {
+        self.apply_highlighted_theme();
+        let mut global = crate::config::GlobalConfig::load_from(config_path)?;
+        global.theme = Some(self.theme.id.clone());
+        global.save_to(config_path)?;
+        self.theme_picker_open = false;
+        self.theme_before_picker = None;
+        Ok(())
+    }
+
+    /// Close without saving, restoring the pre-picker theme.
+    pub fn cancel_theme(&mut self) {
+        if let Some(t) = self.theme_before_picker.take() {
+            self.theme = t;
+        }
+        self.theme_picker_open = false;
     }
 
     /// Build the Settings form from the current global config (best-effort —
@@ -974,7 +1054,23 @@ fn run_menu_loop(
                 }
                 dirty = true;
                 match state.screen {
-                    MenuScreen::Main => match key.code {
+                    MenuScreen::Main => {
+                        if state.theme_picker_open {
+                            match key.code {
+                                KeyCode::Up => state.theme_picker_prev(),
+                                KeyCode::Down => state.theme_picker_next(),
+                                KeyCode::Enter => {
+                                    if let Err(e) = state.confirm_theme() {
+                                        state.last_error =
+                                            Some(format!("Failed to save theme: {e}"));
+                                    }
+                                }
+                                KeyCode::Esc => state.cancel_theme(),
+                                _ => {}
+                            }
+                            continue;
+                        }
+                        match key.code {
                         KeyCode::Up => state.prev(),
                         KeyCode::Down => state.next(),
                         KeyCode::Enter => {
@@ -1015,6 +1111,7 @@ fn run_menu_loop(
                                     state.settings = MenuState::load_settings();
                                     state.screen = MenuScreen::Settings;
                                 }
+                                ACTION_THEME => state.open_theme_picker(),
                                 ACTION_EXIT => return Ok(MenuAction::Exit),
                                 _ => {}
                             }
@@ -1024,7 +1121,8 @@ fn run_menu_loop(
                         KeyCode::Char('x') => state.dismiss_error(),
                         KeyCode::Esc => state.dismiss_error(),
                         _ => {}
-                    },
+                        }
+                    }
                     MenuScreen::ScannerSelector => match key.code {
                         KeyCode::Up => {
                             if state.scanner_idx > 0 {
@@ -1336,6 +1434,40 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
                 );
             frame.render_widget(details, centered_middle_column(chunks[5]));
         }
+    }
+
+    if state.theme_picker_open {
+        let popup = centered_rect(50, 40, area);
+        frame.render_widget(Clear, popup);
+        let rows: Vec<ListItem> = state
+            .theme_options
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let chips = Line::from(vec![
+                    Span::styled("  ", Style::default().bg(t.accent)),
+                    Span::styled("  ", Style::default().bg(t.error)),
+                    Span::styled("  ", Style::default().bg(t.success)),
+                    Span::raw(format!("  {}", t.name)),
+                ]);
+                let style = if i == state.theme_idx {
+                    Style::default()
+                        .bg(state.theme.selection_bg)
+                        .fg(state.theme.selection_fg)
+                } else {
+                    Style::default().fg(state.theme.text)
+                };
+                ListItem::new(chips).style(style)
+            })
+            .collect();
+        let list = List::new(rows).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Select theme · ↑↓ preview · Enter save · Esc cancel ")
+                .border_style(Style::default().fg(state.theme.border))
+                .style(Style::default().bg(state.theme.surface)),
+        );
+        frame.render_widget(list, popup);
     }
 }
 
