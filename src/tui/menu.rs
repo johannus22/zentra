@@ -518,6 +518,7 @@ pub struct MenuState {
     pub repo_input_error: Option<String>,
     pub last_error: Option<String>,
     pub error_expanded: bool,
+    pub theme: crate::tui::theme::Theme,
     oauth_modal_rx: Option<Receiver<OAuthModalEvent>>,
 }
 
@@ -554,6 +555,9 @@ impl MenuState {
             repo_input_error: None,
             last_error: None,
             error_expanded: false,
+            theme: crate::tui::theme::resolve(
+                crate::config::GlobalConfig::load().ok().and_then(|g| g.theme).as_deref(),
+            ),
             oauth_modal_rx: None,
         }
     }

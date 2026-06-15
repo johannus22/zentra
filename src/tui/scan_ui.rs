@@ -114,6 +114,9 @@ async fn run_loop(
         project_name,
         provider_kind,
     );
+    state.theme = crate::tui::theme::resolve(
+        crate::config::GlobalConfig::load().ok().and_then(|g| g.theme).as_deref(),
+    );
     let mut keys = EventStream::new();
     let mut ticker = tokio::time::interval(std::time::Duration::from_millis(80));
     let mut animation_ticker = tokio::time::interval(std::time::Duration::from_millis(80));

@@ -118,6 +118,7 @@ pub struct UiState {
     pub provider_popup: PopupState,
     pub provider_kind: String,
     pub mcp_status: Option<McpStatus>,
+    pub theme: crate::tui::theme::Theme,
 }
 
 impl UiState {
@@ -157,6 +158,7 @@ impl UiState {
             provider_popup: PopupState::new(),
             provider_kind,
             mcp_status: None,
+            theme: crate::tui::theme::Theme::default(),
         }
     }
 

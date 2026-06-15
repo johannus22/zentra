@@ -1601,6 +1601,7 @@ fn apply_provider_change_persists_default_and_refreshes_state_in_place() {
         profiles,
         default_profile: Some("anthropic".to_string()),
         output_dir: None,
+        theme: None,
     }
     .save_to(&config_path)
     .unwrap();

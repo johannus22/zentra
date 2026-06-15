@@ -51,6 +51,9 @@ fn run_results_blocking(findings: Vec<Finding>) -> Result<()> {
         String::new(),
         String::new(),
     );
+    state.theme = crate::tui::theme::resolve(
+        crate::config::GlobalConfig::load().ok().and_then(|g| g.theme).as_deref(),
+    );
 
     for s in state.scanners.iter_mut() {
         s.status = ScanStatus::Done;
