@@ -22,6 +22,10 @@ pub struct GlobalConfig {
     /// (e.g. `/mnt/c/Users/<you>/Documents/Zentra`).
     #[serde(default)]
     pub output_dir: Option<String>,
+    /// Selected UI theme id (e.g. "muted_slate", "dawn", "matrix", or a custom
+    /// theme file stem). `None` means the default (Muted Slate).
+    #[serde(default)]
+    pub theme: Option<String>,
 }
 
 /// Resolve the global zentra directory (`~/.zentra`). Centralizes the inline
