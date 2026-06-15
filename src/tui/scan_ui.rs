@@ -1,11 +1,10 @@
 use crate::agent::{McpStatus, ScanEvent, ScannerType};
 use crate::tui::{ScanOutcome, ScanStatus, UiState};
 use anyhow::Result;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind};
-use futures::StreamExt;
+use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame,
@@ -114,8 +113,10 @@ async fn run_loop(
         project_name,
         provider_kind,
     );
-    let mut keys = EventStream::new();
-    let mut ticker = tokio::time::interval(std::time::Duration::from_millis(80));
+    state.theme = crate::tui::theme::resolve(
+        crate::config::GlobalConfig::load().ok().and_then(|g| g.theme).as_deref(),
+    );
+    let mut input_ticker = tokio::time::interval(std::time::Duration::from_millis(25));
     let mut animation_ticker = tokio::time::interval(std::time::Duration::from_millis(80));
 
     loop {
@@ -123,76 +124,82 @@ async fn run_loop(
             Some(event) = rx.recv() => {
                 state.apply_event(event);
             }
-            Some(Ok(evt)) = keys.next() => {
-                if let Event::Key(key) = evt {
-                    if key.kind != KeyEventKind::Press {
-                        // ignore release / repeat events to prevent double-step
-                    } else if state.provider_popup_open {
-                        match key.code {
-                            KeyCode::Esc => state.toggle_provider_popup(),
-                            KeyCode::Up => state.provider_popup.prev(),
-                            KeyCode::Down => state.provider_popup.next(state.profiles.len()),
-                            KeyCode::Enter => {
-                                if let Some(name) = state.profiles.get(state.provider_popup.selected) {
+            _ = input_ticker.tick() => {
+                // Poll input without blocking. We deliberately avoid crossterm's
+                // EventStream: on Windows its reader thread blocks in the native
+                // console read and is not torn down on drop, leaking a thread per
+                // scan that then contends with the menu's event::poll and makes
+                // navigation sluggish.
+                while event::poll(std::time::Duration::from_millis(0))? {
+                    if let Event::Key(key) = event::read()? {
+                        if key.kind != KeyEventKind::Press {
+                            // ignore release / repeat events to prevent double-step
+                        } else if state.provider_popup_open {
+                            match key.code {
+                                KeyCode::Esc => state.toggle_provider_popup(),
+                                KeyCode::Up => state.provider_popup.prev(),
+                                KeyCode::Down => state.provider_popup.next(state.profiles.len()),
+                                KeyCode::Enter => {
+                                    if let Some(name) = state.profiles.get(state.provider_popup.selected) {
+                                        cancel_token.cancel();
+                                        return Ok(ScanOutcome::ChangeProvider(name.clone()));
+                                    }
+                                }
+                                _ => {}
+                            }
+                        } else if state.popup_open {
+                            match key.code {
+                                KeyCode::Esc => state.toggle_popup(),
+                                KeyCode::Up => state.popup.prev(),
+                                KeyCode::Down => {
+                                    let len = popup_items(state.scan_done).len();
+                                    state.popup.next(len);
+                                }
+                                KeyCode::Enter => {
+                                    let items = popup_items(state.scan_done);
+                                    // Clamp selected in case list shrank (e.g. scan completed while popup was open)
+                                    if state.popup.selected >= items.len() {
+                                        state.popup.selected = items.len().saturating_sub(1);
+                                    }
+                                    match items.get(state.popup.selected).copied().unwrap_or("") {
+                                        "Change Provider and Restart Scan" => {
+                                            cancel_token.cancel();
+                                            state.toggle_popup();
+                                            state.toggle_provider_popup();
+                                        }
+                                        "Add Provider" => {
+                                            return Ok(ScanOutcome::Reconfigure);
+                                        }
+                                        "Abort Scan" => {
+                                            cancel_token.cancel();
+                                            state.abort_scan();
+                                            state.activity = "✗ Scan aborted — browse findings · q to exit".to_string();
+                                            state.toggle_popup();
+                                        }
+                                        "Back to Menu" => {
+                                            cancel_token.cancel();
+                                            return Ok(ScanOutcome::BackToMenu);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            match key.code {
+                                KeyCode::Char('q') | KeyCode::Esc => {
                                     cancel_token.cancel();
-                                    return Ok(ScanOutcome::ChangeProvider(name.clone()));
+                                    return Ok(ScanOutcome::BackToMenu);
                                 }
+                                KeyCode::Char('p') | KeyCode::Char('?') => state.toggle_popup(),
+                                KeyCode::Down => state.select_next(),
+                                KeyCode::Up => state.select_prev(),
+                                _ => {}
                             }
-                            _ => {}
-                        }
-                    } else if state.popup_open {
-                        match key.code {
-                            KeyCode::Esc => state.toggle_popup(),
-                            KeyCode::Up => state.popup.prev(),
-                            KeyCode::Down => {
-                                let len = popup_items(state.scan_done).len();
-                                state.popup.next(len);
-                            }
-                            KeyCode::Enter => {
-                                let items = popup_items(state.scan_done);
-                                // Clamp selected in case list shrank (e.g. scan completed while popup was open)
-                                if state.popup.selected >= items.len() {
-                                    state.popup.selected = items.len().saturating_sub(1);
-                                }
-                                match items.get(state.popup.selected).copied().unwrap_or("") {
-                                    "Change Provider and Restart Scan" => {
-                                        cancel_token.cancel();
-                                        state.toggle_popup();
-                                        state.toggle_provider_popup();
-                                    }
-                                    "Add Provider" => {
-                                        return Ok(ScanOutcome::Reconfigure);
-                                    }
-                                    "Abort Scan" => {
-                                        cancel_token.cancel();
-                                        state.abort_scan();
-                                        state.activity = "✗ Scan aborted — browse findings · q to exit".to_string();
-                                        state.toggle_popup();
-                                    }
-                                    "Back to Menu" => {
-                                        cancel_token.cancel();
-                                        return Ok(ScanOutcome::BackToMenu);
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            _ => {}
-                        }
-                    } else {
-                        match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc => {
-                                cancel_token.cancel();
-                                return Ok(ScanOutcome::BackToMenu);
-                            }
-                            KeyCode::Char('p') | KeyCode::Char('?') => state.toggle_popup(),
-                            KeyCode::Down => state.select_next(),
-                            KeyCode::Up => state.select_prev(),
-                            _ => {}
                         }
                     }
                 }
             }
-            _ = ticker.tick() => {}
             _ = animation_ticker.tick() => {
                 state.animation_index = state.animation_index.wrapping_add(1);
             }
@@ -210,6 +217,13 @@ async fn run_loop(
 
 fn render(frame: &mut Frame, state: &mut UiState) {
     let area = frame.area();
+
+    // Paint the whole frame with the theme background first.
+    frame.render_widget(
+        ratatui::widgets::Block::default().style(ratatui::style::Style::default().bg(state.theme.bg)),
+        frame.area(),
+    );
+
     let chunks = Layout::vertical([
         Constraint::Length(7), // 4-line ASCII banner + model line + 2 borders
         Constraint::Min(6),
@@ -223,13 +237,13 @@ fn render(frame: &mut Frame, state: &mut UiState) {
     render_body(frame, chunks[1], state);
     render_activity(frame, chunks[2], state);
     render_detail(frame, chunks[3], state);
-    render_keys(frame, chunks[4], state.popup_open, state.scan_done);
+    render_keys(frame, chunks[4], state.popup_open, state.scan_done, &state.theme);
 
     if state.popup_open {
-        render_popup(frame, area, &state.popup, state.scan_done);
+        render_popup(frame, area, &state.popup, state.scan_done, &state.theme);
     }
     if state.provider_popup_open {
-        render_provider_popup(frame, area, &state.provider_popup, &state.profiles);
+        render_provider_popup(frame, area, &state.provider_popup, &state.profiles, &state.theme);
     }
 }
 
@@ -281,8 +295,13 @@ fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
     );
 
     let left = Paragraph::new(left_text)
-        .block(Block::default().borders(Borders::ALL))
-        .style(Style::default().fg(Color::Cyan));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(state.theme.border))
+                .style(Style::default().bg(state.theme.bg)),
+        )
+        .style(Style::default().fg(state.theme.accent));
     frame.render_widget(left, cols[0]);
 
     // Right panel: project name (green bold), branch (dark gray), version (dim)
@@ -292,20 +311,25 @@ fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
         ratatui::text::Line::from(vec![ratatui::text::Span::styled(
             project_display,
             Style::default()
-                .fg(Color::Green)
+                .fg(state.theme.success)
                 .add_modifier(Modifier::BOLD),
         )]),
         ratatui::text::Line::from(vec![ratatui::text::Span::styled(
             format!("⎇ {}", branch_display),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(state.theme.text_dim),
         )]),
         ratatui::text::Line::from(vec![ratatui::text::Span::styled(
             format!("v{}", env!("CARGO_PKG_VERSION")),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(state.theme.text_dim),
         )]),
     ]);
     let right = Paragraph::new(right_content)
-        .block(Block::default().borders(Borders::ALL))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(state.theme.border))
+                .style(Style::default().bg(state.theme.bg)),
+        )
         .alignment(ratatui::layout::Alignment::Right);
     frame.render_widget(right, cols[1]);
 }
@@ -401,10 +425,10 @@ fn render_scanners(frame: &mut Frame, area: Rect, state: &UiState) {
                 ScanStatus::Queued | ScanStatus::Waiting => '○',
             };
             let color = match s.status {
-                ScanStatus::Running => Color::Yellow,
-                ScanStatus::Done => Color::Green,
-                ScanStatus::Failed => Color::Red,
-                _ => Color::DarkGray,
+                ScanStatus::Running => state.theme.warning,
+                ScanStatus::Done => state.theme.success,
+                ScanStatus::Failed => state.theme.error,
+                _ => state.theme.text_dim,
             };
             let label = format!("{} {:<14}", icon, s.scanner_type.label());
             let style = Style::default().fg(color);
@@ -415,18 +439,21 @@ fn render_scanners(frame: &mut Frame, area: Rect, state: &UiState) {
                     let truncated =
                         clip_failed_error_preview(err, failed_error_preview_width(area.width));
                     Text::from(vec![
-                        Line::from(vec![Span::styled(label, Style::default().fg(Color::Red))]),
+                        Line::from(vec![Span::styled(
+                            label,
+                            Style::default().fg(state.theme.error),
+                        )]),
                         Line::from(vec![Span::styled(
                             format!("{}{}", FAILED_PREVIEW_PREFIX, truncated),
                             Style::default()
-                                .fg(Color::DarkGray)
+                                .fg(state.theme.text_dim)
                                 .add_modifier(Modifier::ITALIC),
                         )]),
                     ])
                 } else {
                     Text::from(Line::from(vec![Span::styled(
                         label,
-                        Style::default().fg(Color::Red),
+                        Style::default().fg(state.theme.error),
                     )]))
                 }
             } else {
@@ -445,7 +472,13 @@ fn render_scanners(frame: &mut Frame, area: Rect, state: &UiState) {
         "SCANNERS  {}C {}H {}M {}L",
         total_crit, total_high, total_med, total_low
     );
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .border_style(Style::default().fg(state.theme.border))
+            .style(Style::default().bg(state.theme.bg)),
+    );
     frame.render_widget(list, area);
 }
 
@@ -456,13 +489,7 @@ fn render_findings(frame: &mut Frame, area: Rect, state: &mut UiState) {
         .iter()
         .enumerate()
         .map(|(i, f)| {
-            let sev_color = match f.severity {
-                crate::state::Severity::Critical => Color::Red,
-                crate::state::Severity::High => Color::LightRed,
-                crate::state::Severity::Medium => Color::Yellow,
-                crate::state::Severity::Low => Color::Blue,
-                crate::state::Severity::Info => Color::DarkGray,
-            };
+            let sev_color = state.theme.severity_color(&f.severity);
             let sev = format!("{}", f.severity);
             let loc = f
                 .location
@@ -484,7 +511,7 @@ fn render_findings(frame: &mut Frame, area: Rect, state: &mut UiState) {
                     f.scanner.chars().take(6).collect::<String>()
                 )),
                 Span::raw(format!("{:<width$}", title, width = title_width)),
-                Span::styled(loc, Style::default().fg(Color::DarkGray)),
+                Span::styled(loc, Style::default().fg(state.theme.text_dim)),
             ]);
             let style = if i == state.selected_idx {
                 Style::default().add_modifier(Modifier::REVERSED)
@@ -496,7 +523,13 @@ fn render_findings(frame: &mut Frame, area: Rect, state: &mut UiState) {
         .collect();
 
     let title = format!("FINDINGS — ALL ({})", state.total_findings());
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .border_style(Style::default().fg(state.theme.border))
+            .style(Style::default().bg(state.theme.bg)),
+    );
     let mut list_state = ListState::default();
     if !state.findings.is_empty() {
         list_state.select(Some(state.selected_idx));
@@ -507,7 +540,7 @@ fn render_findings(frame: &mut Frame, area: Rect, state: &mut UiState) {
 fn render_activity(frame: &mut Frame, area: Rect, state: &UiState) {
     let content = if state.scan_done {
         let (icon, icon_color, verb) = if state.scan_aborted {
-            ("✗", Color::Red, "Aborted".to_string())
+            ("✗", state.theme.error, "Aborted".to_string())
         } else {
             let elapsed = state.elapsed_duration();
             let secs = elapsed.as_secs();
@@ -516,7 +549,7 @@ fn render_activity(frame: &mut Frame, area: Rect, state: &UiState) {
             } else {
                 format!("Hacked in {}s", secs)
             };
-            ("✓", Color::Green, duration)
+            ("✓", state.theme.success, duration)
         };
         Line::from(vec![
             Span::styled(
@@ -530,7 +563,7 @@ fn render_activity(frame: &mut Frame, area: Rect, state: &UiState) {
             Span::styled(
                 format!(" {}", state.activity),
                 Style::default()
-                    .fg(Color::DarkGray)
+                    .fg(state.theme.text_dim)
                     .add_modifier(Modifier::ITALIC),
             ),
         ])
@@ -538,10 +571,7 @@ fn render_activity(frame: &mut Frame, area: Rect, state: &UiState) {
         let animation_speed = 20;
         let word_index = (state.animation_index / animation_speed) % ACTIVITY_VERBS.len();
         let current_verb = ACTIVITY_VERBS[word_index];
-        let speed = 1.676767_f64;
-        let brightness = (state.animation_index as f64 * speed).sin();
-        let pulse = ((brightness * 60.0) + 190.0) as u8;
-        let glow_color = Color::Rgb(pulse, pulse, 255);
+        let glow_color = state.theme.accent;
         Line::from(vec![
             Span::styled(
                 format!(
@@ -549,7 +579,7 @@ fn render_activity(frame: &mut Frame, area: Rect, state: &UiState) {
                     LOADING_FRAMES[state.animation_index % LOADING_FRAMES.len()]
                 ),
                 Style::default()
-                    .fg(Color::DarkGray)
+                    .fg(state.theme.text_dim)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
@@ -559,7 +589,7 @@ fn render_activity(frame: &mut Frame, area: Rect, state: &UiState) {
             Span::styled(
                 format!(" {}", state.activity),
                 Style::default()
-                    .fg(Color::DarkGray)
+                    .fg(state.theme.text_dim)
                     .add_modifier(Modifier::ITALIC),
             ),
         ])
@@ -584,24 +614,42 @@ fn render_detail(frame: &mut Frame, area: Rect, state: &UiState) {
         .unwrap_or_default();
 
     let paragraph = Paragraph::new(content)
-        .block(Block::default().borders(Borders::ALL).title("DETAIL"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("DETAIL")
+                .border_style(Style::default().fg(state.theme.border))
+                .style(Style::default().bg(state.theme.bg).fg(state.theme.text)),
+        )
         .wrap(ratatui::widgets::Wrap { trim: true });
     frame.render_widget(paragraph, area);
 }
 
-fn render_keys(frame: &mut Frame, area: Rect, popup_open: bool, scan_done: bool) {
+fn render_keys(
+    frame: &mut Frame,
+    area: Rect,
+    popup_open: bool,
+    scan_done: bool,
+    theme: &crate::tui::theme::Theme,
+) {
     let text = if popup_open {
         " ↑↓ navigate · Enter select · Esc close"
     } else if scan_done {
-        " ↑↓ select finding · p menu · q menu"
+        " ↑↓ select finding · p menu · q back"
     } else {
-        " ↑↓ navigate · p menu · q menu"
+        " ↑↓ navigate · p menu · q back"
     };
-    let paragraph = Paragraph::new(text).style(Style::default().fg(Color::DarkGray));
+    let paragraph = Paragraph::new(text).style(Style::default().fg(theme.text_dim));
     frame.render_widget(paragraph, area);
 }
 
-fn render_popup(frame: &mut Frame, area: Rect, popup: &crate::tui::PopupState, scan_done: bool) {
+fn render_popup(
+    frame: &mut Frame,
+    area: Rect,
+    popup: &crate::tui::PopupState,
+    scan_done: bool,
+    theme: &crate::tui::theme::Theme,
+) {
     let items_list = popup_items(scan_done);
     let popup_width = 46u16;
     let popup_height = (items_list.len() as u16) + 4;
@@ -617,9 +665,9 @@ fn render_popup(frame: &mut Frame, area: Rect, popup: &crate::tui::PopupState, s
             let style = if i == popup.selected {
                 Style::default()
                     .add_modifier(Modifier::BOLD)
-                    .fg(Color::Yellow)
+                    .fg(theme.warning)
             } else {
-                Style::default()
+                Style::default().fg(theme.text)
             };
             ListItem::new(format!("{}{}", prefix, label)).style(style)
         })
@@ -629,7 +677,9 @@ fn render_popup(frame: &mut Frame, area: Rect, popup: &crate::tui::PopupState, s
         Block::default()
             .borders(Borders::ALL)
             .title("  MENU  ")
-            .title_style(Style::default().fg(Color::Cyan)),
+            .title_style(Style::default().fg(theme.accent))
+            .border_style(Style::default().fg(theme.border))
+            .style(Style::default().bg(theme.surface)),
     );
     frame.render_widget(list, popup_area);
 }
@@ -639,6 +689,7 @@ fn render_provider_popup(
     area: Rect,
     popup: &crate::tui::PopupState,
     profiles: &[String],
+    theme: &crate::tui::theme::Theme,
 ) {
     if profiles.is_empty() {
         return;
@@ -657,9 +708,9 @@ fn render_provider_popup(
             let style = if i == popup.selected {
                 Style::default()
                     .add_modifier(Modifier::BOLD)
-                    .fg(Color::Yellow)
+                    .fg(theme.warning)
             } else {
-                Style::default()
+                Style::default().fg(theme.text)
             };
             ListItem::new(format!("{}{}", prefix, name)).style(style)
         })
@@ -669,7 +720,9 @@ fn render_provider_popup(
         Block::default()
             .borders(Borders::ALL)
             .title("  SELECT PROVIDER  ")
-            .title_style(Style::default().fg(Color::Cyan)),
+            .title_style(Style::default().fg(theme.accent))
+            .border_style(Style::default().fg(theme.border))
+            .style(Style::default().bg(theme.surface)),
     );
     frame.render_widget(list, popup_area);
 }

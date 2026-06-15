@@ -49,7 +49,19 @@ async fn run() -> anyhow::Result<()> {
 
         loop {
             // Reload config every iteration so menu reflects any changes
-            let global = GlobalConfig::load().unwrap_or_default();
+            let global = match GlobalConfig::load() {
+                Ok(g) => g,
+                Err(e) => {
+                    zentra_cli::logging::error(
+                        "config",
+                        format!("failed to parse config.toml: {e:#}"),
+                    );
+                    last_error = Some(format!(
+                        "Couldn't read ~/.zentra/config.toml: {e} — your providers are still in the file; fix the syntax (or run `zentra config setup`) and reopen the menu."
+                    ));
+                    GlobalConfig::default()
+                }
+            };
             let provider_configured = !global.profiles.is_empty();
             let project_configured =
                 ProjectConfig::load_from(&ProjectConfig::default_path()).is_ok();

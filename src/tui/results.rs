@@ -1,11 +1,11 @@
 use crate::agent::ScannerType;
-use crate::state::{Finding, Severity};
+use crate::state::Finding;
 use crate::tui::{ScanStatus, UiState};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
     layout::{Constraint, Layout},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame,
@@ -51,6 +51,9 @@ fn run_results_blocking(findings: Vec<Finding>) -> Result<()> {
         String::new(),
         String::new(),
     );
+    state.theme = crate::tui::theme::resolve(
+        crate::config::GlobalConfig::load().ok().and_then(|g| g.theme).as_deref(),
+    );
 
     for s in state.scanners.iter_mut() {
         s.status = ScanStatus::Done;
@@ -94,6 +97,13 @@ fn run_results_loop(terminal: &mut ratatui::DefaultTerminal, state: &mut UiState
 
 fn render_results(frame: &mut Frame, state: &mut UiState) {
     let area = frame.area();
+
+    // Paint the whole frame with the theme background first.
+    frame.render_widget(
+        ratatui::widgets::Block::default().style(ratatui::style::Style::default().bg(state.theme.bg)),
+        frame.area(),
+    );
+
     let chunks = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(6),
@@ -106,8 +116,13 @@ fn render_results(frame: &mut Frame, state: &mut UiState) {
         "ZENTRA · Last Scan Results — {} findings",
         state.total_findings()
     ))
-    .block(Block::default().borders(Borders::ALL))
-    .style(Style::default().fg(Color::Cyan));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(state.theme.border))
+            .style(Style::default().bg(state.theme.bg)),
+    )
+    .style(Style::default().fg(state.theme.accent));
     frame.render_widget(header, chunks[0]);
 
     let body_chunks =
@@ -139,11 +154,18 @@ fn render_results(frame: &mut Frame, state: &mut UiState) {
         })
         .unwrap_or_default();
     let detail = Paragraph::new(detail_content)
-        .block(Block::default().borders(Borders::ALL).title("DETAIL"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("DETAIL")
+                .border_style(Style::default().fg(state.theme.border))
+                .style(Style::default().bg(state.theme.bg).fg(state.theme.text)),
+        )
         .wrap(ratatui::widgets::Wrap { trim: true });
     frame.render_widget(detail, chunks[2]);
 
-    let keys = Paragraph::new(" ↑↓ navigate · q quit (read-only)");
+    let keys = Paragraph::new(" ↑↓ navigate · q quit (read-only)")
+        .style(Style::default().fg(state.theme.text_dim));
     frame.render_widget(keys, chunks[3]);
 }
 
@@ -159,10 +181,16 @@ fn render_scanners_read_only(frame: &mut Frame, area: ratatui::layout::Rect, sta
                 format!("{:?}", s.scanner_type),
                 total
             ))
-            .style(Style::default().fg(Color::Green))
+            .style(Style::default().fg(state.theme.success))
         })
         .collect();
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).title("SCANNERS"));
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("SCANNERS")
+            .border_style(Style::default().fg(state.theme.border))
+            .style(Style::default().bg(state.theme.bg)),
+    );
     frame.render_widget(list, area);
 }
 
@@ -173,13 +201,7 @@ fn render_findings_list(frame: &mut Frame, area: ratatui::layout::Rect, state: &
         .iter()
         .enumerate()
         .map(|(i, f)| {
-            let sev_color = match f.severity {
-                Severity::Critical => Color::Red,
-                Severity::High => Color::LightRed,
-                Severity::Medium => Color::Yellow,
-                Severity::Low => Color::Blue,
-                Severity::Info => Color::DarkGray,
-            };
+            let sev_color = state.theme.severity_color(&f.severity);
             let loc = f
                 .location
                 .as_deref()
@@ -209,7 +231,7 @@ fn render_findings_list(frame: &mut Frame, area: ratatui::layout::Rect, state: &
                     format!("{:<8}", label)
                 }),
                 Span::raw(format!("{:<width$}", title, width = title_width)),
-                Span::styled(loc, Style::default().fg(Color::DarkGray)),
+                Span::styled(loc, Style::default().fg(state.theme.text_dim)),
             ]);
             let style = if i == state.selected_idx {
                 Style::default().add_modifier(Modifier::REVERSED)
@@ -221,7 +243,13 @@ fn render_findings_list(frame: &mut Frame, area: ratatui::layout::Rect, state: &
         .collect();
 
     let title = format!("FINDINGS — ALL ({})", state.total_findings());
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(title));
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .border_style(Style::default().fg(state.theme.border))
+            .style(Style::default().bg(state.theme.bg)),
+    );
     let mut list_state = ListState::default();
     if !state.findings.is_empty() {
         list_state.select(Some(state.selected_idx));

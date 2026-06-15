@@ -3,6 +3,7 @@ pub mod pentest_setup;
 pub mod pentest_ui;
 pub mod results;
 pub mod scan_ui;
+pub mod theme;
 
 use crate::agent::{McpStatus, ScanEvent, ScannerType};
 use crate::state::{Finding, Severity};
@@ -117,6 +118,7 @@ pub struct UiState {
     pub provider_popup: PopupState,
     pub provider_kind: String,
     pub mcp_status: Option<McpStatus>,
+    pub theme: crate::tui::theme::Theme,
 }
 
 impl UiState {
@@ -156,6 +158,7 @@ impl UiState {
             provider_popup: PopupState::new(),
             provider_kind,
             mcp_status: None,
+            theme: crate::tui::theme::Theme::default(),
         }
     }
 

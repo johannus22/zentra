@@ -3,6 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// JSON Schema (draft-07) for `~/.zentra/config.toml`, embedded at build time and
+/// written next to the config on save so editors (Even Better TOML / Taplo) can
+/// validate hand-edits via the `#:schema config.schema.json` directive.
+const CONFIG_SCHEMA: &str = include_str!("../../schemas/config.schema.json");
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthMethod {
@@ -22,6 +27,10 @@ pub struct GlobalConfig {
     /// (e.g. `/mnt/c/Users/<you>/Documents/Zentra`).
     #[serde(default)]
     pub output_dir: Option<String>,
+    /// Selected UI theme id (e.g. "muted_slate", "dawn", "matrix", or a custom
+    /// theme file stem). `None` means the default (Muted Slate).
+    #[serde(default)]
+    pub theme: Option<String>,
 }
 
 /// Resolve the global zentra directory (`~/.zentra`). Centralizes the inline
@@ -82,8 +91,13 @@ impl GlobalConfig {
     pub fn save_to(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
+            // Best-effort: drop the JSON Schema next to the config so a
+            // `#:schema config.schema.json` directive resolves for editors
+            // (Even Better TOML / Taplo) during hand-editing.
+            let _ = std::fs::write(parent.join("config.schema.json"), CONFIG_SCHEMA);
         }
-        std::fs::write(path, toml::to_string_pretty(self)?)?;
+        let body = toml::to_string_pretty(self)?;
+        std::fs::write(path, format!("#:schema config.schema.json\n\n{body}"))?;
         Ok(())
     }
 

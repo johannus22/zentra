@@ -27,6 +27,7 @@ fn global_config_roundtrip() {
         profiles,
         default_profile: Some("openai".to_string()),
         output_dir: None,
+        theme: None,
     };
     config.save_to(&path).unwrap();
 
@@ -34,6 +35,63 @@ fn global_config_roundtrip() {
     assert_eq!(loaded.default_profile, Some("openai".to_string()));
     assert!(loaded.profiles.contains_key("openai"));
     assert_eq!(loaded.profiles["openai"].model, "gpt-4o");
+}
+
+#[test]
+fn save_to_writes_schema_directive_and_sidecar_and_roundtrips() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("config.toml");
+
+    let mut profiles = HashMap::new();
+    profiles.insert(
+        "anthropic".to_string(),
+        ProviderProfile {
+            kind: "anthropic".to_string(),
+            base_url: "https://api.anthropic.com".to_string(),
+            model: "claude-opus-4-7".to_string(),
+            keyless: false,
+            auth_method: Default::default(),
+            context_window: None,
+            reasoning_effort: None,
+        },
+    );
+
+    let config = GlobalConfig {
+        profiles,
+        default_profile: Some("anthropic".to_string()),
+        output_dir: None,
+        theme: Some("matrix".to_string()),
+    };
+    config.save_to(&path).unwrap();
+
+    // The saved file begins with the editor schema directive (a TOML comment).
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        content.starts_with("#:schema config.schema.json"),
+        "config file should begin with the #:schema directive, got: {content:?}"
+    );
+
+    // The JSON Schema sidecar is dropped next to the config.
+    assert!(
+        dir.path().join("config.schema.json").exists(),
+        "config.schema.json should be written next to config.toml"
+    );
+
+    // The directive (being a comment) does not break parsing — data roundtrips.
+    let loaded = GlobalConfig::load_from(&path).unwrap();
+    assert_eq!(loaded.theme, Some("matrix".to_string()));
+    assert_eq!(loaded.default_profile, Some("anthropic".to_string()));
+    assert_eq!(loaded.profiles["anthropic"].model, "claude-opus-4-7");
+    assert_eq!(loaded.profiles["anthropic"].kind, "anthropic");
+}
+
+#[test]
+fn embedded_config_schema_is_valid_json() {
+    // The schema is embedded via include_str! and written on every save, so a
+    // malformed schema would silently ship a broken sidecar. Guard against that.
+    let schema = include_str!("../schemas/config.schema.json");
+    serde_json::from_str::<serde_json::Value>(schema)
+        .expect("embedded config.schema.json must be valid JSON");
 }
 
 #[test]
@@ -529,6 +587,20 @@ fn provider_profile_reasoning_effort_round_trips() {
         deserialized.profiles["r"].reasoning_effort.as_deref(),
         Some("high")
     );
+}
+
+#[test]
+fn global_config_theme_roundtrips() {
+    use zentra_cli::config::GlobalConfig;
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("config.toml");
+
+    let mut cfg = GlobalConfig::default();
+    cfg.theme = Some("matrix".to_string());
+    cfg.save_to(&path).unwrap();
+
+    let loaded = GlobalConfig::load_from(&path).unwrap();
+    assert_eq!(loaded.theme, Some("matrix".to_string()));
 }
 
 #[test]
