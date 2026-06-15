@@ -3,6 +3,7 @@ pub mod pentest_setup;
 pub mod pentest_ui;
 pub mod results;
 pub mod scan_ui;
+pub mod theme;
 
 use crate::agent::{McpStatus, ScanEvent, ScannerType};
 use crate::state::{Finding, Severity};
