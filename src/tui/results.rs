@@ -164,7 +164,8 @@ fn render_results(frame: &mut Frame, state: &mut UiState) {
         .wrap(ratatui::widgets::Wrap { trim: true });
     frame.render_widget(detail, chunks[2]);
 
-    let keys = Paragraph::new(" ↑↓ navigate · q quit (read-only)");
+    let keys = Paragraph::new(" ↑↓ navigate · q quit (read-only)")
+        .style(Style::default().fg(state.theme.text_dim));
     frame.render_widget(keys, chunks[3]);
 }
 
