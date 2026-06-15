@@ -631,9 +631,9 @@ fn render_keys(
     let text = if popup_open {
         " ↑↓ navigate · Enter select · Esc close"
     } else if scan_done {
-        " ↑↓ select finding · p menu · q menu"
+        " ↑↓ select finding · p menu · q back"
     } else {
-        " ↑↓ navigate · p menu · q menu"
+        " ↑↓ navigate · p menu · q back"
     };
     let paragraph = Paragraph::new(text).style(Style::default().fg(theme.text_dim));
     frame.render_widget(paragraph, area);
