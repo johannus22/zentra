@@ -105,7 +105,6 @@ pub enum MenuScreen {
     ScannerSelector,
     ProviderSelector,
     ProviderForm,
-    Settings,
     RepoInput,
 }
 
@@ -534,6 +533,7 @@ pub struct MenuState {
     pub last_error: Option<String>,
     pub error_expanded: bool,
     pub theme: crate::tui::theme::Theme,
+    pub settings_open: bool,
     pub theme_picker_open: bool,
     pub theme_options: Vec<crate::tui::theme::Theme>,
     pub theme_idx: usize,
@@ -578,6 +578,7 @@ impl MenuState {
             theme: crate::tui::theme::resolve(
                 crate::config::GlobalConfig::load().ok().and_then(|g| g.theme).as_deref(),
             ),
+            settings_open: false,
             theme_picker_open: false,
             theme_options: crate::tui::theme::load_all(),
             theme_idx: 0,
@@ -685,7 +686,6 @@ impl MenuState {
             MenuScreen::ScannerSelector => 5,
             MenuScreen::ProviderSelector
             | MenuScreen::ProviderForm
-            | MenuScreen::Settings
             | MenuScreen::RepoInput => 0,
         };
         if self.selected_idx < max {
@@ -1068,6 +1068,28 @@ fn run_menu_loop(
                             }
                             continue;
                         }
+                        if state.settings_open {
+                            match key.code {
+                                KeyCode::Tab | KeyCode::Down => state.settings.next_field(),
+                                KeyCode::BackTab | KeyCode::Up => state.settings.prev_field(),
+                                KeyCode::Char(c) => state.settings.append_char(c),
+                                KeyCode::Backspace => state.settings.backspace(),
+                                KeyCode::Enter => {
+                                    if state.settings.focused_field
+                                        == SettingsFormState::SAVE_FIELD
+                                    {
+                                        if let Err(e) = state.settings.save() {
+                                            state.settings.error = Some(e.to_string());
+                                        }
+                                    } else {
+                                        state.settings.next_field();
+                                    }
+                                }
+                                KeyCode::Esc => state.settings_open = false,
+                                _ => {}
+                            }
+                            continue;
+                        }
                         match key.code {
                         KeyCode::Up => state.prev(),
                         KeyCode::Down => state.next(),
@@ -1107,7 +1129,7 @@ fn run_menu_loop(
                                 }
                                 ACTION_SETTINGS => {
                                     state.settings = MenuState::load_settings();
-                                    state.screen = MenuScreen::Settings;
+                                    state.settings_open = true;
                                 }
                                 ACTION_THEME => state.open_theme_picker(),
                                 ACTION_EXIT => return Ok(MenuAction::Exit),
@@ -1214,26 +1236,6 @@ fn run_menu_loop(
                         }
                         _ => {}
                     },
-                    MenuScreen::Settings => match key.code {
-                        KeyCode::Tab | KeyCode::Down => state.settings.next_field(),
-                        KeyCode::BackTab | KeyCode::Up => state.settings.prev_field(),
-                        KeyCode::Char(c) => state.settings.append_char(c),
-                        KeyCode::Backspace => state.settings.backspace(),
-                        KeyCode::Enter => {
-                            if state.settings.focused_field == SettingsFormState::SAVE_FIELD {
-                                if let Err(e) = state.settings.save() {
-                                    state.settings.error = Some(e.to_string());
-                                }
-                            } else {
-                                state.settings.next_field();
-                            }
-                        }
-                        KeyCode::Esc => {
-                            state.screen = MenuScreen::Main;
-                            state.selected_idx = ACTION_SETTINGS;
-                        }
-                        _ => {}
-                    },
                     MenuScreen::RepoInput => match key.code {
                         KeyCode::Char(c) => {
                             state.repo_input_error = None;
@@ -1278,7 +1280,6 @@ fn render_menu(frame: &mut Frame, state: &MenuState) {
         MenuScreen::ScannerSelector => render_scanner_selector(frame, area, state),
         MenuScreen::ProviderSelector => render_provider_selector(frame, area, state),
         MenuScreen::ProviderForm => render_provider_form(frame, area, state),
-        MenuScreen::Settings => render_settings(frame, area, state),
         MenuScreen::RepoInput => render_repo_input(frame, area, state),
     }
 }
@@ -1467,117 +1468,96 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
         );
         frame.render_widget(list, popup);
     }
-}
 
-fn render_settings(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
-    let s = &state.settings;
-    let form_height = 13;
-
-    let outer = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(HEADER_HEIGHT),
-        Constraint::Length(form_height),
-        Constraint::Fill(1),
-    ])
-    .split(area);
-
-    let header_center = Layout::horizontal([
-        Constraint::Percentage(30),
-        Constraint::Percentage(40),
-        Constraint::Percentage(30),
-    ])
-    .split(outer[1])[1];
-    render_banner_header(frame, header_center, state);
-
-    let form_area = Layout::horizontal([
-        Constraint::Percentage(20),
-        Constraint::Percentage(60),
-        Constraint::Percentage(20),
-    ])
-    .split(outer[2])[1];
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" SETTINGS ")
-        .title_style(Style::default().fg(state.theme.accent))
-        .border_style(Style::default().fg(state.theme.border))
-        .style(Style::default().bg(state.theme.bg));
-    let inner = block.inner(form_area);
-    frame.render_widget(block, form_area);
-
-    let field_style = |idx: usize| -> Style {
-        if s.focused_field == idx {
-            Style::default()
-                .fg(state.theme.warning)
-                .add_modifier(Modifier::BOLD)
+    if state.settings_open {
+        let s = &state.settings;
+        // Inner width = fixed popup width (60) minus the two borders.
+        let max_field_width = 60u16.saturating_sub(2).saturating_sub(8) as usize;
+        let shown_dir = if s.output_dir.is_empty() {
+            format!("(default: {})", s.default_dir)
         } else {
-            Style::default().fg(state.theme.text_dim)
-        }
-    };
+            s.output_dir.clone()
+        };
 
-    let max_field_width = inner.width.saturating_sub(8) as usize;
-    let shown_dir = if s.output_dir.is_empty() {
-        format!("(default: {})", s.default_dir)
-    } else {
-        s.output_dir.clone()
-    };
-
-    let mut lines = vec![
-        Line::from(Span::styled(
-            "Artifact output directory",
-            Style::default().fg(state.theme.accent),
-        )),
-        Line::from(Span::styled(
-            "Pentest reports & evidence go here. Blank = default.",
-            Style::default().fg(state.theme.text_dim),
-        )),
-        Line::from(Span::styled(
-            "(WSL: e.g. /mnt/c/Users/<you>/Documents/Zentra)",
-            Style::default().fg(state.theme.text_dim),
-        )),
-        Line::from(Span::raw("")),
-        Line::from(vec![
-            Span::raw(if s.focused_field == SettingsFormState::OUTPUT_DIR_FIELD {
-                "▶ "
+        let field_style = |idx: usize| -> Style {
+            if s.focused_field == idx {
+                Style::default()
+                    .fg(state.theme.warning)
+                    .add_modifier(Modifier::BOLD)
             } else {
-                "  "
-            }),
-            Span::styled("Dir  ", field_style(SettingsFormState::OUTPUT_DIR_FIELD)),
-            Span::styled(
-                clip_with_ellipsis(&shown_dir, max_field_width),
-                field_style(SettingsFormState::OUTPUT_DIR_FIELD),
-            ),
-        ]),
-        Line::from(Span::raw("")),
-    ];
+                Style::default().fg(state.theme.text_dim)
+            }
+        };
 
-    let save_label = if s.focused_field == SettingsFormState::SAVE_FIELD {
-        "  ▶ Save"
-    } else {
-        "    Save"
-    };
-    lines.push(Line::from(Span::styled(
-        save_label,
-        field_style(SettingsFormState::SAVE_FIELD),
-    )));
+        let mut lines = vec![
+            Line::from(Span::styled(
+                "Artifact output directory",
+                Style::default().fg(state.theme.accent),
+            )),
+            Line::from(Span::styled(
+                "Pentest reports & evidence go here. Blank = default.",
+                Style::default().fg(state.theme.text_dim),
+            )),
+            Line::from(Span::styled(
+                "(WSL: e.g. /mnt/c/Users/<you>/Documents/Zentra)",
+                Style::default().fg(state.theme.text_dim),
+            )),
+            Line::from(Span::raw("")),
+            Line::from(vec![
+                Span::raw(if s.focused_field == SettingsFormState::OUTPUT_DIR_FIELD {
+                    "▶ "
+                } else {
+                    "  "
+                }),
+                Span::styled("Dir  ", field_style(SettingsFormState::OUTPUT_DIR_FIELD)),
+                Span::styled(
+                    clip_with_ellipsis(&shown_dir, max_field_width),
+                    field_style(SettingsFormState::OUTPUT_DIR_FIELD),
+                ),
+            ]),
+            Line::from(Span::raw("")),
+        ];
 
-    if let Some(err) = &s.error {
+        let save_label = if s.focused_field == SettingsFormState::SAVE_FIELD {
+            "  ▶ Save"
+        } else {
+            "    Save"
+        };
         lines.push(Line::from(Span::styled(
-            format!("  ✗ {}", err),
-            Style::default().fg(state.theme.error),
+            save_label,
+            field_style(SettingsFormState::SAVE_FIELD),
         )));
-    } else if s.saved {
+
+        if let Some(err) = &s.error {
+            lines.push(Line::from(Span::styled(
+                format!("  ✗ {}", err),
+                Style::default().fg(state.theme.error),
+            )));
+        } else if s.saved {
+            lines.push(Line::from(Span::styled(
+                "  ✓ Saved",
+                Style::default().fg(state.theme.success),
+            )));
+        }
+
         lines.push(Line::from(Span::styled(
-            "  ✓ Saved",
-            Style::default().fg(state.theme.success),
+            " Tab/↑↓ move · type to edit · Enter save · Esc close",
+            Style::default().fg(state.theme.text_dim),
         )));
+
+        let height = lines.len() as u16 + 2; // borders
+        let popup = centered_fixed(60, height, area);
+        frame.render_widget(Clear, popup);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" SETTINGS ")
+            .title_style(Style::default().fg(state.theme.accent))
+            .border_style(Style::default().fg(state.theme.border))
+            .style(Style::default().bg(state.theme.surface));
+        let inner = block.inner(popup);
+        frame.render_widget(block, popup);
+        frame.render_widget(Paragraph::new(Text::from(lines)), inner);
     }
-
-    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
-
-    let hint = Paragraph::new(" Tab/↑↓ move · type to edit · Enter save · Esc back")
-        .style(Style::default().fg(state.theme.text_dim));
-    frame.render_widget(hint, outer[3]);
 }
 
 fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
@@ -1753,7 +1733,7 @@ fn render_repo_input(frame: &mut Frame, area: ratatui::layout::Rect, state: &Men
     let outer = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(HEADER_HEIGHT),
-        Constraint::Length(7),
+        Constraint::Length(9),
         Constraint::Fill(1),
     ])
     .split(area);
@@ -1784,6 +1764,11 @@ fn render_repo_input(frame: &mut Frame, area: ratatui::layout::Rect, state: &Men
 
     let max_w = inner.width.saturating_sub(11) as usize;
     let mut lines = vec![
+        Line::from(Span::styled(
+            "  Public Git URL — cloned to a temp dir, then scanned.",
+            Style::default().fg(state.theme.text_dim),
+        )),
+        Line::from(""),
         Line::from(vec![
             Span::raw("  Repo URL  "),
             Span::styled(
