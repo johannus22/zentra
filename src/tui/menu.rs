@@ -1169,6 +1169,14 @@ fn run_menu_loop(
                 match state.screen {
                     MenuScreen::Main => {
                         if state.settings_open {
+                            // A result popup is modal — Enter/Esc dismisses it,
+                            // any other key is swallowed until acknowledged.
+                            if state.settings_status.is_some() {
+                                if matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
+                                    state.settings_status = None;
+                                }
+                                continue;
+                            }
                             match state.settings_focus {
                                 SettingsFocus::Nav => match key.code {
                                     KeyCode::Up => state.settings_nav_up(),
@@ -1603,13 +1611,7 @@ fn render_settings_hub(frame: &mut Frame, area: Rect, state: &MenuState) {
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    // Reserve the bottom row for a status line so saves/changes are never silent.
-    let body_and_status =
-        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
-    let body = body_and_status[0];
-    let status_area = body_and_status[1];
-
-    let cols = Layout::horizontal([Constraint::Length(16), Constraint::Min(20)]).split(body);
+    let cols = Layout::horizontal([Constraint::Length(16), Constraint::Min(20)]).split(inner);
 
     // ── Left nav ──────────────────────────────────────────────────────────
     let nav_items: Vec<ListItem> = SettingsCategory::ALL
@@ -1654,22 +1656,47 @@ fn render_settings_hub(frame: &mut Frame, area: Rect, state: &MenuState) {
         DetailMode::About => render_settings_about(frame, detail_inner, state),
     }
 
-    // ── Status footer (success/error of the last action) ────────────────────
-    if let Some((ok, msg)) = &state.settings_status {
-        let (prefix, color) = if *ok {
-            ("✓ ", state.theme.success)
-        } else {
-            ("✗ ", state.theme.error)
-        };
-        frame.render_widget(
-            Paragraph::new(format!("{prefix}{msg}"))
-                .style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
-            status_area,
-        );
-    }
-
     if let Some(modal) = &state.oauth_modal {
         render_oauth_modal(frame, area, modal, &state.theme);
+    }
+
+    // ── Result popup (success/error of the last action; Enter dismisses) ─────
+    if let Some((ok, msg)) = &state.settings_status {
+        let (title, color, icon) = if *ok {
+            (" Success ", state.theme.success, "✓")
+        } else {
+            (" Error ", state.theme.error, "✗")
+        };
+        let content_w = (msg.chars().count() + 4).max(14) as u16;
+        let w = (content_w + 2).clamp(20.min(area.width).max(1), area.width.max(1));
+        let h = 5u16.min(area.height).max(1);
+        let p = centered_fixed(w, h, area);
+        frame.render_widget(Clear, p);
+        let popup_block = Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .title_style(Style::default().fg(color).add_modifier(Modifier::BOLD))
+            .border_style(Style::default().fg(color))
+            .style(Style::default().bg(state.theme.surface));
+        let pi = popup_block.inner(p);
+        frame.render_widget(popup_block, p);
+        let lines = vec![
+            Line::from(Span::styled(
+                format!("{icon} {msg}"),
+                Style::default().fg(state.theme.text),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "[ Enter ] OK",
+                Style::default().fg(state.theme.text_dim),
+            )),
+        ];
+        frame.render_widget(
+            Paragraph::new(Text::from(lines))
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: false }),
+            pi,
+        );
     }
 }
 
