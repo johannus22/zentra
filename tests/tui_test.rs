@@ -1164,6 +1164,34 @@ fn settings_provider_change_persists_via_hub() {
     // The hub stays open and the active provider is refreshed in place.
     assert!(state.settings_open);
     assert_eq!(state.active_profile, "openai");
+    // The change is surfaced, not silent.
+    assert!(matches!(state.settings_status, Some((true, _))));
+}
+
+#[test]
+fn settings_status_set_on_theme_save_and_cleared_on_nav() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let mut state = new_menu_state();
+    state.theme = state.theme_options[0].clone();
+    state.open_settings();
+    assert!(state.settings_status.is_none());
+
+    state.settings_nav_down(); // Theme
+    state.settings_enter_detail();
+    state.theme_picker_next();
+    state.confirm_theme_to(&path).unwrap();
+
+    let (ok, msg) = state
+        .settings_status
+        .clone()
+        .expect("a status message should be set after saving the theme");
+    assert!(ok);
+    assert!(msg.contains("Theme saved"), "unexpected message: {msg}");
+
+    // Navigating to another category clears the stale message.
+    state.settings_nav_up();
+    assert!(state.settings_status.is_none());
 }
 
 use zentra_cli::tui::menu::{clip_with_ellipsis, ProviderFormState};

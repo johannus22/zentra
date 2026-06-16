@@ -584,6 +584,9 @@ pub struct MenuState {
     pub settings_category_idx: usize,
     pub settings_focus: SettingsFocus,
     pub settings_detail: DetailMode,
+    /// Last Settings action result: (success?, message). Rendered as a footer
+    /// in the hub so saves/changes are never silent.
+    pub settings_status: Option<(bool, String)>,
     pub theme_options: Vec<crate::tui::theme::Theme>,
     pub theme_idx: usize,
     /// The theme that was active before the picker opened (restored on Esc).
@@ -631,6 +634,7 @@ impl MenuState {
             settings_category_idx: 0,
             settings_focus: SettingsFocus::Nav,
             settings_detail: DetailMode::ProviderList,
+            settings_status: None,
             theme_options: crate::tui::theme::load_all(),
             theme_idx: 0,
             theme_before_picker: None,
@@ -679,6 +683,7 @@ impl MenuState {
         global.theme = Some(self.theme.id.clone());
         global.save_to(config_path)?;
         self.theme_before_picker = Some(self.theme.clone());
+        self.settings_status = Some((true, format!("Theme saved: {}", self.theme.name)));
         Ok(())
     }
 
@@ -720,6 +725,7 @@ impl MenuState {
         self.settings_category_idx = 0;
         self.settings_focus = SettingsFocus::Nav;
         self.settings_detail = SettingsCategory::Providers.default_detail();
+        self.settings_status = None;
         self.settings_open = true;
     }
 
@@ -732,6 +738,7 @@ impl MenuState {
         if self.settings_category_idx > 0 {
             self.settings_category_idx -= 1;
             self.settings_detail = self.settings_category().default_detail();
+            self.settings_status = None;
         }
     }
 
@@ -739,6 +746,7 @@ impl MenuState {
         if self.settings_category_idx + 1 < SettingsCategory::ALL.len() {
             self.settings_category_idx += 1;
             self.settings_detail = self.settings_category().default_detail();
+            self.settings_status = None;
         }
     }
 
@@ -907,6 +915,7 @@ impl MenuState {
             .map(|p| p.model.clone())
             .unwrap_or_default();
         self.clear_provider_selector_messages();
+        self.settings_status = Some((true, format!("Active provider set to “{name}”")));
         Ok(())
     }
 
@@ -921,6 +930,7 @@ impl MenuState {
         if name == self.active_profile || name == self.default_profile {
             self.pending_delete_profile = None;
             self.provider_error = Some("Cannot delete active provider".to_string());
+            self.settings_status = Some((false, "Cannot delete the active provider".to_string()));
             return Ok(false);
         }
 
@@ -935,6 +945,7 @@ impl MenuState {
             self.provider_idx -= 1;
         }
         self.clear_provider_selector_messages();
+        self.settings_status = Some((true, format!("Deleted provider “{name}”")));
         Ok(true)
     }
 
@@ -1179,7 +1190,12 @@ fn run_menu_loop(
                                                 state.profiles.get(state.provider_idx)
                                             {
                                                 let name = name.clone();
-                                                state.apply_provider_change(&name)?;
+                                                if let Err(e) = state.apply_provider_change(&name) {
+                                                    state.settings_status = Some((
+                                                        false,
+                                                        format!("Failed to switch provider: {e}"),
+                                                    ));
+                                                }
                                             }
                                         }
                                         KeyCode::Left | KeyCode::Esc => state.settings_leave_detail(),
@@ -1208,14 +1224,30 @@ fn run_menu_loop(
                                                     {
                                                         match state.form.save() {
                                                             Ok(name) => {
-                                                                state.apply_provider_change(&name)?;
+                                                                let applied = state
+                                                                    .apply_provider_change(&name);
+                                                                state.settings_status = Some(match applied {
+                                                                    Ok(()) => (
+                                                                        true,
+                                                                        format!("Provider “{name}” saved"),
+                                                                    ),
+                                                                    Err(e) => (
+                                                                        false,
+                                                                        format!("Saved but failed to activate: {e}"),
+                                                                    ),
+                                                                });
                                                                 state.form =
                                                                     ProviderFormState::default();
                                                                 state.settings_detail =
                                                                     DetailMode::ProviderList;
                                                             }
                                                             Err(e) => {
-                                                                state.form.error = Some(e.to_string())
+                                                                state.form.error =
+                                                                    Some(e.to_string());
+                                                                state.settings_status = Some((
+                                                                    false,
+                                                                    format!("Could not save provider: {e}"),
+                                                                ));
                                                             }
                                                         }
                                                     } else {
@@ -1232,8 +1264,10 @@ fn run_menu_loop(
                                         KeyCode::Down => state.theme_picker_next(),
                                         KeyCode::Enter => {
                                             if let Err(e) = state.confirm_theme() {
-                                                state.last_error =
-                                                    Some(format!("Failed to save theme: {e}"));
+                                                state.settings_status = Some((
+                                                    false,
+                                                    format!("Failed to save theme: {e}"),
+                                                ));
                                             }
                                         }
                                         KeyCode::Left | KeyCode::Esc => state.settings_leave_detail(),
@@ -1248,8 +1282,20 @@ fn run_menu_loop(
                                             if state.settings.focused_field
                                                 == SettingsFormState::SAVE_FIELD
                                             {
-                                                if let Err(e) = state.settings.save() {
-                                                    state.settings.error = Some(e.to_string());
+                                                match state.settings.save() {
+                                                    Ok(()) => {
+                                                        state.settings_status = Some((
+                                                            true,
+                                                            "Output directory saved".to_string(),
+                                                        ));
+                                                    }
+                                                    Err(e) => {
+                                                        state.settings.error = Some(e.to_string());
+                                                        state.settings_status = Some((
+                                                            false,
+                                                            format!("Could not save: {e}"),
+                                                        ));
+                                                    }
                                                 }
                                             } else {
                                                 state.settings.next_field();
@@ -1557,7 +1603,13 @@ fn render_settings_hub(frame: &mut Frame, area: Rect, state: &MenuState) {
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
-    let cols = Layout::horizontal([Constraint::Length(16), Constraint::Min(20)]).split(inner);
+    // Reserve the bottom row for a status line so saves/changes are never silent.
+    let body_and_status =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+    let body = body_and_status[0];
+    let status_area = body_and_status[1];
+
+    let cols = Layout::horizontal([Constraint::Length(16), Constraint::Min(20)]).split(body);
 
     // ── Left nav ──────────────────────────────────────────────────────────
     let nav_items: Vec<ListItem> = SettingsCategory::ALL
@@ -1600,6 +1652,20 @@ fn render_settings_hub(frame: &mut Frame, area: Rect, state: &MenuState) {
         DetailMode::ThemeList => render_settings_theme_list(frame, detail_inner, state),
         DetailMode::OutputEdit => render_settings_output(frame, detail_inner, state),
         DetailMode::About => render_settings_about(frame, detail_inner, state),
+    }
+
+    // ── Status footer (success/error of the last action) ────────────────────
+    if let Some((ok, msg)) = &state.settings_status {
+        let (prefix, color) = if *ok {
+            ("✓ ", state.theme.success)
+        } else {
+            ("✗ ", state.theme.error)
+        };
+        frame.render_widget(
+            Paragraph::new(format!("{prefix}{msg}"))
+                .style(Style::default().fg(color).add_modifier(Modifier::BOLD)),
+            status_area,
+        );
     }
 
     if let Some(modal) = &state.oauth_modal {
@@ -1822,7 +1888,7 @@ fn render_settings_output(frame: &mut Frame, area: Rect, state: &MenuState) {
             Style::default().fg(state.theme.text_dim)
         }
     };
-    let mut lines = vec![
+    let lines = vec![
         Line::from(Span::styled(
             "Artifact output directory",
             Style::default().fg(state.theme.accent),
@@ -1843,17 +1909,7 @@ fn render_settings_output(frame: &mut Frame, area: Rect, state: &MenuState) {
             fs(SettingsFormState::SAVE_FIELD),
         )),
     ];
-    if let Some(err) = &s.error {
-        lines.push(Line::from(Span::styled(
-            format!("  ✗ {}", err),
-            Style::default().fg(state.theme.error),
-        )));
-    } else if s.saved {
-        lines.push(Line::from(Span::styled(
-            "  ✓ Saved",
-            Style::default().fg(state.theme.success),
-        )));
-    }
+    // Save success/error is surfaced by the hub-wide status footer, not inline.
 
     // Anchor the key hint at the bottom of the pane, like the other detail panes.
     let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
