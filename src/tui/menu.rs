@@ -78,9 +78,9 @@ pub fn scanner_selector_footer_hint() -> &'static str {
 
 pub fn provider_selector_footer_hint(state: &MenuState) -> &'static str {
     if state.pending_delete_profile.is_some() {
-        " d again confirm delete · ↑↓ move cancel · Esc back"
+        " d again confirm delete · ↑↓ move cancel · ← back"
     } else {
-        " ↑↓ navigate · Enter select · d delete · Esc back"
+        " ↑↓ navigate · Enter use · a add · d delete · ← back"
     }
 }
 
@@ -762,6 +762,18 @@ impl MenuState {
         self.settings_focus = SettingsFocus::Nav;
     }
 
+    /// Open a fresh inline provider form from the provider list.
+    pub fn open_provider_form(&mut self) {
+        self.form = ProviderFormState::default();
+        self.settings_detail = DetailMode::ProviderForm;
+    }
+
+    /// Cancel the inline provider form, returning to the provider list.
+    pub fn cancel_provider_form(&mut self) {
+        self.form = ProviderFormState::default();
+        self.settings_detail = DetailMode::ProviderList;
+    }
+
     pub fn open_repo_input(&mut self) {
         self.screen = MenuScreen::RepoInput;
         self.repo_url.clear();
@@ -1158,10 +1170,7 @@ fn run_menu_loop(
                                     DetailMode::ProviderList => match key.code {
                                         KeyCode::Up => state.provider_selector_move_up(),
                                         KeyCode::Down => state.provider_selector_move_down(),
-                                        KeyCode::Char('a') => {
-                                            state.form = ProviderFormState::default();
-                                            state.settings_detail = DetailMode::ProviderForm;
-                                        }
+                                        KeyCode::Char('a') => state.open_provider_form(),
                                         KeyCode::Char('d') => {
                                             state.handle_provider_delete_key()?;
                                         }
@@ -1213,10 +1222,7 @@ fn run_menu_loop(
                                                         state.form.next_field();
                                                     }
                                                 }
-                                                KeyCode::Esc => {
-                                                    state.form = ProviderFormState::default();
-                                                    state.settings_detail = DetailMode::ProviderList;
-                                                }
+                                                KeyCode::Esc => state.cancel_provider_form(),
                                                 _ => {}
                                             }
                                         }
@@ -1533,16 +1539,346 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
 }
 
 fn render_settings_hub(frame: &mut Frame, area: Rect, state: &MenuState) {
-    let popup = centered_fixed(area.width.saturating_mul(8) / 10, 16, area);
+    // Wide popup so long model IDs (e.g. "deepseek-v4-pro:cloud") fit.
+    let w = (area.width.saturating_mul(8) / 10).clamp(60.min(area.width).max(1), area.width.max(1));
+    let h = (area.height.saturating_mul(8) / 10).clamp(16.min(area.height).max(1), area.height.max(1));
+    let popup = centered_fixed(w, h, area);
     frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" SETTINGS ")
+        .title_style(Style::default().fg(state.theme.accent))
+        .border_style(Style::default().fg(state.theme.border))
+        .style(Style::default().bg(state.theme.surface));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let cols = Layout::horizontal([Constraint::Length(16), Constraint::Min(20)]).split(inner);
+
+    // ── Left nav ──────────────────────────────────────────────────────────
+    let nav_items: Vec<ListItem> = SettingsCategory::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, cat)| {
+            let selected = i == state.settings_category_idx;
+            let marker = if selected && state.settings_focus == SettingsFocus::Nav {
+                "▶ "
+            } else if selected {
+                "▸ "
+            } else {
+                "  "
+            };
+            let style = if selected {
+                Style::default()
+                    .fg(state.theme.selection_fg)
+                    .bg(state.theme.selection_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(state.theme.text)
+            };
+            ListItem::new(format!("{}{}", marker, cat.label())).style(style)
+        })
+        .collect();
+    frame.render_widget(List::new(nav_items), cols[0]);
+
+    let detail = Block::default()
+        .borders(Borders::LEFT)
+        .border_style(Style::default().fg(state.theme.border));
+    let detail_inner = detail.inner(cols[1]);
+    frame.render_widget(detail, cols[1]);
+
+    // ── Right detail ──────────────────────────────────────────────────────
+    match state.settings_detail {
+        DetailMode::ProviderList => render_settings_provider_list(frame, detail_inner, state),
+        DetailMode::ProviderForm => render_settings_provider_form(frame, detail_inner, state),
+        DetailMode::ThemeList => render_settings_theme_list(frame, detail_inner, state),
+        DetailMode::OutputEdit => render_settings_output(frame, detail_inner, state),
+        DetailMode::About => render_settings_about(frame, detail_inner, state),
+    }
+
+    if let Some(modal) = &state.oauth_modal {
+        render_oauth_modal(frame, area, modal, &state.theme);
+    }
+}
+
+fn render_settings_provider_list(frame: &mut Frame, area: Rect, state: &MenuState) {
+    let chunks = Layout::vertical([
+        Constraint::Length(1), // "Active: …"
+        Constraint::Min(3),    // list
+        Constraint::Length(1), // hint / error
+    ])
+    .split(area);
+
+    let active = if state.active_profile.is_empty() {
+        "Active: none".to_string()
+    } else {
+        format!("Active: {}", state.active_profile)
+    };
     frame.render_widget(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" SETTINGS ")
-            .border_style(Style::default().fg(state.theme.border))
-            .style(Style::default().bg(state.theme.surface)),
-        popup,
+        Paragraph::new(active).style(Style::default().fg(state.theme.accent)),
+        chunks[0],
     );
+
+    let max_w = chunks[1].width.saturating_sub(4) as usize;
+    let mut items: Vec<ListItem> = state
+        .profiles
+        .iter()
+        .enumerate()
+        .map(|(i, (name, model))| {
+            let selected = state.provider_idx == i && !state.profiles.is_empty();
+            let is_active = *name == state.active_profile;
+            let bullet = if is_active { "●" } else { " " };
+            let name_style = if selected {
+                Style::default()
+                    .fg(state.theme.selection_fg)
+                    .bg(state.theme.selection_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(state.theme.text)
+            };
+            ListItem::new(vec![
+                Line::from(vec![
+                    Span::styled(
+                        format!("{} ", bullet),
+                        Style::default().fg(if is_active {
+                            state.theme.success
+                        } else {
+                            state.theme.text_muted
+                        }),
+                    ),
+                    Span::styled(clip_with_ellipsis(name, max_w), name_style),
+                ]),
+                Line::from(Span::styled(
+                    format!("    {}", clip_with_ellipsis(model, max_w.saturating_sub(4))),
+                    Style::default().fg(state.theme.text_dim),
+                )),
+            ])
+        })
+        .collect();
+    items.push(ListItem::new(Line::from(Span::styled(
+        "  + Add provider",
+        Style::default().fg(state.theme.accent),
+    ))));
+    frame.render_widget(List::new(items), chunks[1]);
+
+    let hint = if let Some(err) = &state.provider_error {
+        Paragraph::new(format!("✗ {}", err)).style(Style::default().fg(state.theme.error))
+    } else {
+        Paragraph::new(provider_selector_footer_hint(state))
+            .style(Style::default().fg(state.theme.text_dim))
+    };
+    frame.render_widget(hint, chunks[2]);
+}
+
+fn render_settings_provider_form(frame: &mut Frame, area: Rect, state: &MenuState) {
+    let form = &state.form;
+    let provider_name = KNOWN_PROVIDER_NAMES[form.provider_idx];
+    let max_field_width = area.width.saturating_sub(15) as usize;
+
+    let field_style = |idx: usize| -> Style {
+        if form.focused_field == idx {
+            Style::default()
+                .fg(state.theme.warning)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(state.theme.text_dim)
+        }
+    };
+    let cursor = |idx: usize| if form.focused_field == idx { "▶ " } else { "  " };
+    let pad = |s: String| format!("{:width$}", s, width = max_field_width);
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "Add provider",
+            Style::default().fg(state.theme.accent),
+        )),
+        Line::from(vec![
+            Span::raw("  Provider   "),
+            Span::styled(format!("◀ {} ▶", provider_name), field_style(0)),
+        ]),
+        Line::from(vec![
+            Span::raw(cursor(1)),
+            Span::styled("Model      ", field_style(1)),
+            Span::styled(pad(clip_with_ellipsis(&form.model, max_field_width)), field_style(1)),
+        ]),
+        Line::from(vec![
+            Span::raw(cursor(2)),
+            Span::styled("Base URL   ", field_style(2)),
+            Span::styled(pad(clip_with_ellipsis(&form.base_url, max_field_width)), field_style(2)),
+        ]),
+        Line::from(vec![
+            Span::raw(cursor(form.reasoning_field_idx())),
+            Span::styled("Reasoning  ", field_style(form.reasoning_field_idx())),
+            Span::styled(
+                pad(clip_with_ellipsis(
+                    if form.reasoning_effort.is_empty() {
+                        "(blank = default)"
+                    } else {
+                        &form.reasoning_effort
+                    },
+                    max_field_width,
+                )),
+                field_style(form.reasoning_field_idx()),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw(cursor(form.api_key_field_idx())),
+            Span::styled("API Key    ", field_style(form.api_key_field_idx())),
+            Span::styled(
+                pad(clip_with_ellipsis(&form.masked_key(), max_field_width)),
+                field_style(form.api_key_field_idx()),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw(cursor(form.profile_name_field_idx())),
+            Span::styled("Name       ", field_style(form.profile_name_field_idx())),
+            Span::styled(
+                pad(clip_with_ellipsis(&form.profile_name, max_field_width)),
+                field_style(form.profile_name_field_idx()),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            if form.focused_field == form.save_field_idx() {
+                "  ▶ Save        Esc cancel"
+            } else {
+                "    Save        Esc cancel"
+            },
+            field_style(form.save_field_idx()),
+        )),
+    ];
+    if let Some(err) = &form.error {
+        lines.push(Line::from(Span::styled(
+            format!("  ✗ {}", err),
+            Style::default().fg(state.theme.error),
+        )));
+    }
+    frame.render_widget(Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }), area);
+}
+
+fn render_settings_theme_list(frame: &mut Frame, area: Rect, state: &MenuState) {
+    let rows: Vec<ListItem> = state
+        .theme_options
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let chips = Line::from(vec![
+                Span::styled("  ", Style::default().bg(t.accent)),
+                Span::styled("  ", Style::default().bg(t.error)),
+                Span::styled("  ", Style::default().bg(t.success)),
+                Span::raw(format!("  {}", t.name)),
+            ]);
+            let style = if i == state.theme_idx {
+                Style::default()
+                    .bg(state.theme.selection_bg)
+                    .fg(state.theme.selection_fg)
+            } else {
+                Style::default().fg(state.theme.text)
+            };
+            ListItem::new(chips).style(style)
+        })
+        .collect();
+    let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
+    frame.render_widget(List::new(rows), chunks[0]);
+    frame.render_widget(
+        Paragraph::new("↑↓ preview · Enter save · ← cancel")
+            .style(Style::default().fg(state.theme.text_dim)),
+        chunks[1],
+    );
+}
+
+fn render_settings_output(frame: &mut Frame, area: Rect, state: &MenuState) {
+    let s = &state.settings;
+    let max_w = area.width.saturating_sub(8) as usize;
+    let shown = if s.output_dir.is_empty() {
+        format!("(default: {})", s.default_dir)
+    } else {
+        s.output_dir.clone()
+    };
+    let fs = |idx: usize| {
+        if s.focused_field == idx {
+            Style::default().fg(state.theme.warning).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(state.theme.text_dim)
+        }
+    };
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "Artifact output directory",
+            Style::default().fg(state.theme.accent),
+        )),
+        Line::from(Span::styled(
+            "Pentest reports & evidence go here. Blank = default.",
+            Style::default().fg(state.theme.text_dim),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(if s.focused_field == SettingsFormState::OUTPUT_DIR_FIELD { "▶ " } else { "  " }),
+            Span::styled("Dir  ", fs(SettingsFormState::OUTPUT_DIR_FIELD)),
+            Span::styled(clip_with_ellipsis(&shown, max_w), fs(SettingsFormState::OUTPUT_DIR_FIELD)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            if s.focused_field == SettingsFormState::SAVE_FIELD { "  ▶ Save" } else { "    Save" },
+            fs(SettingsFormState::SAVE_FIELD),
+        )),
+    ];
+    if let Some(err) = &s.error {
+        lines.push(Line::from(Span::styled(
+            format!("  ✗ {}", err),
+            Style::default().fg(state.theme.error),
+        )));
+    } else if s.saved {
+        lines.push(Line::from(Span::styled(
+            "  ✓ Saved",
+            Style::default().fg(state.theme.success),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        "Tab/↑↓ move · type to edit · Enter save · ← back",
+        Style::default().fg(state.theme.text_dim),
+    )));
+    frame.render_widget(Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }), area);
+}
+
+fn render_settings_about(frame: &mut Frame, area: Rect, state: &MenuState) {
+    let config_path = crate::config::GlobalConfig::default_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "~/.zentra/config.toml".to_string());
+    let lines = vec![
+        Line::from(Span::styled(
+            format!("Zentra CLI v{}", env!("CARGO_PKG_VERSION")),
+            Style::default().fg(state.theme.accent).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "LLM-powered security scanner & pentest orchestrator.",
+            Style::default().fg(state.theme.text_dim),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Config:  ", Style::default().fg(state.theme.text)),
+            Span::styled(config_path, Style::default().fg(state.theme.text_dim)),
+        ]),
+        Line::from(vec![
+            Span::styled("Themes:  ", Style::default().fg(state.theme.text)),
+            Span::styled("~/.zentra/themes/*.toml", Style::default().fg(state.theme.text_dim)),
+        ]),
+        Line::from(vec![
+            Span::styled("Repo:    ", Style::default().fg(state.theme.text)),
+            Span::styled(
+                "https://github.com/johannus22/zentra-cli",
+                Style::default().fg(state.theme.text_dim),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "← back",
+            Style::default().fg(state.theme.text_dim),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }), area);
 }
 
 fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
@@ -1699,7 +2035,6 @@ fn render_repo_input(frame: &mut Frame, area: ratatui::layout::Rect, state: &Men
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
-#[allow(dead_code)]
 fn render_oauth_modal(
     frame: &mut Frame,
     area: Rect,

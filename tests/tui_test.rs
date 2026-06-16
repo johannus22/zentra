@@ -1055,6 +1055,27 @@ fn settings_hub_theme_detail_restores_on_leave() {
 }
 
 #[test]
+fn settings_open_provider_form_switches_detail() {
+    let mut state = new_menu_state();
+    state.open_settings();
+    state.settings_enter_detail(); // Providers detail
+    state.open_provider_form();
+    assert_eq!(state.settings_detail, DetailMode::ProviderForm);
+}
+
+#[test]
+fn settings_cancel_provider_form_returns_to_list() {
+    let mut state = new_menu_state();
+    state.open_settings();
+    state.settings_enter_detail();
+    state.open_provider_form();
+    state.form.model = "xyz".to_string();
+    state.cancel_provider_form();
+    assert_eq!(state.settings_detail, DetailMode::ProviderList);
+    assert_eq!(state.form.model, ProviderFormState::default().model);
+}
+
+#[test]
 fn scanner_selector_hint_is_centered_like_the_list() {
     let area = Rect::new(0, 0, 120, 40);
     let chunks = Layout::vertical([
@@ -1080,9 +1101,69 @@ fn scanner_selector_hint_is_centered_like_the_list() {
 #[test]
 fn settings_provider_change_persists_via_hub() {
     // Provider switching now happens inside the Settings hub, not a menu item.
-    // apply_provider_change_to keeps the hub open and refreshes state in place.
-    let state = new_menu_state();
-    assert!(state.is_item_enabled(5)); // Settings is always reachable
+    // apply_provider_change_to refreshes state in place AND keeps the hub open
+    // (it no longer tears the TUI back down to the main menu).
+    use std::collections::HashMap;
+    use zentra_cli::config::ProviderProfile;
+
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+
+    let mut profiles = HashMap::new();
+    profiles.insert(
+        "anthropic".to_string(),
+        ProviderProfile {
+            kind: "anthropic".to_string(),
+            base_url: "https://api.anthropic.com".to_string(),
+            model: "claude-opus-4-1".to_string(),
+            keyless: false,
+            auth_method: AuthMethod::ApiKey,
+            context_window: None,
+            reasoning_effort: None,
+        },
+    );
+    profiles.insert(
+        "openai".to_string(),
+        ProviderProfile {
+            kind: "openai_compat".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4o".to_string(),
+            keyless: false,
+            auth_method: AuthMethod::ApiKey,
+            context_window: None,
+            reasoning_effort: None,
+        },
+    );
+    GlobalConfig {
+        profiles,
+        default_profile: Some("anthropic".to_string()),
+        output_dir: None,
+        theme: None,
+    }
+    .save_to(&config_path)
+    .unwrap();
+
+    let mut state = MenuState::new(
+        true,
+        true,
+        vec![
+            ("anthropic".to_string(), "claude-opus-4-1".to_string()),
+            ("openai".to_string(), "gpt-4o".to_string()),
+        ],
+        "claude-opus-4-1".to_string(),
+        "anthropic".to_string(),
+        String::new(),
+        String::new(),
+    );
+    state.open_settings();
+    state.settings_enter_detail();
+    state.provider_idx = 1;
+
+    state.apply_provider_change_to("openai", &config_path).unwrap();
+
+    // The hub stays open and the active provider is refreshed in place.
+    assert!(state.settings_open);
+    assert_eq!(state.active_profile, "openai");
 }
 
 use zentra_cli::tui::menu::{clip_with_ellipsis, ProviderFormState};
@@ -1544,7 +1625,7 @@ fn provider_selector_arms_delete_for_non_active_profile() {
 
     assert_eq!(
         provider_selector_footer_hint(&state),
-        " ↑↓ navigate · Enter select · d delete · Esc back"
+        " ↑↓ navigate · Enter use · a add · d delete · ← back"
     );
 
     let deleted = state.handle_provider_delete_key().unwrap();
@@ -1554,7 +1635,7 @@ fn provider_selector_arms_delete_for_non_active_profile() {
     assert!(state.provider_error.is_none());
     assert_eq!(
         provider_selector_footer_hint(&state),
-        " d again confirm delete · ↑↓ move cancel · Esc back"
+        " d again confirm delete · ↑↓ move cancel · ← back"
     );
 }
 
@@ -1587,7 +1668,7 @@ fn provider_selector_blocks_delete_for_active_profile() {
     assert_eq!(state.profiles.len(), 2);
     assert_eq!(
         provider_selector_footer_hint(&state),
-        " ↑↓ navigate · Enter select · d delete · Esc back"
+        " ↑↓ navigate · Enter use · a add · d delete · ← back"
     );
 }
 
