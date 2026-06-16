@@ -1539,8 +1539,11 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
 }
 
 fn render_settings_hub(frame: &mut Frame, area: Rect, state: &MenuState) {
-    // Wide popup so long model IDs (e.g. "deepseek-v4-pro:cloud") fit.
-    let w = (area.width.saturating_mul(8) / 10).clamp(60.min(area.width).max(1), area.width.max(1));
+    // Wide enough that long model IDs (e.g. "deepseek-v4-pro:cloud") fit, but
+    // capped so the popup doesn't sprawl across a very wide terminal.
+    let w = (area.width.saturating_mul(8) / 10)
+        .min(90)
+        .clamp(60.min(area.width).max(1), area.width.max(1));
     let h = (area.height.saturating_mul(8) / 10).clamp(16.min(area.height).max(1), area.height.max(1));
     let popup = centered_fixed(w, h, area);
     frame.render_widget(Clear, popup);
@@ -1623,9 +1626,18 @@ fn render_settings_provider_list(frame: &mut Frame, area: Rect, state: &MenuStat
     );
 
     // Row layout: "▶ <name padded> ●"
-    //  cursor arrow (2) on the left, active green dot right-aligned (2).
+    //  cursor arrow (2) on the left, then the active green dot one space past
+    //  the longest name (NOT the far pane edge, which looks detached on a wide
+    //  panel). The name column is capped to what the pane can hold.
     let inner_w = chunks[1].width as usize;
-    let name_budget = inner_w.saturating_sub(4).max(1);
+    let max_name_col = inner_w.saturating_sub(4).max(1);
+    let name_budget = state
+        .profiles
+        .iter()
+        .map(|(n, _)| n.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(1, max_name_col);
     let mut items: Vec<ListItem> = state
         .profiles
         .iter()
