@@ -6,7 +6,8 @@ use zentra_cli::pentest::{PentestEvent, PentestEvidence, PentestFinding, Pentest
 use zentra_cli::state::{Finding, Severity};
 use zentra_cli::tui::menu::{
     centered_middle_column, main_menu_actions, provider_selector_footer_hint,
-    scanner_selector_footer_hint, MenuScreen, MenuState, OAuthModalPhase, SettingsFormState,
+    scanner_selector_footer_hint, DetailMode, MenuScreen, MenuState, OAuthModalPhase,
+    SettingsCategory, SettingsFocus, SettingsFormState,
 };
 use zentra_cli::tui::pentest_setup::build_pentest_config_from_setup_input;
 use zentra_cli::tui::pentest_ui::PentestUiState;
@@ -585,27 +586,21 @@ fn menu_state_navigate_wraps() {
         String::new(),
         String::new(),
     );
-    // 10 items: RunFull(0), Clone(1), RunPentest(2), SelectScanners(3),
-    // ViewResults(4), ChangeProvider(5), AddProvider(6), Settings(7),
-    // Theme(8), Exit(9)
+    // 7 items: RunFull(0), Clone(1), RunPentest(2), SelectScanners(3),
+    // ViewResults(4), Settings(5), Exit(6)
     state.next();
     assert_eq!(state.selected_idx, 1);
     state.next(); // 2
     state.next(); // 3
     state.next(); // 4
     state.next(); // 5
+    assert_eq!(state.selected_idx, 5);
     state.next(); // 6
     assert_eq!(state.selected_idx, 6);
-    state.next(); // 7
-    assert_eq!(state.selected_idx, 7);
-    state.next(); // 8
-    assert_eq!(state.selected_idx, 8);
-    state.next(); // 9
-    assert_eq!(state.selected_idx, 9);
     state.next(); // clamp at max
-    assert_eq!(state.selected_idx, 9);
+    assert_eq!(state.selected_idx, 6);
     state.prev();
-    assert_eq!(state.selected_idx, 8);
+    assert_eq!(state.selected_idx, 5);
 }
 
 #[test]
@@ -619,16 +614,13 @@ fn menu_state_disabled_items_when_unconfigured() {
         String::new(),
         String::new(),
     ); // no provider, no project
-    assert!(!state.is_item_enabled(0)); // Run Full Scan (this directory)
+    assert!(!state.is_item_enabled(0)); // Run Full Scan
     assert!(!state.is_item_enabled(1)); // Clone Repo & Scan
     assert!(state.is_item_enabled(2)); // Run Pentest
     assert!(!state.is_item_enabled(3)); // Select Scanners
     assert!(state.is_item_enabled(4)); // View Last Results
-    assert!(!state.is_item_enabled(5)); // Change Provider
-    assert!(state.is_item_enabled(6)); // Add Provider
-    assert!(state.is_item_enabled(7)); // Settings
-    assert!(state.is_item_enabled(8)); // Theme
-    assert!(state.is_item_enabled(9)); // Exit
+    assert!(state.is_item_enabled(5)); // Settings
+    assert!(state.is_item_enabled(6)); // Exit
 }
 
 #[test]
@@ -904,12 +896,12 @@ fn menu_state_navigate_new_max_is_9() {
         String::new(),
         String::new(),
     );
-    for _ in 0..9 {
+    for _ in 0..6 {
         state.next();
     }
-    assert_eq!(state.selected_idx, 9);
+    assert_eq!(state.selected_idx, 6);
     state.next(); // clamp
-    assert_eq!(state.selected_idx, 9);
+    assert_eq!(state.selected_idx, 6);
 }
 
 #[test]
@@ -946,8 +938,8 @@ fn settings_form_save_persists_and_clears_output_dir() {
 }
 
 #[test]
-fn menu_state_main_menu_has_ten_actions() {
-    assert_eq!(main_menu_actions().len(), 10);
+fn menu_state_main_menu_has_seven_actions() {
+    assert_eq!(main_menu_actions().len(), 7);
     assert_eq!(
         main_menu_actions(),
         &[
@@ -956,10 +948,7 @@ fn menu_state_main_menu_has_ten_actions() {
             "Run Pentest",
             "Select Scanners",
             "View Last Results",
-            "Change Provider",
-            "Add Provider",
             "Settings",
-            "Theme",
             "Exit",
         ]
     );
@@ -982,7 +971,6 @@ fn theme_picker_cycles_and_previews() {
     let mut state = new_menu_state();
     state.theme = state.theme_options[0].clone();
     state.open_theme_picker();
-    assert!(state.theme_picker_open);
     let first = state.theme.id.clone();
     state.theme_picker_next();
     assert_ne!(
@@ -999,7 +987,6 @@ fn theme_picker_esc_restores_previous() {
     state.open_theme_picker();
     state.theme_picker_next();
     state.cancel_theme();
-    assert!(!state.theme_picker_open);
     assert_eq!(state.theme.id, original);
 }
 
@@ -1015,6 +1002,77 @@ fn theme_picker_enter_persists() {
     state.confirm_theme_to(&path).unwrap();
     let saved = zentra_cli::config::GlobalConfig::load_from(&path).unwrap();
     assert_eq!(saved.theme.as_deref(), Some(chosen.as_str()));
+}
+
+#[test]
+fn settings_hub_opens_on_providers_nav() {
+    let mut state = new_menu_state();
+    state.open_settings();
+    assert!(state.settings_open);
+    assert_eq!(state.settings_category(), SettingsCategory::Providers);
+    assert_eq!(state.settings_focus, SettingsFocus::Nav);
+}
+
+#[test]
+fn settings_hub_nav_cycles_categories_and_resets_detail() {
+    let mut state = new_menu_state();
+    state.open_settings();
+    state.settings_nav_down(); // Theme
+    assert_eq!(state.settings_category(), SettingsCategory::Theme);
+    assert_eq!(state.settings_detail, DetailMode::ThemeList);
+    state.settings_nav_down(); // Output dir
+    state.settings_nav_down(); // About
+    assert_eq!(state.settings_category(), SettingsCategory::About);
+    state.settings_nav_down(); // clamp
+    assert_eq!(state.settings_category(), SettingsCategory::About);
+    state.settings_nav_up(); // Output dir
+    assert_eq!(state.settings_category(), SettingsCategory::OutputDir);
+}
+
+#[test]
+fn settings_hub_enter_and_leave_detail_focus() {
+    let mut state = new_menu_state();
+    state.open_settings();
+    state.settings_enter_detail();
+    assert_eq!(state.settings_focus, SettingsFocus::Detail);
+    assert_eq!(state.settings_detail, DetailMode::ProviderList);
+    state.settings_leave_detail();
+    assert_eq!(state.settings_focus, SettingsFocus::Nav);
+}
+
+#[test]
+fn settings_hub_theme_detail_restores_on_leave() {
+    let mut state = new_menu_state();
+    state.theme = state.theme_options[0].clone();
+    let original = state.theme.id.clone();
+    state.open_settings();
+    state.settings_nav_down(); // Theme
+    state.settings_enter_detail();
+    state.theme_picker_next(); // live preview a different theme
+    assert_ne!(state.theme.id, original);
+    state.settings_leave_detail();
+    assert_eq!(state.theme.id, original);
+}
+
+#[test]
+fn settings_open_provider_form_switches_detail() {
+    let mut state = new_menu_state();
+    state.open_settings();
+    state.settings_enter_detail(); // Providers detail
+    state.open_provider_form();
+    assert_eq!(state.settings_detail, DetailMode::ProviderForm);
+}
+
+#[test]
+fn settings_cancel_provider_form_returns_to_list() {
+    let mut state = new_menu_state();
+    state.open_settings();
+    state.settings_enter_detail();
+    state.open_provider_form();
+    state.form.model = "xyz".to_string();
+    state.cancel_provider_form();
+    assert_eq!(state.settings_detail, DetailMode::ProviderList);
+    assert_eq!(state.form.model, ProviderFormState::default().model);
 }
 
 #[test]
@@ -1041,17 +1099,99 @@ fn scanner_selector_hint_is_centered_like_the_list() {
 }
 
 #[test]
-fn menu_state_change_provider_requires_provider() {
-    let state = MenuState::new(
-        false,
-        false,
-        vec![],
-        String::new(),
-        String::new(),
+fn settings_provider_change_persists_via_hub() {
+    // Provider switching now happens inside the Settings hub, not a menu item.
+    // apply_provider_change_to refreshes state in place AND keeps the hub open
+    // (it no longer tears the TUI back down to the main menu).
+    use std::collections::HashMap;
+    use zentra_cli::config::ProviderProfile;
+
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+
+    let mut profiles = HashMap::new();
+    profiles.insert(
+        "anthropic".to_string(),
+        ProviderProfile {
+            kind: "anthropic".to_string(),
+            base_url: "https://api.anthropic.com".to_string(),
+            model: "claude-opus-4-1".to_string(),
+            keyless: false,
+            auth_method: AuthMethod::ApiKey,
+            context_window: None,
+            reasoning_effort: None,
+        },
+    );
+    profiles.insert(
+        "openai".to_string(),
+        ProviderProfile {
+            kind: "openai_compat".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
+            model: "gpt-4o".to_string(),
+            keyless: false,
+            auth_method: AuthMethod::ApiKey,
+            context_window: None,
+            reasoning_effort: None,
+        },
+    );
+    GlobalConfig {
+        profiles,
+        default_profile: Some("anthropic".to_string()),
+        output_dir: None,
+        theme: None,
+    }
+    .save_to(&config_path)
+    .unwrap();
+
+    let mut state = MenuState::new(
+        true,
+        true,
+        vec![
+            ("anthropic".to_string(), "claude-opus-4-1".to_string()),
+            ("openai".to_string(), "gpt-4o".to_string()),
+        ],
+        "claude-opus-4-1".to_string(),
+        "anthropic".to_string(),
         String::new(),
         String::new(),
     );
-    assert!(!state.is_item_enabled(5)); // Change Provider = index 5
+    state.open_settings();
+    state.settings_enter_detail();
+    state.provider_idx = 1;
+
+    state.apply_provider_change_to("openai", &config_path).unwrap();
+
+    // The hub stays open and the active provider is refreshed in place.
+    assert!(state.settings_open);
+    assert_eq!(state.active_profile, "openai");
+    // The change is surfaced, not silent.
+    assert!(matches!(state.settings_status, Some((true, _))));
+}
+
+#[test]
+fn settings_status_set_on_theme_save_and_cleared_on_nav() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let mut state = new_menu_state();
+    state.theme = state.theme_options[0].clone();
+    state.open_settings();
+    assert!(state.settings_status.is_none());
+
+    state.settings_nav_down(); // Theme
+    state.settings_enter_detail();
+    state.theme_picker_next();
+    state.confirm_theme_to(&path).unwrap();
+
+    let (ok, msg) = state
+        .settings_status
+        .clone()
+        .expect("a status message should be set after saving the theme");
+    assert!(ok);
+    assert!(msg.contains("Theme saved"), "unexpected message: {msg}");
+
+    // Navigating to another category clears the stale message.
+    state.settings_nav_up();
+    assert!(state.settings_status.is_none());
 }
 
 use zentra_cli::tui::menu::{clip_with_ellipsis, ProviderFormState};
@@ -1282,7 +1422,8 @@ fn oauth_modal_state_tracks_progress_and_launch_error() {
         String::new(),
         String::new(),
     );
-    state.screen = MenuScreen::ProviderForm;
+    state.open_settings();
+    state.settings_detail = DetailMode::ProviderForm;
 
     state.open_oauth_modal("https://example.test/oauth/start".to_string());
     let modal = state.oauth_modal.as_ref().unwrap();
@@ -1506,12 +1647,13 @@ fn provider_selector_arms_delete_for_non_active_profile() {
         String::new(),
         String::new(),
     );
-    state.screen = MenuScreen::ProviderSelector;
+    state.open_settings();
+    state.settings_enter_detail(); // Providers detail
     state.provider_idx = 1;
 
     assert_eq!(
         provider_selector_footer_hint(&state),
-        " ↑↓ navigate · Enter select · d delete · Esc back"
+        " ↑↓ navigate · Enter use · a add · d delete · ← back"
     );
 
     let deleted = state.handle_provider_delete_key().unwrap();
@@ -1521,7 +1663,7 @@ fn provider_selector_arms_delete_for_non_active_profile() {
     assert!(state.provider_error.is_none());
     assert_eq!(
         provider_selector_footer_hint(&state),
-        " d again confirm delete · ↑↓ move cancel · Esc back"
+        " d again confirm delete · ↑↓ move cancel · ← back"
     );
 }
 
@@ -1539,7 +1681,8 @@ fn provider_selector_blocks_delete_for_active_profile() {
         String::new(),
         String::new(),
     );
-    state.screen = MenuScreen::ProviderSelector;
+    state.open_settings();
+    state.settings_enter_detail(); // Providers detail
     state.provider_idx = 0;
 
     let deleted = state.handle_provider_delete_key().unwrap();
@@ -1553,7 +1696,7 @@ fn provider_selector_blocks_delete_for_active_profile() {
     assert_eq!(state.profiles.len(), 2);
     assert_eq!(
         provider_selector_footer_hint(&state),
-        " ↑↓ navigate · Enter select · d delete · Esc back"
+        " ↑↓ navigate · Enter use · a add · d delete · ← back"
     );
 }
 
@@ -1571,7 +1714,8 @@ fn provider_selector_blocks_delete_for_default_non_active_profile() {
         String::new(),
         String::new(),
     );
-    state.screen = MenuScreen::ProviderSelector;
+    state.open_settings();
+    state.settings_enter_detail(); // Providers detail
     state.default_profile = "openai".to_string();
     state.provider_idx = 1;
 
@@ -1600,7 +1744,8 @@ fn provider_selector_navigation_clears_pending_delete() {
         String::new(),
         String::new(),
     );
-    state.screen = MenuScreen::ProviderSelector;
+    state.open_settings();
+    state.settings_enter_detail(); // Providers detail
     state.provider_idx = 1;
     state.handle_provider_delete_key().unwrap();
     state.provider_error = Some("temporary".to_string());
@@ -1616,10 +1761,9 @@ fn provider_selector_navigation_clears_pending_delete() {
 
     state.provider_idx = 1;
     state.handle_provider_delete_key().unwrap();
-    state.provider_selector_escape();
+    state.settings_leave_detail();
     assert!(state.pending_delete_profile.is_none());
-    assert_eq!(state.screen, MenuScreen::Main);
-    assert_eq!(state.selected_idx, 5);
+    assert_eq!(state.settings_focus, SettingsFocus::Nav);
 }
 
 #[test]
@@ -1676,7 +1820,8 @@ fn apply_provider_change_persists_default_and_refreshes_state_in_place() {
         String::new(),
         String::new(),
     );
-    state.screen = MenuScreen::ProviderSelector;
+    state.open_settings();
+    state.settings_enter_detail(); // Providers detail
     state.provider_idx = 1;
 
     state
@@ -1688,7 +1833,6 @@ fn apply_provider_change_persists_default_and_refreshes_state_in_place() {
     assert_eq!(state.default_profile, "openai");
     assert_eq!(state.active_model, "gpt-4o");
     assert!(state.provider_configured);
-    assert_eq!(state.screen, MenuScreen::Main);
 
     // And the new default is durably persisted to the config file.
     let saved = GlobalConfig::load_from(&config_path).unwrap();

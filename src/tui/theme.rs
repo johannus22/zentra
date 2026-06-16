@@ -268,6 +268,256 @@ pub fn monokai() -> Theme {
     }
 }
 
+pub fn catppuccin_mocha() -> Theme {
+    Theme {
+        id: "catppuccin_mocha".into(),
+        name: "Catppuccin Mocha".into(),
+        bg: Color::Rgb(0x1e, 0x1e, 0x2e),
+        surface: Color::Rgb(0x31, 0x32, 0x44),
+        border: Color::Rgb(0x45, 0x47, 0x5a),
+        text: Color::Rgb(0xcd, 0xd6, 0xf4),
+        text_dim: Color::Rgb(0xa6, 0xad, 0xc8),
+        text_muted: Color::Rgb(0x7f, 0x84, 0x9c),
+        accent: Color::Rgb(0x89, 0xb4, 0xfa),
+        accent_alt: Color::Rgb(0xcb, 0xa6, 0xf7),
+        selection_bg: Color::Rgb(0x45, 0x47, 0x5a),
+        selection_fg: Color::Rgb(0xcd, 0xd6, 0xf4),
+        success: Color::Rgb(0xa6, 0xe3, 0xa1),
+        warning: Color::Rgb(0xf9, 0xe2, 0xaf),
+        error: Color::Rgb(0xf3, 0x8b, 0xa8),
+        crit: Color::Rgb(0xf3, 0x8b, 0xa8),
+        high: Color::Rgb(0xfa, 0xb3, 0x87),
+        medium: Color::Rgb(0xf9, 0xe2, 0xaf),
+        low: Color::Rgb(0x89, 0xb4, 0xfa),
+        info: Color::Rgb(0x6c, 0x70, 0x86),
+    }
+}
+
+pub fn catppuccin_macchiato() -> Theme {
+    Theme {
+        id: "catppuccin_macchiato".into(),
+        name: "Catppuccin Macchiato".into(),
+        bg: Color::Rgb(0x24, 0x27, 0x3a),
+        surface: Color::Rgb(0x36, 0x3a, 0x4f),
+        border: Color::Rgb(0x49, 0x4d, 0x64),
+        text: Color::Rgb(0xca, 0xd3, 0xf5),
+        text_dim: Color::Rgb(0xa5, 0xad, 0xcb),
+        text_muted: Color::Rgb(0x80, 0x87, 0xa2),
+        accent: Color::Rgb(0x8a, 0xad, 0xf4),
+        accent_alt: Color::Rgb(0xc6, 0xa0, 0xf6),
+        selection_bg: Color::Rgb(0x49, 0x4d, 0x64),
+        selection_fg: Color::Rgb(0xca, 0xd3, 0xf5),
+        success: Color::Rgb(0xa6, 0xda, 0x95),
+        warning: Color::Rgb(0xee, 0xd4, 0x9f),
+        error: Color::Rgb(0xed, 0x87, 0x96),
+        crit: Color::Rgb(0xed, 0x87, 0x96),
+        high: Color::Rgb(0xf5, 0xa9, 0x7f),
+        medium: Color::Rgb(0xee, 0xd4, 0x9f),
+        low: Color::Rgb(0x8a, 0xad, 0xf4),
+        info: Color::Rgb(0x6e, 0x73, 0x8d),
+    }
+}
+
+pub fn catppuccin_frappe() -> Theme {
+    Theme {
+        id: "catppuccin_frappe".into(),
+        name: "Catppuccin Frappé".into(),
+        bg: Color::Rgb(0x30, 0x34, 0x46),
+        surface: Color::Rgb(0x41, 0x45, 0x59),
+        border: Color::Rgb(0x51, 0x57, 0x6d),
+        text: Color::Rgb(0xc6, 0xd0, 0xf5),
+        text_dim: Color::Rgb(0xa5, 0xad, 0xce),
+        text_muted: Color::Rgb(0x83, 0x8b, 0xa7),
+        accent: Color::Rgb(0x8c, 0xaa, 0xee),
+        accent_alt: Color::Rgb(0xca, 0x9e, 0xe6),
+        selection_bg: Color::Rgb(0x51, 0x57, 0x6d),
+        selection_fg: Color::Rgb(0xc6, 0xd0, 0xf5),
+        success: Color::Rgb(0xa6, 0xd1, 0x89),
+        warning: Color::Rgb(0xe5, 0xc8, 0x90),
+        error: Color::Rgb(0xe7, 0x82, 0x84),
+        crit: Color::Rgb(0xe7, 0x82, 0x84),
+        high: Color::Rgb(0xef, 0x9f, 0x76),
+        medium: Color::Rgb(0xe5, 0xc8, 0x90),
+        low: Color::Rgb(0x8c, 0xaa, 0xee),
+        info: Color::Rgb(0x73, 0x79, 0x94),
+    }
+}
+
+pub fn catppuccin_latte() -> Theme {
+    Theme {
+        id: "catppuccin_latte".into(),
+        name: "Catppuccin Latte".into(),
+        bg: Color::Rgb(0xef, 0xf1, 0xf5),
+        surface: Color::Rgb(0xcc, 0xd0, 0xda),
+        border: Color::Rgb(0xbc, 0xc0, 0xcc),
+        text: Color::Rgb(0x4c, 0x4f, 0x69),
+        text_dim: Color::Rgb(0x6c, 0x6f, 0x85),
+        text_muted: Color::Rgb(0x8c, 0x8f, 0xa1),
+        accent: Color::Rgb(0x1e, 0x66, 0xf5),
+        accent_alt: Color::Rgb(0x88, 0x39, 0xef),
+        selection_bg: Color::Rgb(0xcc, 0xd0, 0xda),
+        selection_fg: Color::Rgb(0x4c, 0x4f, 0x69),
+        success: Color::Rgb(0x40, 0xa0, 0x2b),
+        warning: Color::Rgb(0xdf, 0x8e, 0x1d),
+        error: Color::Rgb(0xd2, 0x0f, 0x39),
+        crit: Color::Rgb(0xd2, 0x0f, 0x39),
+        high: Color::Rgb(0xfe, 0x64, 0x0b),
+        medium: Color::Rgb(0xdf, 0x8e, 0x1d),
+        low: Color::Rgb(0x1e, 0x66, 0xf5),
+        info: Color::Rgb(0x9c, 0xa0, 0xb0),
+    }
+}
+
+pub fn rose_pine() -> Theme {
+    Theme {
+        id: "rose_pine".into(),
+        name: "Rosé Pine".into(),
+        bg: Color::Rgb(0x19, 0x17, 0x24),
+        surface: Color::Rgb(0x1f, 0x1d, 0x2e),
+        border: Color::Rgb(0x26, 0x23, 0x3a),
+        text: Color::Rgb(0xe0, 0xde, 0xf4),
+        text_dim: Color::Rgb(0x90, 0x8c, 0xaa),
+        text_muted: Color::Rgb(0x6e, 0x6a, 0x86),
+        accent: Color::Rgb(0x9c, 0xcf, 0xd8),
+        accent_alt: Color::Rgb(0xc4, 0xa7, 0xe7),
+        selection_bg: Color::Rgb(0x40, 0x3d, 0x52),
+        selection_fg: Color::Rgb(0xe0, 0xde, 0xf4),
+        success: Color::Rgb(0x9c, 0xcf, 0xd8),
+        warning: Color::Rgb(0xf6, 0xc1, 0x77),
+        error: Color::Rgb(0xeb, 0x6f, 0x92),
+        crit: Color::Rgb(0xeb, 0x6f, 0x92),
+        high: Color::Rgb(0xf6, 0xc1, 0x77),
+        medium: Color::Rgb(0xf6, 0xc1, 0x77),
+        low: Color::Rgb(0x31, 0x74, 0x8f),
+        info: Color::Rgb(0x6e, 0x6a, 0x86),
+    }
+}
+
+pub fn one_dark() -> Theme {
+    Theme {
+        id: "one_dark".into(),
+        name: "One Dark".into(),
+        bg: Color::Rgb(0x28, 0x2c, 0x34),
+        surface: Color::Rgb(0x2c, 0x31, 0x3a),
+        border: Color::Rgb(0x3e, 0x44, 0x51),
+        text: Color::Rgb(0xab, 0xb2, 0xbf),
+        text_dim: Color::Rgb(0x82, 0x89, 0x97),
+        text_muted: Color::Rgb(0x5c, 0x63, 0x70),
+        accent: Color::Rgb(0x61, 0xaf, 0xef),
+        accent_alt: Color::Rgb(0xc6, 0x78, 0xdd),
+        selection_bg: Color::Rgb(0x3e, 0x44, 0x51),
+        selection_fg: Color::Rgb(0xff, 0xff, 0xff),
+        success: Color::Rgb(0x98, 0xc3, 0x79),
+        warning: Color::Rgb(0xe5, 0xc0, 0x7b),
+        error: Color::Rgb(0xe0, 0x6c, 0x75),
+        crit: Color::Rgb(0xe0, 0x6c, 0x75),
+        high: Color::Rgb(0xd1, 0x9a, 0x66),
+        medium: Color::Rgb(0xe5, 0xc0, 0x7b),
+        low: Color::Rgb(0x61, 0xaf, 0xef),
+        info: Color::Rgb(0x5c, 0x63, 0x70),
+    }
+}
+
+pub fn solarized_dark() -> Theme {
+    Theme {
+        id: "solarized_dark".into(),
+        name: "Solarized Dark".into(),
+        bg: Color::Rgb(0x00, 0x2b, 0x36),
+        surface: Color::Rgb(0x07, 0x36, 0x42),
+        border: Color::Rgb(0x14, 0x55, 0x5f),
+        text: Color::Rgb(0x93, 0xa1, 0xa1),
+        text_dim: Color::Rgb(0x83, 0x94, 0x96),
+        text_muted: Color::Rgb(0x58, 0x6e, 0x75),
+        accent: Color::Rgb(0x26, 0x8b, 0xd2),
+        accent_alt: Color::Rgb(0x6c, 0x71, 0xc4),
+        selection_bg: Color::Rgb(0x07, 0x36, 0x42),
+        selection_fg: Color::Rgb(0xfd, 0xf6, 0xe3),
+        success: Color::Rgb(0x85, 0x99, 0x00),
+        warning: Color::Rgb(0xb5, 0x89, 0x00),
+        error: Color::Rgb(0xdc, 0x32, 0x2f),
+        crit: Color::Rgb(0xdc, 0x32, 0x2f),
+        high: Color::Rgb(0xcb, 0x4b, 0x16),
+        medium: Color::Rgb(0xb5, 0x89, 0x00),
+        low: Color::Rgb(0x26, 0x8b, 0xd2),
+        info: Color::Rgb(0x58, 0x6e, 0x75),
+    }
+}
+
+pub fn solarized_light() -> Theme {
+    Theme {
+        id: "solarized_light".into(),
+        name: "Solarized Light".into(),
+        bg: Color::Rgb(0xfd, 0xf6, 0xe3),
+        surface: Color::Rgb(0xee, 0xe8, 0xd5),
+        border: Color::Rgb(0x93, 0xa1, 0xa1),
+        text: Color::Rgb(0x65, 0x7b, 0x83),
+        text_dim: Color::Rgb(0x58, 0x6e, 0x75),
+        text_muted: Color::Rgb(0x93, 0xa1, 0xa1),
+        accent: Color::Rgb(0x26, 0x8b, 0xd2),
+        accent_alt: Color::Rgb(0x6c, 0x71, 0xc4),
+        selection_bg: Color::Rgb(0xee, 0xe8, 0xd5),
+        selection_fg: Color::Rgb(0x07, 0x36, 0x42),
+        success: Color::Rgb(0x85, 0x99, 0x00),
+        warning: Color::Rgb(0xb5, 0x89, 0x00),
+        error: Color::Rgb(0xdc, 0x32, 0x2f),
+        crit: Color::Rgb(0xdc, 0x32, 0x2f),
+        high: Color::Rgb(0xcb, 0x4b, 0x16),
+        medium: Color::Rgb(0xb5, 0x89, 0x00),
+        low: Color::Rgb(0x26, 0x8b, 0xd2),
+        info: Color::Rgb(0x93, 0xa1, 0xa1),
+    }
+}
+
+pub fn everforest_dark() -> Theme {
+    Theme {
+        id: "everforest_dark".into(),
+        name: "Everforest Dark".into(),
+        bg: Color::Rgb(0x2d, 0x35, 0x3b),
+        surface: Color::Rgb(0x34, 0x3f, 0x44),
+        border: Color::Rgb(0x47, 0x52, 0x58),
+        text: Color::Rgb(0xd3, 0xc6, 0xaa),
+        text_dim: Color::Rgb(0x85, 0x92, 0x89),
+        text_muted: Color::Rgb(0x5b, 0x62, 0x68),
+        accent: Color::Rgb(0x7f, 0xbb, 0xb3),
+        accent_alt: Color::Rgb(0xd6, 0x99, 0xb6),
+        selection_bg: Color::Rgb(0x47, 0x52, 0x58),
+        selection_fg: Color::Rgb(0xd3, 0xc6, 0xaa),
+        success: Color::Rgb(0xa7, 0xc0, 0x80),
+        warning: Color::Rgb(0xdb, 0xbc, 0x7f),
+        error: Color::Rgb(0xe6, 0x7e, 0x80),
+        crit: Color::Rgb(0xe6, 0x7e, 0x80),
+        high: Color::Rgb(0xe6, 0x98, 0x75),
+        medium: Color::Rgb(0xdb, 0xbc, 0x7f),
+        low: Color::Rgb(0x7f, 0xbb, 0xb3),
+        info: Color::Rgb(0x85, 0x92, 0x89),
+    }
+}
+
+pub fn kanagawa() -> Theme {
+    Theme {
+        id: "kanagawa".into(),
+        name: "Kanagawa".into(),
+        bg: Color::Rgb(0x1f, 0x1f, 0x28),
+        surface: Color::Rgb(0x2a, 0x2a, 0x37),
+        border: Color::Rgb(0x54, 0x54, 0x6d),
+        text: Color::Rgb(0xdc, 0xd7, 0xba),
+        text_dim: Color::Rgb(0xc8, 0xc0, 0x93),
+        text_muted: Color::Rgb(0x72, 0x71, 0x69),
+        accent: Color::Rgb(0x7e, 0x9c, 0xd8),
+        accent_alt: Color::Rgb(0x95, 0x7f, 0xb8),
+        selection_bg: Color::Rgb(0x2d, 0x4f, 0x67),
+        selection_fg: Color::Rgb(0xdc, 0xd7, 0xba),
+        success: Color::Rgb(0x98, 0xbb, 0x6c),
+        warning: Color::Rgb(0xe6, 0xc3, 0x84),
+        error: Color::Rgb(0xe4, 0x68, 0x76),
+        crit: Color::Rgb(0xe4, 0x68, 0x76),
+        high: Color::Rgb(0xff, 0xa0, 0x66),
+        medium: Color::Rgb(0xe6, 0xc3, 0x84),
+        low: Color::Rgb(0x7f, 0xb4, 0xca),
+        info: Color::Rgb(0x72, 0x71, 0x69),
+    }
+}
+
 pub fn builtin_themes() -> Vec<Theme> {
     vec![
         muted_slate(),
@@ -278,6 +528,16 @@ pub fn builtin_themes() -> Vec<Theme> {
         dracula(),
         gruvbox_dark(),
         monokai(),
+        catppuccin_mocha(),
+        catppuccin_macchiato(),
+        catppuccin_frappe(),
+        catppuccin_latte(),
+        rose_pine(),
+        one_dark(),
+        solarized_dark(),
+        solarized_light(),
+        everforest_dark(),
+        kanagawa(),
     ]
 }
 
@@ -416,7 +676,17 @@ mod tests {
                 "tokyo_night",
                 "dracula",
                 "gruvbox_dark",
-                "monokai"
+                "monokai",
+                "catppuccin_mocha",
+                "catppuccin_macchiato",
+                "catppuccin_frappe",
+                "catppuccin_latte",
+                "rose_pine",
+                "one_dark",
+                "solarized_dark",
+                "solarized_light",
+                "everforest_dark",
+                "kanagawa"
             ]
         );
     }

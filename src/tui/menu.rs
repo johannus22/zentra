@@ -32,14 +32,11 @@ const ACTION_CLONE_AND_SCAN: usize = 1;
 const ACTION_RUN_PENTEST: usize = 2;
 const ACTION_SELECT_SCANNERS: usize = 3;
 const ACTION_VIEW_RESULTS: usize = 4;
-const ACTION_CHANGE_PROVIDER: usize = 5;
-const ACTION_ADD_PROVIDER: usize = 6;
-const ACTION_SETTINGS: usize = 7;
-const ACTION_THEME: usize = 8;
-const ACTION_EXIT: usize = 9;
+const ACTION_SETTINGS: usize = 5;
+const ACTION_EXIT: usize = 6;
 
-/// Highest selectable action index in the main menu (10 items: 0-9).
-const MAX_MENU_ACTION: usize = 9;
+/// Highest selectable action index in the main menu (7 items: 0-6).
+const MAX_MENU_ACTION: usize = 6;
 
 pub fn main_menu_actions() -> &'static [&'static str] {
     &[
@@ -48,10 +45,7 @@ pub fn main_menu_actions() -> &'static [&'static str] {
         "Run Pentest",
         "Select Scanners",
         "View Last Results",
-        "Change Provider",
-        "Add Provider",
         "Settings",
-        "Theme",
         "Exit",
     ]
 }
@@ -84,9 +78,9 @@ pub fn scanner_selector_footer_hint() -> &'static str {
 
 pub fn provider_selector_footer_hint(state: &MenuState) -> &'static str {
     if state.pending_delete_profile.is_some() {
-        " d again confirm delete · ↑↓ move cancel · Esc back"
+        " d again confirm delete · ↑↓ move cancel · ← back"
     } else {
-        " ↑↓ navigate · Enter select · d delete · Esc back"
+        " ↑↓ navigate · Enter use · a add · d delete · ← back"
     }
 }
 
@@ -103,9 +97,61 @@ pub enum MenuAction {
 pub enum MenuScreen {
     Main,
     ScannerSelector,
-    ProviderSelector,
-    ProviderForm,
     RepoInput,
+}
+
+/// Top-level Settings categories shown in the left nav of the Settings hub.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsCategory {
+    Providers,
+    Theme,
+    OutputDir,
+    About,
+}
+
+impl SettingsCategory {
+    pub const ALL: [SettingsCategory; 4] = [
+        SettingsCategory::Providers,
+        SettingsCategory::Theme,
+        SettingsCategory::OutputDir,
+        SettingsCategory::About,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SettingsCategory::Providers => "Providers",
+            SettingsCategory::Theme => "Theme",
+            SettingsCategory::OutputDir => "Output dir",
+            SettingsCategory::About => "About",
+        }
+    }
+
+    /// The detail mode shown when this category is first focused.
+    fn default_detail(self) -> DetailMode {
+        match self {
+            SettingsCategory::Providers => DetailMode::ProviderList,
+            SettingsCategory::Theme => DetailMode::ThemeList,
+            SettingsCategory::OutputDir => DetailMode::OutputEdit,
+            SettingsCategory::About => DetailMode::About,
+        }
+    }
+}
+
+/// Which pane of the Settings hub currently has keyboard focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsFocus {
+    Nav,
+    Detail,
+}
+
+/// What the right detail pane is currently showing/editing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailMode {
+    ProviderList,
+    ProviderForm,
+    ThemeList,
+    OutputEdit,
+    About,
 }
 
 /// State for the Settings screen. Currently a single editable field: the base
@@ -116,42 +162,21 @@ pub struct SettingsFormState {
     pub output_dir: String,
     /// Resolved default path, shown as a hint when `output_dir` is empty.
     pub default_dir: String,
-    pub focused_field: usize,
     pub error: Option<String>,
     pub saved: bool,
 }
 
 impl SettingsFormState {
-    const OUTPUT_DIR_FIELD: usize = 0;
-    const SAVE_FIELD: usize = 1;
-    const FIELD_COUNT: usize = 2;
-
-    pub fn next_field(&mut self) {
-        self.focused_field = (self.focused_field + 1) % Self::FIELD_COUNT;
-    }
-
-    pub fn prev_field(&mut self) {
-        self.focused_field = if self.focused_field == 0 {
-            Self::FIELD_COUNT - 1
-        } else {
-            self.focused_field - 1
-        };
-    }
-
     pub fn append_char(&mut self, c: char) {
-        if self.focused_field == Self::OUTPUT_DIR_FIELD {
-            self.output_dir.push(c);
-            self.saved = false;
-            self.error = None;
-        }
+        self.output_dir.push(c);
+        self.saved = false;
+        self.error = None;
     }
 
     pub fn backspace(&mut self) {
-        if self.focused_field == Self::OUTPUT_DIR_FIELD {
-            self.output_dir.pop();
-            self.saved = false;
-            self.error = None;
-        }
+        self.output_dir.pop();
+        self.saved = false;
+        self.error = None;
     }
 
     /// Persist the output directory to the global config. Empty input clears the
@@ -255,6 +280,7 @@ impl std::fmt::Debug for ProviderFormState {
 }
 
 impl ProviderFormState {
+    #[allow(dead_code)]
     fn auth_field_idx(&self) -> Option<usize> {
         None
     }
@@ -534,7 +560,12 @@ pub struct MenuState {
     pub error_expanded: bool,
     pub theme: crate::tui::theme::Theme,
     pub settings_open: bool,
-    pub theme_picker_open: bool,
+    pub settings_category_idx: usize,
+    pub settings_focus: SettingsFocus,
+    pub settings_detail: DetailMode,
+    /// Last Settings action result: (success?, message). Rendered as a footer
+    /// in the hub so saves/changes are never silent.
+    pub settings_status: Option<(bool, String)>,
     pub theme_options: Vec<crate::tui::theme::Theme>,
     pub theme_idx: usize,
     /// The theme that was active before the picker opened (restored on Esc).
@@ -579,7 +610,10 @@ impl MenuState {
                 crate::config::GlobalConfig::load().ok().and_then(|g| g.theme).as_deref(),
             ),
             settings_open: false,
-            theme_picker_open: false,
+            settings_category_idx: 0,
+            settings_focus: SettingsFocus::Nav,
+            settings_detail: DetailMode::ProviderList,
+            settings_status: None,
             theme_options: crate::tui::theme::load_all(),
             theme_idx: 0,
             theme_before_picker: None,
@@ -594,7 +628,6 @@ impl MenuState {
             .iter()
             .position(|t| t.id == self.theme.id)
             .unwrap_or(0);
-        self.theme_picker_open = true;
     }
 
     /// Move the highlight and live-apply the highlighted theme.
@@ -628,8 +661,8 @@ impl MenuState {
         let mut global = crate::config::GlobalConfig::load_from(config_path)?;
         global.theme = Some(self.theme.id.clone());
         global.save_to(config_path)?;
-        self.theme_picker_open = false;
-        self.theme_before_picker = None;
+        self.theme_before_picker = Some(self.theme.clone());
+        self.settings_status = Some((true, format!("Theme saved: {}", self.theme.name)));
         Ok(())
     }
 
@@ -638,7 +671,6 @@ impl MenuState {
         if let Some(t) = self.theme_before_picker.take() {
             self.theme = t;
         }
-        self.theme_picker_open = false;
     }
 
     /// Build the Settings form from the current global config (best-effort —
@@ -653,10 +685,79 @@ impl MenuState {
             default_dir: crate::config::GlobalConfig::default_output_base_dir()
                 .display()
                 .to_string(),
-            focused_field: 0,
             error: None,
             saved: false,
         }
+    }
+
+    pub fn settings_category(&self) -> SettingsCategory {
+        SettingsCategory::ALL[self.settings_category_idx.min(SettingsCategory::ALL.len() - 1)]
+    }
+
+    /// Open the Settings hub, reloading every sub-state from disk.
+    pub fn open_settings(&mut self) {
+        self.settings = Self::load_settings();
+        self.form = ProviderFormState::default();
+        self.provider_idx = 0;
+        self.clear_provider_selector_messages();
+        self.settings_category_idx = 0;
+        self.settings_focus = SettingsFocus::Nav;
+        self.settings_detail = SettingsCategory::Providers.default_detail();
+        self.settings_status = None;
+        self.settings_open = true;
+    }
+
+    pub fn close_settings(&mut self) {
+        self.settings_open = false;
+        self.settings_focus = SettingsFocus::Nav;
+    }
+
+    pub fn settings_nav_up(&mut self) {
+        if self.settings_category_idx > 0 {
+            self.settings_category_idx -= 1;
+            self.settings_detail = self.settings_category().default_detail();
+            self.settings_status = None;
+        }
+    }
+
+    pub fn settings_nav_down(&mut self) {
+        if self.settings_category_idx + 1 < SettingsCategory::ALL.len() {
+            self.settings_category_idx += 1;
+            self.settings_detail = self.settings_category().default_detail();
+            self.settings_status = None;
+        }
+    }
+
+    /// Move focus from the nav into the detail pane for the current category.
+    pub fn settings_enter_detail(&mut self) {
+        self.settings_detail = self.settings_category().default_detail();
+        self.settings_focus = SettingsFocus::Detail;
+        if self.settings_category() == SettingsCategory::Theme {
+            self.open_theme_picker(); // establish restore baseline + highlight
+        }
+    }
+
+    /// Return focus to the nav, discarding any uncommitted detail edits.
+    pub fn settings_leave_detail(&mut self) {
+        if self.settings_category() == SettingsCategory::Theme {
+            self.cancel_theme(); // restore pre-preview theme
+        }
+        self.form = ProviderFormState::default();
+        self.clear_provider_selector_messages();
+        self.settings_detail = self.settings_category().default_detail();
+        self.settings_focus = SettingsFocus::Nav;
+    }
+
+    /// Open a fresh inline provider form from the provider list.
+    pub fn open_provider_form(&mut self) {
+        self.form = ProviderFormState::default();
+        self.settings_detail = DetailMode::ProviderForm;
+    }
+
+    /// Cancel the inline provider form, returning to the provider list.
+    pub fn cancel_provider_form(&mut self) {
+        self.form = ProviderFormState::default();
+        self.settings_detail = DetailMode::ProviderList;
     }
 
     pub fn open_repo_input(&mut self) {
@@ -684,9 +785,7 @@ impl MenuState {
         let max = match self.screen {
             MenuScreen::Main => MAX_MENU_ACTION,
             MenuScreen::ScannerSelector => 5,
-            MenuScreen::ProviderSelector
-            | MenuScreen::ProviderForm
-            | MenuScreen::RepoInput => 0,
+            MenuScreen::RepoInput => 0,
         };
         if self.selected_idx < max {
             self.selected_idx += 1;
@@ -703,8 +802,7 @@ impl MenuState {
         match idx {
             i if i == ACTION_RUN_FULL_SCAN
                 || i == ACTION_CLONE_AND_SCAN
-                || i == ACTION_SELECT_SCANNERS
-                || i == ACTION_CHANGE_PROVIDER =>
+                || i == ACTION_SELECT_SCANNERS =>
             {
                 self.provider_configured
             }
@@ -756,12 +854,6 @@ impl MenuState {
         }
     }
 
-    pub fn provider_selector_escape(&mut self) {
-        self.clear_provider_selector_messages();
-        self.screen = MenuScreen::Main;
-        self.selected_idx = ACTION_CHANGE_PROVIDER;
-    }
-
     /// Set `name` as the default provider, persist it, and refresh the
     /// in-memory view from the saved config — all without leaving the TUI.
     ///
@@ -801,8 +893,7 @@ impl MenuState {
             .map(|p| p.model.clone())
             .unwrap_or_default();
         self.clear_provider_selector_messages();
-        self.screen = MenuScreen::Main;
-        self.selected_idx = ACTION_CHANGE_PROVIDER;
+        self.settings_status = Some((true, format!("Active provider set to “{name}”")));
         Ok(())
     }
 
@@ -817,6 +908,7 @@ impl MenuState {
         if name == self.active_profile || name == self.default_profile {
             self.pending_delete_profile = None;
             self.provider_error = Some("Cannot delete active provider".to_string());
+            self.settings_status = Some((false, "Cannot delete the active provider".to_string()));
             return Ok(false);
         }
 
@@ -831,6 +923,7 @@ impl MenuState {
             self.provider_idx -= 1;
         }
         self.clear_provider_selector_messages();
+        self.settings_status = Some((true, format!("Deleted provider “{name}”")));
         Ok(true)
     }
 
@@ -859,7 +952,7 @@ impl MenuState {
         self.oauth_modal = None;
         self.oauth_modal_rx = None;
         self.form.error = Some(error);
-        self.screen = MenuScreen::ProviderForm;
+        self.settings_detail = DetailMode::ProviderForm;
     }
 
     #[allow(dead_code)]
@@ -1053,40 +1146,145 @@ fn run_menu_loop(
                 dirty = true;
                 match state.screen {
                     MenuScreen::Main => {
-                        if state.theme_picker_open {
-                            match key.code {
-                                KeyCode::Up => state.theme_picker_prev(),
-                                KeyCode::Down => state.theme_picker_next(),
-                                KeyCode::Enter => {
-                                    if let Err(e) = state.confirm_theme() {
-                                        state.last_error =
-                                            Some(format!("Failed to save theme: {e}"));
-                                    }
-                                }
-                                KeyCode::Esc => state.cancel_theme(),
-                                _ => {}
-                            }
-                            continue;
-                        }
                         if state.settings_open {
-                            match key.code {
-                                KeyCode::Tab | KeyCode::Down => state.settings.next_field(),
-                                KeyCode::BackTab | KeyCode::Up => state.settings.prev_field(),
-                                KeyCode::Char(c) => state.settings.append_char(c),
-                                KeyCode::Backspace => state.settings.backspace(),
-                                KeyCode::Enter => {
-                                    if state.settings.focused_field
-                                        == SettingsFormState::SAVE_FIELD
-                                    {
-                                        if let Err(e) = state.settings.save() {
-                                            state.settings.error = Some(e.to_string());
-                                        }
-                                    } else {
-                                        state.settings.next_field();
-                                    }
+                            // A result popup is modal — Enter/Esc dismisses it,
+                            // any other key is swallowed until acknowledged.
+                            if state.settings_status.is_some() {
+                                if matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
+                                    state.settings_status = None;
                                 }
-                                KeyCode::Esc => state.settings_open = false,
-                                _ => {}
+                                continue;
+                            }
+                            match state.settings_focus {
+                                SettingsFocus::Nav => match key.code {
+                                    KeyCode::Up => state.settings_nav_up(),
+                                    KeyCode::Down => state.settings_nav_down(),
+                                    KeyCode::Right | KeyCode::Enter => state.settings_enter_detail(),
+                                    KeyCode::Esc => state.close_settings(),
+                                    _ => {}
+                                },
+                                SettingsFocus::Detail => match state.settings_detail {
+                                    DetailMode::ProviderList => match key.code {
+                                        KeyCode::Up => state.provider_selector_move_up(),
+                                        KeyCode::Down => state.provider_selector_move_down(),
+                                        KeyCode::Char('a') => state.open_provider_form(),
+                                        KeyCode::Char('d') => {
+                                            state.handle_provider_delete_key()?;
+                                        }
+                                        KeyCode::Enter => {
+                                            if let Some((name, _)) =
+                                                state.profiles.get(state.provider_idx)
+                                            {
+                                                let name = name.clone();
+                                                if let Err(e) = state.apply_provider_change(&name) {
+                                                    state.settings_status = Some((
+                                                        false,
+                                                        format!("Failed to switch provider: {e}"),
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                        KeyCode::Left | KeyCode::Esc => state.settings_leave_detail(),
+                                        _ => {}
+                                    },
+                                    DetailMode::ProviderForm => {
+                                        if state.oauth_modal.is_none() {
+                                            match key.code {
+                                                KeyCode::Left => {
+                                                    if state.form.focused_field == 0 {
+                                                        state.form.cycle_provider(-1);
+                                                    }
+                                                }
+                                                KeyCode::Right => {
+                                                    if state.form.focused_field == 0 {
+                                                        state.form.cycle_provider(1);
+                                                    }
+                                                }
+                                                KeyCode::Tab | KeyCode::Down => state.form.next_field(),
+                                                KeyCode::BackTab | KeyCode::Up => state.form.prev_field(),
+                                                KeyCode::Char(c) => state.form.append_char(c),
+                                                KeyCode::Backspace => state.form.backspace(),
+                                                KeyCode::Enter => {
+                                                    if state.form.focused_field
+                                                        == state.form.save_field_idx()
+                                                    {
+                                                        match state.form.save() {
+                                                            Ok(name) => {
+                                                                let applied = state
+                                                                    .apply_provider_change(&name);
+                                                                state.settings_status = Some(match applied {
+                                                                    Ok(()) => (
+                                                                        true,
+                                                                        format!("Provider “{name}” saved"),
+                                                                    ),
+                                                                    Err(e) => (
+                                                                        false,
+                                                                        format!("Saved but failed to activate: {e}"),
+                                                                    ),
+                                                                });
+                                                                state.form =
+                                                                    ProviderFormState::default();
+                                                                state.settings_detail =
+                                                                    DetailMode::ProviderList;
+                                                            }
+                                                            Err(e) => {
+                                                                state.form.error =
+                                                                    Some(e.to_string());
+                                                                state.settings_status = Some((
+                                                                    false,
+                                                                    format!("Could not save provider: {e}"),
+                                                                ));
+                                                            }
+                                                        }
+                                                    } else {
+                                                        state.form.next_field();
+                                                    }
+                                                }
+                                                KeyCode::Esc => state.cancel_provider_form(),
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    DetailMode::ThemeList => match key.code {
+                                        KeyCode::Up => state.theme_picker_prev(),
+                                        KeyCode::Down => state.theme_picker_next(),
+                                        KeyCode::Enter => {
+                                            if let Err(e) = state.confirm_theme() {
+                                                state.settings_status = Some((
+                                                    false,
+                                                    format!("Failed to save theme: {e}"),
+                                                ));
+                                            }
+                                        }
+                                        KeyCode::Left | KeyCode::Esc => state.settings_leave_detail(),
+                                        _ => {}
+                                    },
+                                    DetailMode::OutputEdit => match key.code {
+                                        KeyCode::Char(c) => state.settings.append_char(c),
+                                        KeyCode::Backspace => state.settings.backspace(),
+                                        KeyCode::Enter => match state.settings.save() {
+                                            Ok(()) => {
+                                                state.settings_status = Some((
+                                                    true,
+                                                    "Output directory saved".to_string(),
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                state.settings.error = Some(e.to_string());
+                                                state.settings_status = Some((
+                                                    false,
+                                                    format!("Could not save: {e}"),
+                                                ));
+                                            }
+                                        },
+                                        KeyCode::Left | KeyCode::Esc => state.settings_leave_detail(),
+                                        _ => {}
+                                    },
+                                    DetailMode::About => match key.code {
+                                        KeyCode::Left | KeyCode::Esc => state.settings_leave_detail(),
+                                        _ => {}
+                                    },
+                                },
                             }
                             continue;
                         }
@@ -1120,18 +1318,7 @@ fn run_menu_loop(
                                     state.selected_idx = 0;
                                 }
                                 ACTION_VIEW_RESULTS => return Ok(MenuAction::ViewLastResults),
-                                ACTION_CHANGE_PROVIDER => {
-                                    state.screen = MenuScreen::ProviderSelector;
-                                    state.provider_idx = 0;
-                                }
-                                ACTION_ADD_PROVIDER => {
-                                    state.screen = MenuScreen::ProviderForm;
-                                }
-                                ACTION_SETTINGS => {
-                                    state.settings = MenuState::load_settings();
-                                    state.settings_open = true;
-                                }
-                                ACTION_THEME => state.open_theme_picker(),
+                                ACTION_SETTINGS => state.open_settings(),
                                 ACTION_EXIT => return Ok(MenuAction::Exit),
                                 _ => {}
                             }
@@ -1168,71 +1355,6 @@ fn run_menu_loop(
                         KeyCode::Esc => {
                             state.screen = MenuScreen::Main;
                             state.selected_idx = ACTION_SELECT_SCANNERS;
-                        }
-                        _ => {}
-                    },
-                    MenuScreen::ProviderSelector => match key.code {
-                        KeyCode::Up => state.provider_selector_move_up(),
-                        KeyCode::Down => state.provider_selector_move_down(),
-                        KeyCode::Char('d') => {
-                            state.handle_provider_delete_key()?;
-                        }
-                        KeyCode::Enter => {
-                            if let Some((name, _)) = state.profiles.get(state.provider_idx) {
-                                let name = name.clone();
-                                state.apply_provider_change(&name)?;
-                            }
-                        }
-                        KeyCode::Esc => state.provider_selector_escape(),
-                        _ => {}
-                    },
-                    MenuScreen::ProviderForm => match key.code {
-                        _ if state.oauth_modal.is_some() => {}
-                        KeyCode::Left => {
-                            if state.form.focused_field == 0 {
-                                state.form.cycle_provider(-1);
-                            } else if state.form.auth_field_idx() == Some(state.form.focused_field)
-                            {
-                                state.form.cycle_auth_method(-1);
-                            }
-                        }
-                        KeyCode::Right => {
-                            if state.form.focused_field == 0 {
-                                state.form.cycle_provider(1);
-                            } else if state.form.auth_field_idx() == Some(state.form.focused_field)
-                            {
-                                state.form.cycle_auth_method(1);
-                            }
-                        }
-                        KeyCode::Tab | KeyCode::Down => {
-                            state.form.next_field();
-                        }
-                        KeyCode::BackTab | KeyCode::Up => {
-                            state.form.prev_field();
-                        }
-                        KeyCode::Char(c) => {
-                            state.form.append_char(c);
-                        }
-                        KeyCode::Backspace => {
-                            state.form.backspace();
-                        }
-                        KeyCode::Enter => {
-                            if state.form.focused_field == state.form.save_field_idx() {
-                                match state.form.save() {
-                                    Ok(name) => {
-                                        state.apply_provider_change(&name)?;
-                                        state.form = ProviderFormState::default();
-                                    }
-                                    Err(e) => state.form.error = Some(e.to_string()),
-                                }
-                            } else {
-                                state.form.next_field();
-                            }
-                        }
-                        KeyCode::Esc => {
-                            state.screen = MenuScreen::Main;
-                            state.selected_idx = ACTION_ADD_PROVIDER;
-                            state.form = ProviderFormState::default(); // reset
                         }
                         _ => {}
                     },
@@ -1278,8 +1400,6 @@ fn render_menu(frame: &mut Frame, state: &MenuState) {
     match state.screen {
         MenuScreen::Main => render_main_menu(frame, area, state),
         MenuScreen::ScannerSelector => render_scanner_selector(frame, area, state),
-        MenuScreen::ProviderSelector => render_provider_selector(frame, area, state),
-        MenuScreen::ProviderForm => render_provider_form(frame, area, state),
         MenuScreen::RepoInput => render_repo_input(frame, area, state),
     }
 }
@@ -1435,129 +1555,402 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
         }
     }
 
-    if state.theme_picker_open {
-        let popup = centered_fixed(34, state.theme_options.len() as u16 + 2, area);
-        frame.render_widget(Clear, popup);
-        let rows: Vec<ListItem> = state
-            .theme_options
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                let chips = Line::from(vec![
-                    Span::styled("  ", Style::default().bg(t.accent)),
-                    Span::styled("  ", Style::default().bg(t.error)),
-                    Span::styled("  ", Style::default().bg(t.success)),
-                    Span::raw(format!("  {}", t.name)),
-                ]);
-                let style = if i == state.theme_idx {
-                    Style::default()
-                        .bg(state.theme.selection_bg)
-                        .fg(state.theme.selection_fg)
-                } else {
-                    Style::default().fg(state.theme.text)
-                };
-                ListItem::new(chips).style(style)
-            })
-            .collect();
-        let list = List::new(rows).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Select theme · ↑↓ preview · Enter save · Esc cancel ")
-                .border_style(Style::default().fg(state.theme.border))
-                .style(Style::default().bg(state.theme.surface)),
-        );
-        frame.render_widget(list, popup);
-    }
-
     if state.settings_open {
-        let s = &state.settings;
-        // Inner width = fixed popup width (60) minus the two borders.
-        let max_field_width = 60u16.saturating_sub(2).saturating_sub(8) as usize;
-        let shown_dir = if s.output_dir.is_empty() {
-            format!("(default: {})", s.default_dir)
-        } else {
-            s.output_dir.clone()
-        };
+        render_settings_hub(frame, area, state);
+    }
+}
 
-        let field_style = |idx: usize| -> Style {
-            if s.focused_field == idx {
+fn render_settings_hub(frame: &mut Frame, area: Rect, state: &MenuState) {
+    // Wide enough that long model IDs (e.g. "deepseek-v4-pro:cloud") fit, but
+    // capped so the popup doesn't sprawl across a very wide terminal.
+    let w = (area.width.saturating_mul(8) / 10)
+        .min(90)
+        .clamp(60.min(area.width).max(1), area.width.max(1));
+    let h = (area.height.saturating_mul(8) / 10).clamp(16.min(area.height).max(1), area.height.max(1));
+    let popup = centered_fixed(w, h, area);
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" SETTINGS ")
+        .title_style(Style::default().fg(state.theme.accent))
+        .border_style(Style::default().fg(state.theme.border))
+        .style(Style::default().bg(state.theme.surface));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let cols = Layout::horizontal([Constraint::Length(16), Constraint::Min(20)]).split(inner);
+
+    // ── Left nav ──────────────────────────────────────────────────────────
+    let nav_items: Vec<ListItem> = SettingsCategory::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, cat)| {
+            let selected = i == state.settings_category_idx;
+            let nav_active = state.settings_focus == SettingsFocus::Nav;
+            let marker = if selected { "▶ " } else { "  " };
+            let style = if selected && nav_active {
+                // Left nav has focus → strong solid highlight bar.
                 Style::default()
-                    .fg(state.theme.warning)
+                    .fg(state.theme.selection_fg)
+                    .bg(state.theme.selection_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else if selected {
+                // A category is active but focus is in the detail pane → distinct
+                // accent color (no bar) so it's clear the nav isn't focused.
+                Style::default()
+                    .fg(state.theme.accent)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(state.theme.text_dim)
-            }
-        };
+                Style::default().fg(state.theme.text)
+            };
+            ListItem::new(format!("{}{}", marker, cat.label())).style(style)
+        })
+        .collect();
+    frame.render_widget(List::new(nav_items), cols[0]);
 
-        let mut lines = vec![
-            Line::from(Span::styled(
-                "Artifact output directory",
-                Style::default().fg(state.theme.accent),
-            )),
-            Line::from(Span::styled(
-                "Pentest reports & evidence go here. Blank = default.",
-                Style::default().fg(state.theme.text_dim),
-            )),
-            Line::from(Span::styled(
-                "(WSL: e.g. /mnt/c/Users/<you>/Documents/Zentra)",
-                Style::default().fg(state.theme.text_dim),
-            )),
-            Line::from(Span::raw("")),
-            Line::from(vec![
-                Span::raw(if s.focused_field == SettingsFormState::OUTPUT_DIR_FIELD {
-                    "▶ "
-                } else {
-                    "  "
-                }),
-                Span::styled("Dir  ", field_style(SettingsFormState::OUTPUT_DIR_FIELD)),
-                Span::styled(
-                    clip_with_ellipsis(&shown_dir, max_field_width),
-                    field_style(SettingsFormState::OUTPUT_DIR_FIELD),
-                ),
-            ]),
-            Line::from(Span::raw("")),
-        ];
+    let detail = Block::default()
+        .borders(Borders::LEFT)
+        .border_style(Style::default().fg(state.theme.border));
+    let detail_inner = detail.inner(cols[1]);
+    frame.render_widget(detail, cols[1]);
 
-        let save_label = if s.focused_field == SettingsFormState::SAVE_FIELD {
-            "  ▶ Save"
-        } else {
-            "    Save"
-        };
-        lines.push(Line::from(Span::styled(
-            save_label,
-            field_style(SettingsFormState::SAVE_FIELD),
-        )));
-
-        if let Some(err) = &s.error {
-            lines.push(Line::from(Span::styled(
-                format!("  ✗ {}", err),
-                Style::default().fg(state.theme.error),
-            )));
-        } else if s.saved {
-            lines.push(Line::from(Span::styled(
-                "  ✓ Saved",
-                Style::default().fg(state.theme.success),
-            )));
-        }
-
-        lines.push(Line::from(Span::styled(
-            " Tab/↑↓ move · type to edit · Enter save · Esc close",
-            Style::default().fg(state.theme.text_dim),
-        )));
-
-        let height = lines.len() as u16 + 2; // borders
-        let popup = centered_fixed(60, height, area);
-        frame.render_widget(Clear, popup);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" SETTINGS ")
-            .title_style(Style::default().fg(state.theme.accent))
-            .border_style(Style::default().fg(state.theme.border))
-            .style(Style::default().bg(state.theme.surface));
-        let inner = block.inner(popup);
-        frame.render_widget(block, popup);
-        frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+    // ── Right detail ──────────────────────────────────────────────────────
+    match state.settings_detail {
+        DetailMode::ProviderList => render_settings_provider_list(frame, detail_inner, state),
+        DetailMode::ProviderForm => render_settings_provider_form(frame, detail_inner, state),
+        DetailMode::ThemeList => render_settings_theme_list(frame, detail_inner, state),
+        DetailMode::OutputEdit => render_settings_output(frame, detail_inner, state),
+        DetailMode::About => render_settings_about(frame, detail_inner, state),
     }
+
+    if let Some(modal) = &state.oauth_modal {
+        render_oauth_modal(frame, area, modal, &state.theme);
+    }
+
+    // ── Result popup (success/error of the last action; Enter dismisses) ─────
+    if let Some((ok, msg)) = &state.settings_status {
+        let (title, color, icon) = if *ok {
+            (" Success ", state.theme.success, "✓")
+        } else {
+            (" Error ", state.theme.error, "✗")
+        };
+        let content_w = (msg.chars().count() + 4).max(14) as u16;
+        let w = (content_w + 2).clamp(20.min(area.width).max(1), area.width.max(1));
+        let h = 5u16.min(area.height).max(1);
+        let p = centered_fixed(w, h, area);
+        frame.render_widget(Clear, p);
+        let popup_block = Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .title_style(Style::default().fg(color).add_modifier(Modifier::BOLD))
+            .border_style(Style::default().fg(color))
+            .style(Style::default().bg(state.theme.surface));
+        let pi = popup_block.inner(p);
+        frame.render_widget(popup_block, p);
+        let lines = vec![
+            Line::from(Span::styled(
+                format!("{icon} {msg}"),
+                Style::default().fg(state.theme.text),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "[ Enter ] OK",
+                Style::default().fg(state.theme.text_dim),
+            )),
+        ];
+        frame.render_widget(
+            Paragraph::new(Text::from(lines))
+                .alignment(Alignment::Center)
+                .wrap(Wrap { trim: false }),
+            pi,
+        );
+    }
+}
+
+fn render_settings_provider_list(frame: &mut Frame, area: Rect, state: &MenuState) {
+    let chunks = Layout::vertical([
+        Constraint::Length(1), // "Active: …"
+        Constraint::Min(3),    // list
+        Constraint::Length(1), // hint / error
+    ])
+    .split(area);
+
+    let active = if state.active_profile.is_empty() {
+        "Active: none".to_string()
+    } else {
+        format!("Active: {}", state.active_profile)
+    };
+    frame.render_widget(
+        Paragraph::new(active).style(Style::default().fg(state.theme.accent)),
+        chunks[0],
+    );
+
+    // Single-line rows, two aligned columns: "▶ <name> │ <model> ●".
+    //  Names pad to the longest name, models to the longest model, so the
+    //  separator and the active green dot line up without floating to the far
+    //  pane edge. Models only clip if they genuinely exceed the pane.
+    let inner_w = chunks[1].width as usize;
+    let longest_name = state.profiles.iter().map(|(n, _)| n.chars().count()).max().unwrap_or(0);
+    let longest_model = state.profiles.iter().map(|(_, m)| m.chars().count()).max().unwrap_or(0);
+    // budget = cursor(2) + name_col + " │ "(3) + model_col + " ●"(2)
+    let name_col = longest_name.clamp(1, inner_w.saturating_sub(9).max(1));
+    let model_budget = inner_w.saturating_sub(2 + name_col + 3 + 2).max(1);
+    let model_col = longest_model.clamp(1, model_budget);
+    let mut items: Vec<ListItem> = state
+        .profiles
+        .iter()
+        .enumerate()
+        .map(|(i, (name, model))| {
+            let selected = state.provider_idx == i && !state.profiles.is_empty();
+            let is_active = *name == state.active_profile;
+            let cursor = if selected { "▶ " } else { "  " };
+            let bg = if selected {
+                Some(state.theme.selection_bg)
+            } else {
+                None
+            };
+            let with_bg = |fg, bold: bool| {
+                let mut st = Style::default().fg(fg);
+                if let Some(b) = bg {
+                    st = st.bg(b);
+                }
+                if bold {
+                    st = st.add_modifier(Modifier::BOLD);
+                }
+                st
+            };
+            let name_fg = if selected { state.theme.selection_fg } else { state.theme.text };
+            let model_fg = if selected { state.theme.selection_fg } else { state.theme.text_dim };
+            let padded_name =
+                format!("{:<w$}", clip_with_ellipsis(name, name_col), w = name_col);
+            let padded_model =
+                format!("{:<w$}", clip_with_ellipsis(model, model_col), w = model_col);
+            let dot = if is_active { " ●" } else { "  " };
+            ListItem::new(Line::from(vec![
+                Span::styled(cursor, with_bg(name_fg, selected)),
+                Span::styled(padded_name, with_bg(name_fg, selected)),
+                Span::styled(" │ ", with_bg(state.theme.text_muted, false)),
+                Span::styled(padded_model, with_bg(model_fg, false)),
+                Span::styled(dot, with_bg(state.theme.success, false)),
+            ]))
+        })
+        .collect();
+    items.push(ListItem::new(Line::from(Span::styled(
+        "  + Add provider",
+        Style::default().fg(state.theme.accent),
+    ))));
+    frame.render_widget(List::new(items), chunks[1]);
+
+    let hint = if let Some(err) = &state.provider_error {
+        Paragraph::new(format!("✗ {}", err)).style(Style::default().fg(state.theme.error))
+    } else {
+        Paragraph::new(provider_selector_footer_hint(state))
+            .style(Style::default().fg(state.theme.text_dim))
+    };
+    frame.render_widget(hint, chunks[2]);
+}
+
+fn render_settings_provider_form(frame: &mut Frame, area: Rect, state: &MenuState) {
+    let form = &state.form;
+    let provider_name = KNOWN_PROVIDER_NAMES[form.provider_idx];
+    let max_field_width = area.width.saturating_sub(15) as usize;
+
+    let field_style = |idx: usize| -> Style {
+        if form.focused_field == idx {
+            Style::default()
+                .fg(state.theme.warning)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(state.theme.text_dim)
+        }
+    };
+    let cursor = |idx: usize| if form.focused_field == idx { "▶ " } else { "  " };
+    let pad = |s: String| format!("{:width$}", s, width = max_field_width);
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "Add provider",
+            Style::default().fg(state.theme.accent),
+        )),
+        Line::from(vec![
+            Span::raw("  Provider   "),
+            Span::styled(format!("◀ {} ▶", provider_name), field_style(0)),
+        ]),
+        Line::from(vec![
+            Span::raw(cursor(1)),
+            Span::styled("Model      ", field_style(1)),
+            Span::styled(pad(clip_with_ellipsis(&form.model, max_field_width)), field_style(1)),
+        ]),
+        Line::from(vec![
+            Span::raw(cursor(2)),
+            Span::styled("Base URL   ", field_style(2)),
+            Span::styled(pad(clip_with_ellipsis(&form.base_url, max_field_width)), field_style(2)),
+        ]),
+        Line::from(vec![
+            Span::raw(cursor(form.reasoning_field_idx())),
+            Span::styled("Reasoning  ", field_style(form.reasoning_field_idx())),
+            Span::styled(
+                pad(clip_with_ellipsis(
+                    if form.reasoning_effort.is_empty() {
+                        "(blank = default)"
+                    } else {
+                        &form.reasoning_effort
+                    },
+                    max_field_width,
+                )),
+                field_style(form.reasoning_field_idx()),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw(cursor(form.api_key_field_idx())),
+            Span::styled("API Key    ", field_style(form.api_key_field_idx())),
+            Span::styled(
+                pad(clip_with_ellipsis(&form.masked_key(), max_field_width)),
+                field_style(form.api_key_field_idx()),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw(cursor(form.profile_name_field_idx())),
+            Span::styled("Name       ", field_style(form.profile_name_field_idx())),
+            Span::styled(
+                pad(clip_with_ellipsis(&form.profile_name, max_field_width)),
+                field_style(form.profile_name_field_idx()),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            if form.focused_field == form.save_field_idx() {
+                "  ▶ Save        Esc cancel"
+            } else {
+                "    Save        Esc cancel"
+            },
+            field_style(form.save_field_idx()),
+        )),
+    ];
+    if let Some(err) = &form.error {
+        lines.push(Line::from(Span::styled(
+            format!("  ✗ {}", err),
+            Style::default().fg(state.theme.error),
+        )));
+    }
+    frame.render_widget(Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }), area);
+}
+
+fn render_settings_theme_list(frame: &mut Frame, area: Rect, state: &MenuState) {
+    let rows: Vec<ListItem> = state
+        .theme_options
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let chips = Line::from(vec![
+                Span::styled("  ", Style::default().bg(t.accent)),
+                Span::styled("  ", Style::default().bg(t.error)),
+                Span::styled("  ", Style::default().bg(t.success)),
+                Span::raw(format!("  {}", t.name)),
+            ]);
+            let style = if i == state.theme_idx {
+                Style::default()
+                    .bg(state.theme.selection_bg)
+                    .fg(state.theme.selection_fg)
+            } else {
+                Style::default().fg(state.theme.text)
+            };
+            ListItem::new(chips).style(style)
+        })
+        .collect();
+    let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
+    frame.render_widget(List::new(rows), chunks[0]);
+    frame.render_widget(
+        Paragraph::new("↑↓ preview · Enter save · ← cancel")
+            .style(Style::default().fg(state.theme.text_dim)),
+        chunks[1],
+    );
+}
+
+fn render_settings_output(frame: &mut Frame, area: Rect, state: &MenuState) {
+    let s = &state.settings;
+    let max_w = area.width.saturating_sub(8) as usize;
+    let shown = if s.output_dir.is_empty() {
+        format!("(default: {})", s.default_dir)
+    } else {
+        s.output_dir.clone()
+    };
+    let field_style = Style::default()
+        .fg(state.theme.warning)
+        .add_modifier(Modifier::BOLD);
+    let lines = vec![
+        Line::from(Span::styled(
+            "Artifact output directory",
+            Style::default().fg(state.theme.accent),
+        )),
+        Line::from(Span::styled(
+            "Pentest reports & evidence go here. Blank = default.",
+            Style::default().fg(state.theme.text_dim),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("▶ "),
+            Span::styled("Dir  ", field_style),
+            Span::styled(clip_with_ellipsis(&shown, max_w), field_style),
+        ]),
+    ];
+    // Save success/error is surfaced by the hub-wide status popup; Enter saves.
+
+    // Anchor the key hint at the bottom of the pane, like the other detail panes.
+    let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+    frame.render_widget(
+        Paragraph::new("type to edit · Enter save · ← back")
+            .style(Style::default().fg(state.theme.text_dim)),
+        chunks[1],
+    );
+}
+
+fn render_settings_about(frame: &mut Frame, area: Rect, state: &MenuState) {
+    let config_path = crate::config::GlobalConfig::default_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "~/.zentra/config.toml".to_string());
+    let lines = vec![
+        Line::from(Span::styled(
+            format!("Zentra CLI v{}", env!("CARGO_PKG_VERSION")),
+            Style::default().fg(state.theme.accent).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "LLM-powered security scanner & pentest orchestrator.",
+            Style::default().fg(state.theme.text_dim),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Config:  ", Style::default().fg(state.theme.text)),
+            Span::styled(config_path, Style::default().fg(state.theme.text_dim)),
+        ]),
+        Line::from(vec![
+            Span::styled("Themes:  ", Style::default().fg(state.theme.text)),
+            Span::styled("~/.zentra/themes/*.toml", Style::default().fg(state.theme.text_dim)),
+        ]),
+        Line::from(vec![
+            Span::styled("Repo:    ", Style::default().fg(state.theme.text)),
+            Span::styled(
+                "https://github.com/johannus22/zentra-cli",
+                Style::default().fg(state.theme.text_dim),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Author:  ", Style::default().fg(state.theme.text)),
+            Span::styled("@johannus22", Style::default().fg(state.theme.accent)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "← back",
+            Style::default().fg(state.theme.text_dim),
+        )),
+    ];
+    frame.render_widget(Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }), area);
 }
 
 fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
@@ -1650,85 +2043,6 @@ fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state
     frame.render_widget(keys, centered_middle_column(chunks[3]));
 }
 
-fn render_provider_selector(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
-    let chunks = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(HEADER_HEIGHT),
-        Constraint::Min(6),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Fill(1),
-    ])
-    .split(area);
-
-    // ── Header block ────────────────────────────────────────────────────────
-    let header_center = Layout::horizontal([
-        Constraint::Percentage(30),
-        Constraint::Percentage(40),
-        Constraint::Percentage(30),
-    ])
-    .split(chunks[1])[1];
-    render_banner_header(frame, header_center, state);
-
-    // ── Provider list ───────────────────────────────────────────────────────
-    let items: Vec<ListItem> = state
-        .profiles
-        .iter()
-        .enumerate()
-        .map(|(i, (name, model))| {
-            let selected = state.provider_idx == i;
-            let is_active = *name == state.active_profile;
-            let bullet = if is_active { "●" } else { " " };
-            let prefix = if selected { "▶" } else { " " };
-            let style = if selected {
-                Style::default()
-                    .fg(state.theme.selection_fg)
-                    .bg(state.theme.selection_bg)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(state.theme.text)
-            };
-            let bullet_style = Style::default().fg(if is_active {
-                state.theme.success
-            } else {
-                state.theme.text_muted
-            });
-            ListItem::new(Line::from(vec![
-                Span::raw(format!("{} ", prefix)),
-                Span::styled(format!("{} ", bullet), bullet_style),
-                Span::styled(
-                    format!("{:<20}", name.chars().take(20).collect::<String>()),
-                    style,
-                ),
-                Span::styled(
-                    model.chars().take(20).collect::<String>(),
-                    Style::default().fg(state.theme.text_dim),
-                ),
-            ]))
-        })
-        .collect();
-
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("SELECT PROVIDER")
-            .border_style(Style::default().fg(state.theme.border))
-            .style(Style::default().bg(state.theme.bg)),
-    );
-    let list_area = centered_middle_column(chunks[2]);
-    frame.render_widget(list, list_area);
-
-    let keys = Paragraph::new(provider_selector_footer_hint(state))
-        .style(Style::default().fg(state.theme.text_dim));
-    let hints_center = centered_middle_column(chunks[3]);
-    frame.render_widget(keys, hints_center);
-
-    if let Some(error) = &state.provider_error {
-        let error = Paragraph::new(format!("  ✗ {}", error)).style(Style::default().fg(state.theme.error));
-        frame.render_widget(error, centered_middle_column(chunks[4]));
-    }
-}
-
 fn render_repo_input(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
     let outer = Layout::vertical([
         Constraint::Fill(1),
@@ -1791,202 +2105,6 @@ fn render_repo_input(frame: &mut Frame, area: ratatui::layout::Rect, state: &Men
         )));
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
-}
-
-fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
-    let form = &state.form;
-    let provider_name = KNOWN_PROVIDER_NAMES[form.provider_idx];
-    let form_height = 13;
-
-    let field_style = |field_idx: usize| -> Style {
-        if form.focused_field == field_idx {
-            Style::default()
-                .fg(state.theme.warning)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(state.theme.text_dim)
-        }
-    };
-
-    // ── Header + form stacked vertically ────────────────────────────────────
-    let outer_chunks = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(HEADER_HEIGHT),
-        Constraint::Length(form_height),
-        Constraint::Fill(1),
-    ])
-    .split(area);
-
-    // Header block
-    let header_center = Layout::horizontal([
-        Constraint::Percentage(30),
-        Constraint::Percentage(40),
-        Constraint::Percentage(30),
-    ])
-    .split(outer_chunks[1])[1];
-    render_banner_header(frame, header_center, state);
-
-    // ── Form block ──────────────────────────────────────────────────────────
-    let form_area = Layout::horizontal([
-        Constraint::Percentage(30),
-        Constraint::Percentage(40),
-        Constraint::Percentage(30),
-    ])
-    .split(outer_chunks[2])[1];
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" ADD PROVIDER ")
-        .title_style(Style::default().fg(state.theme.accent))
-        .border_style(Style::default().fg(state.theme.border))
-        .style(Style::default().bg(state.theme.bg));
-    let inner = block.inner(form_area);
-    let max_field_width = inner.width.saturating_sub(15) as usize;
-
-    let mut fields = vec![
-        Line::from(vec![
-            Span::raw("  Provider   "),
-            Span::styled(format!("◀ {:<18} ▶", provider_name), field_style(0)),
-        ]),
-        Line::from(vec![
-            Span::raw(if form.focused_field == 1 {
-                "▶ "
-            } else {
-                "  "
-            }),
-            Span::styled("Model      ", field_style(1)),
-            Span::styled(
-                format!(
-                    "{:width$}",
-                    clip_with_ellipsis(&form.model, max_field_width),
-                    width = max_field_width
-                ),
-                field_style(1),
-            ),
-        ]),
-        Line::from(vec![
-            Span::raw(if form.focused_field == 2 {
-                "▶ "
-            } else {
-                "  "
-            }),
-            Span::styled("Base URL   ", field_style(2)),
-            Span::styled(
-                format!(
-                    "{:width$}",
-                    clip_with_ellipsis(&form.base_url, max_field_width),
-                    width = max_field_width
-                ),
-                field_style(2),
-            ),
-        ]),
-    ];
-
-    let reasoning_field_idx = form.reasoning_field_idx();
-    fields.push(Line::from(vec![
-        Span::raw(if form.focused_field == reasoning_field_idx {
-            "▶ "
-        } else {
-            "  "
-        }),
-        Span::styled("Reasoning  ", field_style(reasoning_field_idx)),
-        Span::styled(
-            format!(
-                "{:width$}",
-                clip_with_ellipsis(
-                    if form.reasoning_effort.is_empty() {
-                        "(blank = default)"
-                    } else {
-                        &form.reasoning_effort
-                    },
-                    max_field_width
-                ),
-                width = max_field_width
-            ),
-            field_style(reasoning_field_idx),
-        ),
-    ]));
-
-    let api_key_field_idx = form.api_key_field_idx();
-    fields.push(Line::from(vec![
-        Span::raw(if form.focused_field == api_key_field_idx {
-            "▶ "
-        } else {
-            "  "
-        }),
-        Span::styled("API Key    ", field_style(api_key_field_idx)),
-        Span::styled(
-            format!(
-                "{:width$}",
-                clip_with_ellipsis(&form.masked_key(), max_field_width),
-                width = max_field_width
-            ),
-            field_style(api_key_field_idx),
-        ),
-    ]));
-
-    let profile_name_field_idx = form.profile_name_field_idx();
-    fields.push(Line::from(vec![
-        Span::raw(if form.focused_field == profile_name_field_idx {
-            "▶ "
-        } else {
-            "  "
-        }),
-        Span::styled("Name       ", field_style(profile_name_field_idx)),
-        Span::styled(
-            format!(
-                "{:width$}",
-                clip_with_ellipsis(&form.profile_name, max_field_width),
-                width = max_field_width
-            ),
-            field_style(profile_name_field_idx),
-        ),
-    ]));
-    fields.push(Line::from(Span::raw("")));
-
-    let content = Text::from(fields);
-    let paragraph = Paragraph::new(content);
-
-    let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(inner);
-
-    let bottom_rows =
-        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(chunks[1]);
-
-    let button_chunks =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(bottom_rows[0]);
-
-    frame.render_widget(block, form_area);
-    frame.render_widget(paragraph, chunks[0]);
-
-    let save_label = if form.focused_field == form.save_field_idx() {
-        "  ▶ Save"
-    } else {
-        "    Save"
-    };
-    let save = Paragraph::new(Line::from(Span::styled(
-        save_label,
-        field_style(form.save_field_idx()),
-    )));
-    frame.render_widget(save, button_chunks[0]);
-
-    let cancel = Paragraph::new(Line::from(Span::styled(
-        "Esc Cancel",
-        Style::default().fg(state.theme.text_dim),
-    )));
-    frame.render_widget(cancel, button_chunks[1]);
-
-    if let Some(ref err) = form.error {
-        let error = Paragraph::new(Line::from(Span::styled(
-            format!("  ✗ {}", err),
-            Style::default().fg(state.theme.error),
-        )));
-        frame.render_widget(error, bottom_rows[1]);
-    }
-
-    if let Some(modal) = &state.oauth_modal {
-        render_oauth_modal(frame, area, modal, &state.theme);
-    }
 }
 
 fn render_oauth_modal(
