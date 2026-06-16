@@ -32,14 +32,11 @@ const ACTION_CLONE_AND_SCAN: usize = 1;
 const ACTION_RUN_PENTEST: usize = 2;
 const ACTION_SELECT_SCANNERS: usize = 3;
 const ACTION_VIEW_RESULTS: usize = 4;
-const ACTION_CHANGE_PROVIDER: usize = 5;
-const ACTION_ADD_PROVIDER: usize = 6;
-const ACTION_SETTINGS: usize = 7;
-const ACTION_THEME: usize = 8;
-const ACTION_EXIT: usize = 9;
+const ACTION_SETTINGS: usize = 5;
+const ACTION_EXIT: usize = 6;
 
-/// Highest selectable action index in the main menu (10 items: 0-9).
-const MAX_MENU_ACTION: usize = 9;
+/// Highest selectable action index in the main menu (7 items: 0-6).
+const MAX_MENU_ACTION: usize = 6;
 
 pub fn main_menu_actions() -> &'static [&'static str] {
     &[
@@ -48,10 +45,7 @@ pub fn main_menu_actions() -> &'static [&'static str] {
         "Run Pentest",
         "Select Scanners",
         "View Last Results",
-        "Change Provider",
-        "Add Provider",
         "Settings",
-        "Theme",
         "Exit",
     ]
 }
@@ -103,9 +97,61 @@ pub enum MenuAction {
 pub enum MenuScreen {
     Main,
     ScannerSelector,
-    ProviderSelector,
-    ProviderForm,
     RepoInput,
+}
+
+/// Top-level Settings categories shown in the left nav of the Settings hub.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsCategory {
+    Providers,
+    Theme,
+    OutputDir,
+    About,
+}
+
+impl SettingsCategory {
+    pub const ALL: [SettingsCategory; 4] = [
+        SettingsCategory::Providers,
+        SettingsCategory::Theme,
+        SettingsCategory::OutputDir,
+        SettingsCategory::About,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SettingsCategory::Providers => "Providers",
+            SettingsCategory::Theme => "Theme",
+            SettingsCategory::OutputDir => "Output dir",
+            SettingsCategory::About => "About",
+        }
+    }
+
+    /// The detail mode shown when this category is first focused.
+    fn default_detail(self) -> DetailMode {
+        match self {
+            SettingsCategory::Providers => DetailMode::ProviderList,
+            SettingsCategory::Theme => DetailMode::ThemeList,
+            SettingsCategory::OutputDir => DetailMode::OutputEdit,
+            SettingsCategory::About => DetailMode::About,
+        }
+    }
+}
+
+/// Which pane of the Settings hub currently has keyboard focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsFocus {
+    Nav,
+    Detail,
+}
+
+/// What the right detail pane is currently showing/editing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailMode {
+    ProviderList,
+    ProviderForm,
+    ThemeList,
+    OutputEdit,
+    About,
 }
 
 /// State for the Settings screen. Currently a single editable field: the base
@@ -255,6 +301,7 @@ impl std::fmt::Debug for ProviderFormState {
 }
 
 impl ProviderFormState {
+    #[allow(dead_code)]
     fn auth_field_idx(&self) -> Option<usize> {
         None
     }
@@ -534,7 +581,9 @@ pub struct MenuState {
     pub error_expanded: bool,
     pub theme: crate::tui::theme::Theme,
     pub settings_open: bool,
-    pub theme_picker_open: bool,
+    pub settings_category_idx: usize,
+    pub settings_focus: SettingsFocus,
+    pub settings_detail: DetailMode,
     pub theme_options: Vec<crate::tui::theme::Theme>,
     pub theme_idx: usize,
     /// The theme that was active before the picker opened (restored on Esc).
@@ -579,7 +628,9 @@ impl MenuState {
                 crate::config::GlobalConfig::load().ok().and_then(|g| g.theme).as_deref(),
             ),
             settings_open: false,
-            theme_picker_open: false,
+            settings_category_idx: 0,
+            settings_focus: SettingsFocus::Nav,
+            settings_detail: DetailMode::ProviderList,
             theme_options: crate::tui::theme::load_all(),
             theme_idx: 0,
             theme_before_picker: None,
@@ -594,7 +645,6 @@ impl MenuState {
             .iter()
             .position(|t| t.id == self.theme.id)
             .unwrap_or(0);
-        self.theme_picker_open = true;
     }
 
     /// Move the highlight and live-apply the highlighted theme.
@@ -628,8 +678,7 @@ impl MenuState {
         let mut global = crate::config::GlobalConfig::load_from(config_path)?;
         global.theme = Some(self.theme.id.clone());
         global.save_to(config_path)?;
-        self.theme_picker_open = false;
-        self.theme_before_picker = None;
+        self.theme_before_picker = Some(self.theme.clone());
         Ok(())
     }
 
@@ -638,7 +687,6 @@ impl MenuState {
         if let Some(t) = self.theme_before_picker.take() {
             self.theme = t;
         }
-        self.theme_picker_open = false;
     }
 
     /// Build the Settings form from the current global config (best-effort —
@@ -657,6 +705,61 @@ impl MenuState {
             error: None,
             saved: false,
         }
+    }
+
+    pub fn settings_category(&self) -> SettingsCategory {
+        SettingsCategory::ALL[self.settings_category_idx.min(SettingsCategory::ALL.len() - 1)]
+    }
+
+    /// Open the Settings hub, reloading every sub-state from disk.
+    pub fn open_settings(&mut self) {
+        self.settings = Self::load_settings();
+        self.form = ProviderFormState::default();
+        self.provider_idx = 0;
+        self.clear_provider_selector_messages();
+        self.settings_category_idx = 0;
+        self.settings_focus = SettingsFocus::Nav;
+        self.settings_detail = SettingsCategory::Providers.default_detail();
+        self.settings_open = true;
+    }
+
+    pub fn close_settings(&mut self) {
+        self.settings_open = false;
+        self.settings_focus = SettingsFocus::Nav;
+    }
+
+    pub fn settings_nav_up(&mut self) {
+        if self.settings_category_idx > 0 {
+            self.settings_category_idx -= 1;
+            self.settings_detail = self.settings_category().default_detail();
+        }
+    }
+
+    pub fn settings_nav_down(&mut self) {
+        if self.settings_category_idx + 1 < SettingsCategory::ALL.len() {
+            self.settings_category_idx += 1;
+            self.settings_detail = self.settings_category().default_detail();
+        }
+    }
+
+    /// Move focus from the nav into the detail pane for the current category.
+    pub fn settings_enter_detail(&mut self) {
+        self.settings_detail = self.settings_category().default_detail();
+        self.settings_focus = SettingsFocus::Detail;
+        if self.settings_category() == SettingsCategory::Theme {
+            self.open_theme_picker(); // establish restore baseline + highlight
+        }
+    }
+
+    /// Return focus to the nav, discarding any uncommitted detail edits.
+    pub fn settings_leave_detail(&mut self) {
+        if self.settings_category() == SettingsCategory::Theme {
+            self.cancel_theme(); // restore pre-preview theme
+        }
+        self.form = ProviderFormState::default();
+        self.clear_provider_selector_messages();
+        self.settings_detail = self.settings_category().default_detail();
+        self.settings_focus = SettingsFocus::Nav;
     }
 
     pub fn open_repo_input(&mut self) {
@@ -684,9 +787,7 @@ impl MenuState {
         let max = match self.screen {
             MenuScreen::Main => MAX_MENU_ACTION,
             MenuScreen::ScannerSelector => 5,
-            MenuScreen::ProviderSelector
-            | MenuScreen::ProviderForm
-            | MenuScreen::RepoInput => 0,
+            MenuScreen::RepoInput => 0,
         };
         if self.selected_idx < max {
             self.selected_idx += 1;
@@ -703,8 +804,7 @@ impl MenuState {
         match idx {
             i if i == ACTION_RUN_FULL_SCAN
                 || i == ACTION_CLONE_AND_SCAN
-                || i == ACTION_SELECT_SCANNERS
-                || i == ACTION_CHANGE_PROVIDER =>
+                || i == ACTION_SELECT_SCANNERS =>
             {
                 self.provider_configured
             }
@@ -756,12 +856,6 @@ impl MenuState {
         }
     }
 
-    pub fn provider_selector_escape(&mut self) {
-        self.clear_provider_selector_messages();
-        self.screen = MenuScreen::Main;
-        self.selected_idx = ACTION_CHANGE_PROVIDER;
-    }
-
     /// Set `name` as the default provider, persist it, and refresh the
     /// in-memory view from the saved config — all without leaving the TUI.
     ///
@@ -801,8 +895,6 @@ impl MenuState {
             .map(|p| p.model.clone())
             .unwrap_or_default();
         self.clear_provider_selector_messages();
-        self.screen = MenuScreen::Main;
-        self.selected_idx = ACTION_CHANGE_PROVIDER;
         Ok(())
     }
 
@@ -859,7 +951,7 @@ impl MenuState {
         self.oauth_modal = None;
         self.oauth_modal_rx = None;
         self.form.error = Some(error);
-        self.screen = MenuScreen::ProviderForm;
+        self.settings_detail = DetailMode::ProviderForm;
     }
 
     #[allow(dead_code)]
@@ -1053,40 +1145,118 @@ fn run_menu_loop(
                 dirty = true;
                 match state.screen {
                     MenuScreen::Main => {
-                        if state.theme_picker_open {
-                            match key.code {
-                                KeyCode::Up => state.theme_picker_prev(),
-                                KeyCode::Down => state.theme_picker_next(),
-                                KeyCode::Enter => {
-                                    if let Err(e) = state.confirm_theme() {
-                                        state.last_error =
-                                            Some(format!("Failed to save theme: {e}"));
-                                    }
-                                }
-                                KeyCode::Esc => state.cancel_theme(),
-                                _ => {}
-                            }
-                            continue;
-                        }
                         if state.settings_open {
-                            match key.code {
-                                KeyCode::Tab | KeyCode::Down => state.settings.next_field(),
-                                KeyCode::BackTab | KeyCode::Up => state.settings.prev_field(),
-                                KeyCode::Char(c) => state.settings.append_char(c),
-                                KeyCode::Backspace => state.settings.backspace(),
-                                KeyCode::Enter => {
-                                    if state.settings.focused_field
-                                        == SettingsFormState::SAVE_FIELD
-                                    {
-                                        if let Err(e) = state.settings.save() {
-                                            state.settings.error = Some(e.to_string());
+                            match state.settings_focus {
+                                SettingsFocus::Nav => match key.code {
+                                    KeyCode::Up => state.settings_nav_up(),
+                                    KeyCode::Down => state.settings_nav_down(),
+                                    KeyCode::Right | KeyCode::Enter => state.settings_enter_detail(),
+                                    KeyCode::Esc => state.close_settings(),
+                                    _ => {}
+                                },
+                                SettingsFocus::Detail => match state.settings_detail {
+                                    DetailMode::ProviderList => match key.code {
+                                        KeyCode::Up => state.provider_selector_move_up(),
+                                        KeyCode::Down => state.provider_selector_move_down(),
+                                        KeyCode::Char('a') => {
+                                            state.form = ProviderFormState::default();
+                                            state.settings_detail = DetailMode::ProviderForm;
                                         }
-                                    } else {
-                                        state.settings.next_field();
+                                        KeyCode::Char('d') => {
+                                            state.handle_provider_delete_key()?;
+                                        }
+                                        KeyCode::Enter => {
+                                            if let Some((name, _)) =
+                                                state.profiles.get(state.provider_idx)
+                                            {
+                                                let name = name.clone();
+                                                state.apply_provider_change(&name)?;
+                                            }
+                                        }
+                                        KeyCode::Left | KeyCode::Esc => state.settings_leave_detail(),
+                                        _ => {}
+                                    },
+                                    DetailMode::ProviderForm => {
+                                        if state.oauth_modal.is_none() {
+                                            match key.code {
+                                                KeyCode::Left => {
+                                                    if state.form.focused_field == 0 {
+                                                        state.form.cycle_provider(-1);
+                                                    }
+                                                }
+                                                KeyCode::Right => {
+                                                    if state.form.focused_field == 0 {
+                                                        state.form.cycle_provider(1);
+                                                    }
+                                                }
+                                                KeyCode::Tab | KeyCode::Down => state.form.next_field(),
+                                                KeyCode::BackTab | KeyCode::Up => state.form.prev_field(),
+                                                KeyCode::Char(c) => state.form.append_char(c),
+                                                KeyCode::Backspace => state.form.backspace(),
+                                                KeyCode::Enter => {
+                                                    if state.form.focused_field
+                                                        == state.form.save_field_idx()
+                                                    {
+                                                        match state.form.save() {
+                                                            Ok(name) => {
+                                                                state.apply_provider_change(&name)?;
+                                                                state.form =
+                                                                    ProviderFormState::default();
+                                                                state.settings_detail =
+                                                                    DetailMode::ProviderList;
+                                                            }
+                                                            Err(e) => {
+                                                                state.form.error = Some(e.to_string())
+                                                            }
+                                                        }
+                                                    } else {
+                                                        state.form.next_field();
+                                                    }
+                                                }
+                                                KeyCode::Esc => {
+                                                    state.form = ProviderFormState::default();
+                                                    state.settings_detail = DetailMode::ProviderList;
+                                                }
+                                                _ => {}
+                                            }
+                                        }
                                     }
-                                }
-                                KeyCode::Esc => state.settings_open = false,
-                                _ => {}
+                                    DetailMode::ThemeList => match key.code {
+                                        KeyCode::Up => state.theme_picker_prev(),
+                                        KeyCode::Down => state.theme_picker_next(),
+                                        KeyCode::Enter => {
+                                            if let Err(e) = state.confirm_theme() {
+                                                state.last_error =
+                                                    Some(format!("Failed to save theme: {e}"));
+                                            }
+                                        }
+                                        KeyCode::Left | KeyCode::Esc => state.settings_leave_detail(),
+                                        _ => {}
+                                    },
+                                    DetailMode::OutputEdit => match key.code {
+                                        KeyCode::Tab | KeyCode::Down => state.settings.next_field(),
+                                        KeyCode::BackTab | KeyCode::Up => state.settings.prev_field(),
+                                        KeyCode::Char(c) => state.settings.append_char(c),
+                                        KeyCode::Backspace => state.settings.backspace(),
+                                        KeyCode::Enter => {
+                                            if state.settings.focused_field
+                                                == SettingsFormState::SAVE_FIELD
+                                            {
+                                                if let Err(e) = state.settings.save() {
+                                                    state.settings.error = Some(e.to_string());
+                                                }
+                                            } else {
+                                                state.settings.next_field();
+                                            }
+                                        }
+                                        KeyCode::Esc => state.settings_leave_detail(),
+                                        _ => {}
+                                    },
+                                    DetailMode::About => match key.code {
+                                        KeyCode::Left | KeyCode::Esc => state.settings_leave_detail(),
+                                        _ => {}
+                                    },
+                                },
                             }
                             continue;
                         }
@@ -1120,18 +1290,7 @@ fn run_menu_loop(
                                     state.selected_idx = 0;
                                 }
                                 ACTION_VIEW_RESULTS => return Ok(MenuAction::ViewLastResults),
-                                ACTION_CHANGE_PROVIDER => {
-                                    state.screen = MenuScreen::ProviderSelector;
-                                    state.provider_idx = 0;
-                                }
-                                ACTION_ADD_PROVIDER => {
-                                    state.screen = MenuScreen::ProviderForm;
-                                }
-                                ACTION_SETTINGS => {
-                                    state.settings = MenuState::load_settings();
-                                    state.settings_open = true;
-                                }
-                                ACTION_THEME => state.open_theme_picker(),
+                                ACTION_SETTINGS => state.open_settings(),
                                 ACTION_EXIT => return Ok(MenuAction::Exit),
                                 _ => {}
                             }
@@ -1168,71 +1327,6 @@ fn run_menu_loop(
                         KeyCode::Esc => {
                             state.screen = MenuScreen::Main;
                             state.selected_idx = ACTION_SELECT_SCANNERS;
-                        }
-                        _ => {}
-                    },
-                    MenuScreen::ProviderSelector => match key.code {
-                        KeyCode::Up => state.provider_selector_move_up(),
-                        KeyCode::Down => state.provider_selector_move_down(),
-                        KeyCode::Char('d') => {
-                            state.handle_provider_delete_key()?;
-                        }
-                        KeyCode::Enter => {
-                            if let Some((name, _)) = state.profiles.get(state.provider_idx) {
-                                let name = name.clone();
-                                state.apply_provider_change(&name)?;
-                            }
-                        }
-                        KeyCode::Esc => state.provider_selector_escape(),
-                        _ => {}
-                    },
-                    MenuScreen::ProviderForm => match key.code {
-                        _ if state.oauth_modal.is_some() => {}
-                        KeyCode::Left => {
-                            if state.form.focused_field == 0 {
-                                state.form.cycle_provider(-1);
-                            } else if state.form.auth_field_idx() == Some(state.form.focused_field)
-                            {
-                                state.form.cycle_auth_method(-1);
-                            }
-                        }
-                        KeyCode::Right => {
-                            if state.form.focused_field == 0 {
-                                state.form.cycle_provider(1);
-                            } else if state.form.auth_field_idx() == Some(state.form.focused_field)
-                            {
-                                state.form.cycle_auth_method(1);
-                            }
-                        }
-                        KeyCode::Tab | KeyCode::Down => {
-                            state.form.next_field();
-                        }
-                        KeyCode::BackTab | KeyCode::Up => {
-                            state.form.prev_field();
-                        }
-                        KeyCode::Char(c) => {
-                            state.form.append_char(c);
-                        }
-                        KeyCode::Backspace => {
-                            state.form.backspace();
-                        }
-                        KeyCode::Enter => {
-                            if state.form.focused_field == state.form.save_field_idx() {
-                                match state.form.save() {
-                                    Ok(name) => {
-                                        state.apply_provider_change(&name)?;
-                                        state.form = ProviderFormState::default();
-                                    }
-                                    Err(e) => state.form.error = Some(e.to_string()),
-                                }
-                            } else {
-                                state.form.next_field();
-                            }
-                        }
-                        KeyCode::Esc => {
-                            state.screen = MenuScreen::Main;
-                            state.selected_idx = ACTION_ADD_PROVIDER;
-                            state.form = ProviderFormState::default(); // reset
                         }
                         _ => {}
                     },
@@ -1278,8 +1372,6 @@ fn render_menu(frame: &mut Frame, state: &MenuState) {
     match state.screen {
         MenuScreen::Main => render_main_menu(frame, area, state),
         MenuScreen::ScannerSelector => render_scanner_selector(frame, area, state),
-        MenuScreen::ProviderSelector => render_provider_selector(frame, area, state),
-        MenuScreen::ProviderForm => render_provider_form(frame, area, state),
         MenuScreen::RepoInput => render_repo_input(frame, area, state),
     }
 }
@@ -1435,129 +1527,22 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
         }
     }
 
-    if state.theme_picker_open {
-        let popup = centered_fixed(34, state.theme_options.len() as u16 + 2, area);
-        frame.render_widget(Clear, popup);
-        let rows: Vec<ListItem> = state
-            .theme_options
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                let chips = Line::from(vec![
-                    Span::styled("  ", Style::default().bg(t.accent)),
-                    Span::styled("  ", Style::default().bg(t.error)),
-                    Span::styled("  ", Style::default().bg(t.success)),
-                    Span::raw(format!("  {}", t.name)),
-                ]);
-                let style = if i == state.theme_idx {
-                    Style::default()
-                        .bg(state.theme.selection_bg)
-                        .fg(state.theme.selection_fg)
-                } else {
-                    Style::default().fg(state.theme.text)
-                };
-                ListItem::new(chips).style(style)
-            })
-            .collect();
-        let list = List::new(rows).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Select theme · ↑↓ preview · Enter save · Esc cancel ")
-                .border_style(Style::default().fg(state.theme.border))
-                .style(Style::default().bg(state.theme.surface)),
-        );
-        frame.render_widget(list, popup);
-    }
-
     if state.settings_open {
-        let s = &state.settings;
-        // Inner width = fixed popup width (60) minus the two borders.
-        let max_field_width = 60u16.saturating_sub(2).saturating_sub(8) as usize;
-        let shown_dir = if s.output_dir.is_empty() {
-            format!("(default: {})", s.default_dir)
-        } else {
-            s.output_dir.clone()
-        };
+        render_settings_hub(frame, area, state);
+    }
+}
 
-        let field_style = |idx: usize| -> Style {
-            if s.focused_field == idx {
-                Style::default()
-                    .fg(state.theme.warning)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(state.theme.text_dim)
-            }
-        };
-
-        let mut lines = vec![
-            Line::from(Span::styled(
-                "Artifact output directory",
-                Style::default().fg(state.theme.accent),
-            )),
-            Line::from(Span::styled(
-                "Pentest reports & evidence go here. Blank = default.",
-                Style::default().fg(state.theme.text_dim),
-            )),
-            Line::from(Span::styled(
-                "(WSL: e.g. /mnt/c/Users/<you>/Documents/Zentra)",
-                Style::default().fg(state.theme.text_dim),
-            )),
-            Line::from(Span::raw("")),
-            Line::from(vec![
-                Span::raw(if s.focused_field == SettingsFormState::OUTPUT_DIR_FIELD {
-                    "▶ "
-                } else {
-                    "  "
-                }),
-                Span::styled("Dir  ", field_style(SettingsFormState::OUTPUT_DIR_FIELD)),
-                Span::styled(
-                    clip_with_ellipsis(&shown_dir, max_field_width),
-                    field_style(SettingsFormState::OUTPUT_DIR_FIELD),
-                ),
-            ]),
-            Line::from(Span::raw("")),
-        ];
-
-        let save_label = if s.focused_field == SettingsFormState::SAVE_FIELD {
-            "  ▶ Save"
-        } else {
-            "    Save"
-        };
-        lines.push(Line::from(Span::styled(
-            save_label,
-            field_style(SettingsFormState::SAVE_FIELD),
-        )));
-
-        if let Some(err) = &s.error {
-            lines.push(Line::from(Span::styled(
-                format!("  ✗ {}", err),
-                Style::default().fg(state.theme.error),
-            )));
-        } else if s.saved {
-            lines.push(Line::from(Span::styled(
-                "  ✓ Saved",
-                Style::default().fg(state.theme.success),
-            )));
-        }
-
-        lines.push(Line::from(Span::styled(
-            " Tab/↑↓ move · type to edit · Enter save · Esc close",
-            Style::default().fg(state.theme.text_dim),
-        )));
-
-        let height = lines.len() as u16 + 2; // borders
-        let popup = centered_fixed(60, height, area);
-        frame.render_widget(Clear, popup);
-        let block = Block::default()
+fn render_settings_hub(frame: &mut Frame, area: Rect, state: &MenuState) {
+    let popup = centered_fixed(area.width.saturating_mul(8) / 10, 16, area);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Block::default()
             .borders(Borders::ALL)
             .title(" SETTINGS ")
-            .title_style(Style::default().fg(state.theme.accent))
             .border_style(Style::default().fg(state.theme.border))
-            .style(Style::default().bg(state.theme.surface));
-        let inner = block.inner(popup);
-        frame.render_widget(block, popup);
-        frame.render_widget(Paragraph::new(Text::from(lines)), inner);
-    }
+            .style(Style::default().bg(state.theme.surface)),
+        popup,
+    );
 }
 
 fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
@@ -1650,85 +1635,6 @@ fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state
     frame.render_widget(keys, centered_middle_column(chunks[3]));
 }
 
-fn render_provider_selector(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
-    let chunks = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(HEADER_HEIGHT),
-        Constraint::Min(6),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Fill(1),
-    ])
-    .split(area);
-
-    // ── Header block ────────────────────────────────────────────────────────
-    let header_center = Layout::horizontal([
-        Constraint::Percentage(30),
-        Constraint::Percentage(40),
-        Constraint::Percentage(30),
-    ])
-    .split(chunks[1])[1];
-    render_banner_header(frame, header_center, state);
-
-    // ── Provider list ───────────────────────────────────────────────────────
-    let items: Vec<ListItem> = state
-        .profiles
-        .iter()
-        .enumerate()
-        .map(|(i, (name, model))| {
-            let selected = state.provider_idx == i;
-            let is_active = *name == state.active_profile;
-            let bullet = if is_active { "●" } else { " " };
-            let prefix = if selected { "▶" } else { " " };
-            let style = if selected {
-                Style::default()
-                    .fg(state.theme.selection_fg)
-                    .bg(state.theme.selection_bg)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(state.theme.text)
-            };
-            let bullet_style = Style::default().fg(if is_active {
-                state.theme.success
-            } else {
-                state.theme.text_muted
-            });
-            ListItem::new(Line::from(vec![
-                Span::raw(format!("{} ", prefix)),
-                Span::styled(format!("{} ", bullet), bullet_style),
-                Span::styled(
-                    format!("{:<20}", name.chars().take(20).collect::<String>()),
-                    style,
-                ),
-                Span::styled(
-                    model.chars().take(20).collect::<String>(),
-                    Style::default().fg(state.theme.text_dim),
-                ),
-            ]))
-        })
-        .collect();
-
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("SELECT PROVIDER")
-            .border_style(Style::default().fg(state.theme.border))
-            .style(Style::default().bg(state.theme.bg)),
-    );
-    let list_area = centered_middle_column(chunks[2]);
-    frame.render_widget(list, list_area);
-
-    let keys = Paragraph::new(provider_selector_footer_hint(state))
-        .style(Style::default().fg(state.theme.text_dim));
-    let hints_center = centered_middle_column(chunks[3]);
-    frame.render_widget(keys, hints_center);
-
-    if let Some(error) = &state.provider_error {
-        let error = Paragraph::new(format!("  ✗ {}", error)).style(Style::default().fg(state.theme.error));
-        frame.render_widget(error, centered_middle_column(chunks[4]));
-    }
-}
-
 fn render_repo_input(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
     let outer = Layout::vertical([
         Constraint::Fill(1),
@@ -1793,202 +1699,7 @@ fn render_repo_input(frame: &mut Frame, area: ratatui::layout::Rect, state: &Men
     frame.render_widget(Paragraph::new(Text::from(lines)), inner);
 }
 
-fn render_provider_form(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
-    let form = &state.form;
-    let provider_name = KNOWN_PROVIDER_NAMES[form.provider_idx];
-    let form_height = 13;
-
-    let field_style = |field_idx: usize| -> Style {
-        if form.focused_field == field_idx {
-            Style::default()
-                .fg(state.theme.warning)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(state.theme.text_dim)
-        }
-    };
-
-    // ── Header + form stacked vertically ────────────────────────────────────
-    let outer_chunks = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(HEADER_HEIGHT),
-        Constraint::Length(form_height),
-        Constraint::Fill(1),
-    ])
-    .split(area);
-
-    // Header block
-    let header_center = Layout::horizontal([
-        Constraint::Percentage(30),
-        Constraint::Percentage(40),
-        Constraint::Percentage(30),
-    ])
-    .split(outer_chunks[1])[1];
-    render_banner_header(frame, header_center, state);
-
-    // ── Form block ──────────────────────────────────────────────────────────
-    let form_area = Layout::horizontal([
-        Constraint::Percentage(30),
-        Constraint::Percentage(40),
-        Constraint::Percentage(30),
-    ])
-    .split(outer_chunks[2])[1];
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" ADD PROVIDER ")
-        .title_style(Style::default().fg(state.theme.accent))
-        .border_style(Style::default().fg(state.theme.border))
-        .style(Style::default().bg(state.theme.bg));
-    let inner = block.inner(form_area);
-    let max_field_width = inner.width.saturating_sub(15) as usize;
-
-    let mut fields = vec![
-        Line::from(vec![
-            Span::raw("  Provider   "),
-            Span::styled(format!("◀ {:<18} ▶", provider_name), field_style(0)),
-        ]),
-        Line::from(vec![
-            Span::raw(if form.focused_field == 1 {
-                "▶ "
-            } else {
-                "  "
-            }),
-            Span::styled("Model      ", field_style(1)),
-            Span::styled(
-                format!(
-                    "{:width$}",
-                    clip_with_ellipsis(&form.model, max_field_width),
-                    width = max_field_width
-                ),
-                field_style(1),
-            ),
-        ]),
-        Line::from(vec![
-            Span::raw(if form.focused_field == 2 {
-                "▶ "
-            } else {
-                "  "
-            }),
-            Span::styled("Base URL   ", field_style(2)),
-            Span::styled(
-                format!(
-                    "{:width$}",
-                    clip_with_ellipsis(&form.base_url, max_field_width),
-                    width = max_field_width
-                ),
-                field_style(2),
-            ),
-        ]),
-    ];
-
-    let reasoning_field_idx = form.reasoning_field_idx();
-    fields.push(Line::from(vec![
-        Span::raw(if form.focused_field == reasoning_field_idx {
-            "▶ "
-        } else {
-            "  "
-        }),
-        Span::styled("Reasoning  ", field_style(reasoning_field_idx)),
-        Span::styled(
-            format!(
-                "{:width$}",
-                clip_with_ellipsis(
-                    if form.reasoning_effort.is_empty() {
-                        "(blank = default)"
-                    } else {
-                        &form.reasoning_effort
-                    },
-                    max_field_width
-                ),
-                width = max_field_width
-            ),
-            field_style(reasoning_field_idx),
-        ),
-    ]));
-
-    let api_key_field_idx = form.api_key_field_idx();
-    fields.push(Line::from(vec![
-        Span::raw(if form.focused_field == api_key_field_idx {
-            "▶ "
-        } else {
-            "  "
-        }),
-        Span::styled("API Key    ", field_style(api_key_field_idx)),
-        Span::styled(
-            format!(
-                "{:width$}",
-                clip_with_ellipsis(&form.masked_key(), max_field_width),
-                width = max_field_width
-            ),
-            field_style(api_key_field_idx),
-        ),
-    ]));
-
-    let profile_name_field_idx = form.profile_name_field_idx();
-    fields.push(Line::from(vec![
-        Span::raw(if form.focused_field == profile_name_field_idx {
-            "▶ "
-        } else {
-            "  "
-        }),
-        Span::styled("Name       ", field_style(profile_name_field_idx)),
-        Span::styled(
-            format!(
-                "{:width$}",
-                clip_with_ellipsis(&form.profile_name, max_field_width),
-                width = max_field_width
-            ),
-            field_style(profile_name_field_idx),
-        ),
-    ]));
-    fields.push(Line::from(Span::raw("")));
-
-    let content = Text::from(fields);
-    let paragraph = Paragraph::new(content);
-
-    let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).split(inner);
-
-    let bottom_rows =
-        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(chunks[1]);
-
-    let button_chunks =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(bottom_rows[0]);
-
-    frame.render_widget(block, form_area);
-    frame.render_widget(paragraph, chunks[0]);
-
-    let save_label = if form.focused_field == form.save_field_idx() {
-        "  ▶ Save"
-    } else {
-        "    Save"
-    };
-    let save = Paragraph::new(Line::from(Span::styled(
-        save_label,
-        field_style(form.save_field_idx()),
-    )));
-    frame.render_widget(save, button_chunks[0]);
-
-    let cancel = Paragraph::new(Line::from(Span::styled(
-        "Esc Cancel",
-        Style::default().fg(state.theme.text_dim),
-    )));
-    frame.render_widget(cancel, button_chunks[1]);
-
-    if let Some(ref err) = form.error {
-        let error = Paragraph::new(Line::from(Span::styled(
-            format!("  ✗ {}", err),
-            Style::default().fg(state.theme.error),
-        )));
-        frame.render_widget(error, bottom_rows[1]);
-    }
-
-    if let Some(modal) = &state.oauth_modal {
-        render_oauth_modal(frame, area, modal, &state.theme);
-    }
-}
-
+#[allow(dead_code)]
 fn render_oauth_modal(
     frame: &mut Frame,
     area: Rect,
