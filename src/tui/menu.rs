@@ -1622,7 +1622,10 @@ fn render_settings_provider_list(frame: &mut Frame, area: Rect, state: &MenuStat
         chunks[0],
     );
 
-    let max_w = chunks[1].width.saturating_sub(4) as usize;
+    // Row layout: "▶ <name padded> ●"
+    //  cursor arrow (2) on the left, active green dot right-aligned (2).
+    let inner_w = chunks[1].width as usize;
+    let name_budget = inner_w.saturating_sub(4).max(1);
     let mut items: Vec<ListItem> = state
         .profiles
         .iter()
@@ -1630,7 +1633,7 @@ fn render_settings_provider_list(frame: &mut Frame, area: Rect, state: &MenuStat
         .map(|(i, (name, model))| {
             let selected = state.provider_idx == i && !state.profiles.is_empty();
             let is_active = *name == state.active_profile;
-            let bullet = if is_active { "●" } else { " " };
+            let cursor = if selected { "▶ " } else { "  " };
             let name_style = if selected {
                 Style::default()
                     .fg(state.theme.selection_fg)
@@ -1639,20 +1642,27 @@ fn render_settings_provider_list(frame: &mut Frame, area: Rect, state: &MenuStat
             } else {
                 Style::default().fg(state.theme.text)
             };
+            let dot_style = if selected {
+                Style::default()
+                    .fg(state.theme.success)
+                    .bg(state.theme.selection_bg)
+            } else {
+                Style::default().fg(state.theme.success)
+            };
+            let padded_name = format!(
+                "{:<width$}",
+                clip_with_ellipsis(name, name_budget),
+                width = name_budget
+            );
+            let dot = if is_active { " ●" } else { "  " };
             ListItem::new(vec![
                 Line::from(vec![
-                    Span::styled(
-                        format!("{} ", bullet),
-                        Style::default().fg(if is_active {
-                            state.theme.success
-                        } else {
-                            state.theme.text_muted
-                        }),
-                    ),
-                    Span::styled(clip_with_ellipsis(name, max_w), name_style),
+                    Span::styled(cursor, name_style),
+                    Span::styled(padded_name, name_style),
+                    Span::styled(dot, dot_style),
                 ]),
                 Line::from(Span::styled(
-                    format!("    {}", clip_with_ellipsis(model, max_w.saturating_sub(4))),
+                    format!("    {}", clip_with_ellipsis(model, name_budget.saturating_sub(2))),
                     Style::default().fg(state.theme.text_dim),
                 )),
             ])
