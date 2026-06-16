@@ -1482,9 +1482,21 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
         })
         .collect();
 
+    let status = if state.provider_configured {
+        format!(
+            " ● {} ({}) · theme: {} ",
+            clip_with_ellipsis(&state.active_profile, 18),
+            clip_with_ellipsis(&state.active_model, 24),
+            state.theme.name
+        )
+    } else {
+        " none — open Settings to add a provider ".to_string()
+    };
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
+            .title(status)
+            .title_style(Style::default().fg(state.theme.success))
             .border_style(Style::default().fg(state.theme.border))
             .style(Style::default().bg(state.theme.bg)),
     );
