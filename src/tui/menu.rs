@@ -1625,19 +1625,17 @@ fn render_settings_provider_list(frame: &mut Frame, area: Rect, state: &MenuStat
         chunks[0],
     );
 
-    // Row layout: "▶ <name padded> ●"
-    //  cursor arrow (2) on the left, then the active green dot one space past
-    //  the longest name (NOT the far pane edge, which looks detached on a wide
-    //  panel). The name column is capped to what the pane can hold.
+    // Single-line rows, two aligned columns: "▶ <name> │ <model> ●".
+    //  Names pad to the longest name, models to the longest model, so the
+    //  separator and the active green dot line up without floating to the far
+    //  pane edge. Models only clip if they genuinely exceed the pane.
     let inner_w = chunks[1].width as usize;
-    let max_name_col = inner_w.saturating_sub(4).max(1);
-    let name_budget = state
-        .profiles
-        .iter()
-        .map(|(n, _)| n.chars().count())
-        .max()
-        .unwrap_or(0)
-        .clamp(1, max_name_col);
+    let longest_name = state.profiles.iter().map(|(n, _)| n.chars().count()).max().unwrap_or(0);
+    let longest_model = state.profiles.iter().map(|(_, m)| m.chars().count()).max().unwrap_or(0);
+    // budget = cursor(2) + name_col + " │ "(3) + model_col + " ●"(2)
+    let name_col = longest_name.clamp(1, inner_w.saturating_sub(9).max(1));
+    let model_budget = inner_w.saturating_sub(2 + name_col + 3 + 2).max(1);
+    let model_col = longest_model.clamp(1, model_budget);
     let mut items: Vec<ListItem> = state
         .profiles
         .iter()
@@ -1646,38 +1644,35 @@ fn render_settings_provider_list(frame: &mut Frame, area: Rect, state: &MenuStat
             let selected = state.provider_idx == i && !state.profiles.is_empty();
             let is_active = *name == state.active_profile;
             let cursor = if selected { "▶ " } else { "  " };
-            let name_style = if selected {
-                Style::default()
-                    .fg(state.theme.selection_fg)
-                    .bg(state.theme.selection_bg)
-                    .add_modifier(Modifier::BOLD)
+            let bg = if selected {
+                Some(state.theme.selection_bg)
             } else {
-                Style::default().fg(state.theme.text)
+                None
             };
-            let dot_style = if selected {
-                Style::default()
-                    .fg(state.theme.success)
-                    .bg(state.theme.selection_bg)
-            } else {
-                Style::default().fg(state.theme.success)
+            let with_bg = |fg, bold: bool| {
+                let mut st = Style::default().fg(fg);
+                if let Some(b) = bg {
+                    st = st.bg(b);
+                }
+                if bold {
+                    st = st.add_modifier(Modifier::BOLD);
+                }
+                st
             };
-            let padded_name = format!(
-                "{:<width$}",
-                clip_with_ellipsis(name, name_budget),
-                width = name_budget
-            );
+            let name_fg = if selected { state.theme.selection_fg } else { state.theme.text };
+            let model_fg = if selected { state.theme.selection_fg } else { state.theme.text_dim };
+            let padded_name =
+                format!("{:<w$}", clip_with_ellipsis(name, name_col), w = name_col);
+            let padded_model =
+                format!("{:<w$}", clip_with_ellipsis(model, model_col), w = model_col);
             let dot = if is_active { " ●" } else { "  " };
-            ListItem::new(vec![
-                Line::from(vec![
-                    Span::styled(cursor, name_style),
-                    Span::styled(padded_name, name_style),
-                    Span::styled(dot, dot_style),
-                ]),
-                Line::from(Span::styled(
-                    format!("    {}", clip_with_ellipsis(model, name_budget.saturating_sub(2))),
-                    Style::default().fg(state.theme.text_dim),
-                )),
-            ])
+            ListItem::new(Line::from(vec![
+                Span::styled(cursor, with_bg(name_fg, selected)),
+                Span::styled(padded_name, with_bg(name_fg, selected)),
+                Span::styled(" │ ", with_bg(state.theme.text_muted, false)),
+                Span::styled(padded_model, with_bg(model_fg, false)),
+                Span::styled(dot, with_bg(state.theme.success, false)),
+            ]))
         })
         .collect();
     items.push(ListItem::new(Line::from(Span::styled(
