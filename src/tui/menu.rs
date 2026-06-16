@@ -162,42 +162,21 @@ pub struct SettingsFormState {
     pub output_dir: String,
     /// Resolved default path, shown as a hint when `output_dir` is empty.
     pub default_dir: String,
-    pub focused_field: usize,
     pub error: Option<String>,
     pub saved: bool,
 }
 
 impl SettingsFormState {
-    const OUTPUT_DIR_FIELD: usize = 0;
-    const SAVE_FIELD: usize = 1;
-    const FIELD_COUNT: usize = 2;
-
-    pub fn next_field(&mut self) {
-        self.focused_field = (self.focused_field + 1) % Self::FIELD_COUNT;
-    }
-
-    pub fn prev_field(&mut self) {
-        self.focused_field = if self.focused_field == 0 {
-            Self::FIELD_COUNT - 1
-        } else {
-            self.focused_field - 1
-        };
-    }
-
     pub fn append_char(&mut self, c: char) {
-        if self.focused_field == Self::OUTPUT_DIR_FIELD {
-            self.output_dir.push(c);
-            self.saved = false;
-            self.error = None;
-        }
+        self.output_dir.push(c);
+        self.saved = false;
+        self.error = None;
     }
 
     pub fn backspace(&mut self) {
-        if self.focused_field == Self::OUTPUT_DIR_FIELD {
-            self.output_dir.pop();
-            self.saved = false;
-            self.error = None;
-        }
+        self.output_dir.pop();
+        self.saved = false;
+        self.error = None;
     }
 
     /// Persist the output directory to the global config. Empty input clears the
@@ -706,7 +685,6 @@ impl MenuState {
             default_dir: crate::config::GlobalConfig::default_output_base_dir()
                 .display()
                 .to_string(),
-            focused_field: 0,
             error: None,
             saved: false,
         }
@@ -1282,34 +1260,24 @@ fn run_menu_loop(
                                         _ => {}
                                     },
                                     DetailMode::OutputEdit => match key.code {
-                                        KeyCode::Tab | KeyCode::Down => state.settings.next_field(),
-                                        KeyCode::BackTab | KeyCode::Up => state.settings.prev_field(),
                                         KeyCode::Char(c) => state.settings.append_char(c),
                                         KeyCode::Backspace => state.settings.backspace(),
-                                        KeyCode::Enter => {
-                                            if state.settings.focused_field
-                                                == SettingsFormState::SAVE_FIELD
-                                            {
-                                                match state.settings.save() {
-                                                    Ok(()) => {
-                                                        state.settings_status = Some((
-                                                            true,
-                                                            "Output directory saved".to_string(),
-                                                        ));
-                                                    }
-                                                    Err(e) => {
-                                                        state.settings.error = Some(e.to_string());
-                                                        state.settings_status = Some((
-                                                            false,
-                                                            format!("Could not save: {e}"),
-                                                        ));
-                                                    }
-                                                }
-                                            } else {
-                                                state.settings.next_field();
+                                        KeyCode::Enter => match state.settings.save() {
+                                            Ok(()) => {
+                                                state.settings_status = Some((
+                                                    true,
+                                                    "Output directory saved".to_string(),
+                                                ));
                                             }
-                                        }
-                                        KeyCode::Esc => state.settings_leave_detail(),
+                                            Err(e) => {
+                                                state.settings.error = Some(e.to_string());
+                                                state.settings_status = Some((
+                                                    false,
+                                                    format!("Could not save: {e}"),
+                                                ));
+                                            }
+                                        },
+                                        KeyCode::Left | KeyCode::Esc => state.settings_leave_detail(),
                                         _ => {}
                                     },
                                     DetailMode::About => match key.code {
@@ -1908,13 +1876,9 @@ fn render_settings_output(frame: &mut Frame, area: Rect, state: &MenuState) {
     } else {
         s.output_dir.clone()
     };
-    let fs = |idx: usize| {
-        if s.focused_field == idx {
-            Style::default().fg(state.theme.warning).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(state.theme.text_dim)
-        }
-    };
+    let field_style = Style::default()
+        .fg(state.theme.warning)
+        .add_modifier(Modifier::BOLD);
     let lines = vec![
         Line::from(Span::styled(
             "Artifact output directory",
@@ -1926,17 +1890,12 @@ fn render_settings_output(frame: &mut Frame, area: Rect, state: &MenuState) {
         )),
         Line::from(""),
         Line::from(vec![
-            Span::raw(if s.focused_field == SettingsFormState::OUTPUT_DIR_FIELD { "▶ " } else { "  " }),
-            Span::styled("Dir  ", fs(SettingsFormState::OUTPUT_DIR_FIELD)),
-            Span::styled(clip_with_ellipsis(&shown, max_w), fs(SettingsFormState::OUTPUT_DIR_FIELD)),
+            Span::raw("▶ "),
+            Span::styled("Dir  ", field_style),
+            Span::styled(clip_with_ellipsis(&shown, max_w), field_style),
         ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            if s.focused_field == SettingsFormState::SAVE_FIELD { "  ▶ Save" } else { "    Save" },
-            fs(SettingsFormState::SAVE_FIELD),
-        )),
     ];
-    // Save success/error is surfaced by the hub-wide status footer, not inline.
+    // Save success/error is surfaced by the hub-wide status popup; Enter saves.
 
     // Anchor the key hint at the bottom of the pane, like the other detail panes.
     let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
@@ -1945,7 +1904,7 @@ fn render_settings_output(frame: &mut Frame, area: Rect, state: &MenuState) {
         chunks[0],
     );
     frame.render_widget(
-        Paragraph::new("Tab/↑↓ move · type to edit · Enter save · ← back")
+        Paragraph::new("type to edit · Enter save · ← back")
             .style(Style::default().fg(state.theme.text_dim)),
         chunks[1],
     );
@@ -1980,6 +1939,10 @@ fn render_settings_about(frame: &mut Frame, area: Rect, state: &MenuState) {
                 "https://github.com/johannus22/zentra-cli",
                 Style::default().fg(state.theme.text_dim),
             ),
+        ]),
+        Line::from(vec![
+            Span::styled("Author:  ", Style::default().fg(state.theme.text)),
+            Span::styled("@johannus22", Style::default().fg(state.theme.accent)),
         ]),
         Line::from(""),
         Line::from(Span::styled(
