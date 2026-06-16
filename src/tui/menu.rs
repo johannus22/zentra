@@ -1482,21 +1482,9 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
         })
         .collect();
 
-    let status = if state.provider_configured {
-        format!(
-            " ● {} ({}) · theme: {} ",
-            clip_with_ellipsis(&state.active_profile, 18),
-            clip_with_ellipsis(&state.active_model, 24),
-            state.theme.name
-        )
-    } else {
-        " none — open Settings to add a provider ".to_string()
-    };
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(status)
-            .title_style(Style::default().fg(state.theme.success))
             .border_style(Style::default().fg(state.theme.border))
             .style(Style::default().bg(state.theme.bg)),
     );
@@ -1574,17 +1562,19 @@ fn render_settings_hub(frame: &mut Frame, area: Rect, state: &MenuState) {
         .enumerate()
         .map(|(i, cat)| {
             let selected = i == state.settings_category_idx;
-            let marker = if selected && state.settings_focus == SettingsFocus::Nav {
-                "▶ "
-            } else if selected {
-                "▸ "
-            } else {
-                "  "
-            };
-            let style = if selected {
+            let nav_active = state.settings_focus == SettingsFocus::Nav;
+            let marker = if selected { "▶ " } else { "  " };
+            let style = if selected && nav_active {
+                // Left nav has focus → strong solid highlight bar.
                 Style::default()
                     .fg(state.theme.selection_fg)
                     .bg(state.theme.selection_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else if selected {
+                // A category is active but focus is in the detail pane → distinct
+                // accent color (no bar) so it's clear the nav isn't focused.
+                Style::default()
+                    .fg(state.theme.accent)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(state.theme.text)
@@ -1847,11 +1837,18 @@ fn render_settings_output(frame: &mut Frame, area: Rect, state: &MenuState) {
             Style::default().fg(state.theme.success),
         )));
     }
-    lines.push(Line::from(Span::styled(
-        "Tab/↑↓ move · type to edit · Enter save · ← back",
-        Style::default().fg(state.theme.text_dim),
-    )));
-    frame.render_widget(Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }), area);
+
+    // Anchor the key hint at the bottom of the pane, like the other detail panes.
+    let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+    frame.render_widget(
+        Paragraph::new("Tab/↑↓ move · type to edit · Enter save · ← back")
+            .style(Style::default().fg(state.theme.text_dim)),
+        chunks[1],
+    );
 }
 
 fn render_settings_about(frame: &mut Frame, area: Rect, state: &MenuState) {
