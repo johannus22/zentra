@@ -140,7 +140,7 @@ async fn run() -> anyhow::Result<()> {
             allow_paths,
             exclude_paths,
             authorized,
-            network_full_ports,
+            skip_network,
             stealth,
             escalate,
         }) => {
@@ -150,7 +150,7 @@ async fn run() -> anyhow::Result<()> {
                 allow_paths,
                 exclude_paths,
                 authorized,
-                network_full_ports,
+                skip_network,
                 stealth,
                 escalate,
             )
