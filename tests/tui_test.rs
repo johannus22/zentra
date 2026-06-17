@@ -136,6 +136,7 @@ fn pentest_ui_state_agent_lifecycle_events_are_no_ops() {
         "https://app.example.test".to_string(),
         "gpt-4o".to_string(),
         "none".to_string(),
+        None,
     );
     // These events are no-ops in the stage-based pipeline UI
     state.apply_event(PentestEvent::AgentPlanned {
@@ -159,6 +160,7 @@ fn pentest_ui_state_tracks_findings_and_activity() {
         "https://app.example.test".to_string(),
         "gpt-4o".to_string(),
         "header".to_string(),
+        None,
     );
     state.apply_event(PentestEvent::BrowserAction {
         id: 1,
@@ -185,6 +187,7 @@ fn pentest_ui_state_redacts_sensitive_activity_values() {
         "https://app.example.test".to_string(),
         "gpt-4o".to_string(),
         "header".to_string(),
+        None,
     );
 
     state.apply_event(PentestEvent::BrowserAction {
@@ -232,6 +235,7 @@ fn pentest_ui_state_handles_error_and_completed_events() {
         "https://app.example.test".to_string(),
         "gpt-4o".to_string(),
         "header".to_string(),
+        None,
     );
     state.apply_event(PentestEvent::AgentStarted {
         id: 7,
@@ -255,6 +259,7 @@ fn pentest_ui_state_caps_activity_log() {
         "https://app.example.test".to_string(),
         "gpt-4o".to_string(),
         "none".to_string(),
+        None,
     );
 
     for idx in 0..105 {
@@ -276,6 +281,7 @@ fn pentest_focus_defaults_to_findings() {
         "https://t.test".to_string(),
         "model".to_string(),
         "none".to_string(),
+        None,
     );
     assert_eq!(state.focus, PentestFocus::Findings);
     assert_eq!(state.activity_scroll, 0);
@@ -288,6 +294,7 @@ fn pentest_tab_toggles_focus() {
         "https://t.test".to_string(),
         "model".to_string(),
         "none".to_string(),
+        None,
     );
     assert_eq!(state.focus, PentestFocus::Findings);
     state.handle_tab();
@@ -303,6 +310,7 @@ fn pentest_up_down_routes_to_findings_when_findings_focused() {
         "https://t.test".to_string(),
         "model".to_string(),
         "none".to_string(),
+        None,
     );
     // Add two findings via apply_event
     let finding = PentestFinding {
@@ -334,6 +342,7 @@ fn pentest_activity_scroll_increments_on_up_when_activity_focused() {
         "https://t.test".to_string(),
         "model".to_string(),
         "none".to_string(),
+        None,
     );
     // Add 5 activity entries
     for i in 0..5 {
@@ -358,6 +367,7 @@ fn pentest_activity_scroll_clamps_to_history_length() {
         "https://t.test".to_string(),
         "model".to_string(),
         "none".to_string(),
+        None,
     );
     for i in 0..3 {
         state.apply_event(PentestEvent::AgentActivity {
@@ -379,6 +389,7 @@ fn pentest_activity_scroll_resets_to_zero_floor_on_down() {
         "https://t.test".to_string(),
         "model".to_string(),
         "none".to_string(),
+        None,
     );
     for i in 0..3 {
         state.apply_event(PentestEvent::AgentActivity {
@@ -404,6 +415,7 @@ fn pentest_ui_state_evidence_and_findings_tracked_at_state_level() {
         "https://app.example.test".to_string(),
         "gpt-4o".to_string(),
         "none".to_string(),
+        None,
     );
     state.apply_event(PentestEvent::EvidenceCaptured(PentestEvidence {
         kind: "screenshot".to_string(),
@@ -430,6 +442,7 @@ fn pentest_ui_state_evidence_and_findings_tracked_at_state_level() {
         "https://app.example.test".to_string(),
         "gpt-4o".to_string(),
         "none".to_string(),
+        None,
     );
     multi.selected_idx = 10;
     multi.apply_event(PentestEvent::FindingAdded(PentestFinding {
@@ -1878,6 +1891,7 @@ fn pentest_ui_renders_escalation_spawned_activity() {
         "https://app.example.test".into(),
         "model · profile".into(),
         "none".into(),
+        None,
     );
     state.apply_event(zentra_cli::pentest::PentestEvent::EscalationSpawned {
         id: 100,
@@ -1897,6 +1911,7 @@ fn pentest_ui_renders_escalation_cap_reached_activity() {
         "https://app.example.test".into(),
         "model · profile".into(),
         "none".into(),
+        None,
     );
     state.apply_event(zentra_cli::pentest::PentestEvent::EscalationCapReached {
         dropped_title: "XSS in search".into(),
@@ -1905,6 +1920,20 @@ fn pentest_ui_renders_escalation_cap_reached_activity() {
         .activity
         .iter()
         .any(|a| a.contains("cap reached") && a.contains("XSS in search")));
+}
+
+#[test]
+fn completed_footer_shows_output_dir() {
+    let mut state = PentestUiState::new(
+        "https://target.test".to_string(),
+        "model · profile".to_string(),
+        "none".to_string(),
+        Some(std::path::PathBuf::from("/runs/pentest-123")),
+    );
+    state.completed = true;
+    let footer = state.completion_footer_text();
+    assert!(footer.contains("/runs/pentest-123"), "footer: {footer}");
+    assert!(footer.contains("complete"));
 }
 
 #[test]
