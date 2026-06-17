@@ -1934,6 +1934,16 @@ fn completed_footer_shows_output_dir() {
     let footer = state.completion_footer_text();
     assert!(footer.contains("/runs/pentest-123"), "footer: {footer}");
     assert!(footer.contains("complete"));
+
+    // No output dir → no "saved to" segment, falls back to the plain footer.
+    let no_dir = PentestUiState::new(
+        "https://t.test".to_string(),
+        "m".to_string(),
+        "n".to_string(),
+        None,
+    );
+    assert!(!no_dir.completion_footer_text().contains("saved to"));
+    assert!(no_dir.completion_footer_text().contains("complete"));
 }
 
 #[test]
