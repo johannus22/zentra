@@ -50,9 +50,9 @@ pub enum Commands {
         /// Confirm that you are authorized to test this target
         #[arg(long)]
         authorized: bool,
-        /// Scan all TCP ports during Stage 0 network recon instead of nmap default/common ports
-        #[arg(long = "network-full-ports")]
-        network_full_ports: bool,
+        /// Skip Stage 0 network recon (nmap) entirely — recommended for edge-hosted targets (Vercel/Cloudflare)
+        #[arg(long = "skip-network")]
+        skip_network: bool,
         /// Use low-concurrency requests to reduce IDS detection risk
         #[arg(long)]
         stealth: bool,

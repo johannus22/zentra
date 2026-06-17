@@ -44,6 +44,7 @@ fn pentest_config(url: &str) -> PentestConfig {
         scope: scope_for(url),
         auth: ResolvedAuth::default(),
         authorized: true,
+        skip_network: false,
         network: zentra_cli::pentest::NetworkScanConfig::default(),
         stealth: false,
         escalate: false,
