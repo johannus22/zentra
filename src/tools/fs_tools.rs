@@ -87,7 +87,7 @@ pub fn list_files(dir: &str, pattern: Option<&str>) -> String {
     }
     entries.sort();
     if entries.len() > SUMMARY_THRESHOLD {
-        return summarize_tree(&entries, dir);
+        return summarize_tree(&entries, dir, truncated);
     }
     if truncated {
         entries.push(format!(
@@ -105,7 +105,7 @@ pub fn list_files(dir: &str, pattern: Option<&str>) -> String {
 /// WalkBuilder are prefixed with `dir`, so we strip that prefix before taking
 /// the first remaining component — this ensures multi-segment dirs like
 /// `crates/mylib` attribute `crates/mylib/src/main.rs` to `src`, not `mylib`.
-fn summarize_tree(entries: &[String], dir: &str) -> String {
+fn summarize_tree(entries: &[String], dir: &str, truncated: bool) -> String {
     use std::collections::BTreeMap;
     let mut dir_counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut manifests: Vec<String> = Vec::new();
@@ -137,6 +137,12 @@ fn summarize_tree(entries: &[String], dir: &str) -> String {
         for m in &manifests {
             out.push_str(&format!("  {m}\n"));
         }
+    }
+    if truncated {
+        out.push_str(&format!(
+            "\nNote: file list truncated at {} entries — directory counts are a lower bound; drill into subdirectories to see more.",
+            MAX_LIST_ENTRIES
+        ));
     }
     out
 }
@@ -277,6 +283,33 @@ mod tests {
         assert!(!out.contains("f149.rs"));
     }
 
+    /// `summarize_tree` appends the truncation notice when `truncated = true` and
+    /// omits it when `truncated = false`. Calls `summarize_tree` directly with
+    /// synthetic entries so no temp-dir creation or CWD mutation is needed —
+    /// fast and deterministic.
+    #[test]
+    fn summarize_tree_truncation_notice_present_when_truncated() {
+        let entries: Vec<String> = (0..=210)
+            .map(|i| format!("src/file{i}.rs"))
+            .collect();
+
+        let truncated_out = summarize_tree(&entries, ".", true);
+        assert!(
+            truncated_out.contains("truncated at"),
+            "expected truncation notice in output, got:\n{truncated_out}"
+        );
+        assert!(
+            truncated_out.contains("lower bound"),
+            "expected 'lower bound' in truncation notice, got:\n{truncated_out}"
+        );
+
+        let not_truncated_out = summarize_tree(&entries, ".", false);
+        assert!(
+            !not_truncated_out.contains("truncated at"),
+            "expected no truncation notice when truncated=false, got:\n{not_truncated_out}"
+        );
+    }
+
     /// Regression test for multi-segment `dir` misattribution.
     ///
     /// Previously `summarize_tree` used `norm.split('/').nth(1)` which — for a
@@ -297,7 +330,7 @@ mod tests {
             .collect();
         entries.push("crates/mylib/Cargo.toml".to_string());
 
-        let out = summarize_tree(&entries, "crates/mylib");
+        let out = summarize_tree(&entries, "crates/mylib", false);
 
         // The count should be attributed to "src", not "mylib".
         // Check the top-level directories section specifically (before the blank

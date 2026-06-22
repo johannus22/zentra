@@ -180,7 +180,7 @@ pub async fn run_headless_scan_with_provider(
 
     let failed = scan_task.await??;
     if !failed.is_empty() {
-        let names: Vec<String> = failed.iter().map(|s| format!("{:?}", s)).collect();
+        let names: Vec<&str> = failed.iter().map(|s| s.name()).collect();
         crate::logging::warn("ci", format!("Scanners failed: {}", names.join(", ")));
     }
 

@@ -66,6 +66,10 @@ pub fn compact_to_budget(
         });
         match target {
             Some(AgentMessage::ToolResult { name, content, .. }) => {
+                // Replacing the content discards any prompt-injection wrapper around the
+                // original tool result. This is safe: injection scanning happens at
+                // append time (in the scanner loop), not at send time, so no injection
+                // signal is lost by stubbing here.
                 *content = format!(
                     "{ELISION_MARKER} {name} result ({} chars) removed to fit context — re-run the tool if you need it again.",
                     content.len()

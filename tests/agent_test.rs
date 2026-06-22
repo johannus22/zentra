@@ -748,6 +748,15 @@ async fn orchestrator_returns_failed_scanners() {
         .unwrap();
 
     assert!(!failed.is_empty(), "expected at least one failed scanner in the Vec");
+    // ThreatModel is sequential (phase 1) and gets one of the two 200 responses.
+    // Sast and IacScan run concurrently in phase 2; one gets the remaining 200,
+    // the other receives the 400. Which one fails is non-deterministic, so we
+    // assert membership in the set of parallel scanners that can plausibly fail.
+    assert!(
+        failed.iter().any(|s| matches!(s, ScannerType::Sast | ScannerType::IacScan)),
+        "expected a parallel scanner (Sast or IacScan) in the failed list, got: {:?}",
+        failed
+    );
 }
 
 #[tokio::test]
