@@ -1,3 +1,4 @@
+use crate::agent::context_budget::{self, Outcome};
 use crate::agent::{ScanEvent, ScannerType};
 use crate::provider::{AgentMessage, LLMProvider};
 use crate::scanners;
@@ -115,6 +116,33 @@ for example, do not flag SQL injection if the ORM listed here auto-parameterises
             .ok();
 
         for _iter in 0..MAX_ITERATIONS {
+            // Guard: never send a request that would overflow the model's
+            // context window. Compact oldest tool results to fit; if even the
+            // minimal request is too large, abort this scanner visibly rather
+            // than letting the provider 400 it into silent zero findings.
+            let budget = context_budget::input_budget(self.provider.context_window(), 4096);
+            if let Outcome::Irreducible { estimate, budget } =
+                context_budget::compact_to_budget(&mut messages, system, &tools, budget)
+            {
+                let message = format!(
+                    "context budget exceeded for model {} (need ~{estimate} tokens, budget {budget}) — skipping scanner",
+                    self.provider.model_name()
+                );
+                crate::logging::error(
+                    "scan",
+                    format!("scanner={:?} {message}", self.scanner_type),
+                );
+                self.tx
+                    .send(ScanEvent::Error { scanner: self.scanner_type, message: message.clone() })
+                    .await
+                    .ok();
+                self.tx
+                    .send(ScanEvent::ScannerCompleted(self.scanner_type))
+                    .await
+                    .ok();
+                return Err(anyhow::anyhow!(message));
+            }
+
             let resp = match self
                 .provider
                 .complete_with_tools(system, &messages, &tools, 4096, Some(&self.cancel_token))

@@ -905,6 +905,57 @@ async fn correlate_merges_semantic_duplicates_via_llm() {
 }
 
 #[tokio::test]
+async fn scanner_aborts_when_context_budget_irreducible() {
+    let server = MockServer::start().await;
+    // Expect ZERO calls: the guard must abort before any request.
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{ "message": { "content": "should not be called" } }]
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let provider = Arc::new(
+        OpenAICompatProvider::new(
+            server.uri(),
+            "tiny-model".to_string(),
+            "key".to_string(),
+        )
+        .with_context_window(Some(1)),
+    );
+
+    let (tx, mut rx) = mpsc::channel(128);
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state_writer = Arc::new(
+        zentra_cli::state::StateWriter::new(tmp.path()).unwrap(),
+    );
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+
+    let agent = ScannerAgent::new(
+        ScannerType::Sast,
+        provider,
+        registry,
+        state_writer,
+        tx,
+        None,
+        CancellationToken::new(),
+    );
+    let result = agent.run().await;
+    assert!(result.is_err(), "irreducible budget must return Err");
+
+    let mut saw_error = false;
+    while let Ok(ev) = rx.try_recv() {
+        if let ScanEvent::Error { message, .. } = ev {
+            assert!(message.contains("context budget exceeded"));
+            saw_error = true;
+        }
+    }
+    assert!(saw_error, "must emit a context-budget Error event");
+    // .expect(0) on the mock verifies the provider was never called on drop.
+}
+
+#[tokio::test]
 async fn correlate_preserves_findings_on_llm_failure() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
