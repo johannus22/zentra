@@ -87,7 +87,7 @@ pub fn list_files(dir: &str, pattern: Option<&str>) -> String {
     }
     entries.sort();
     if entries.len() > SUMMARY_THRESHOLD {
-        return summarize_tree(&entries);
+        return summarize_tree(&entries, dir);
     }
     if truncated {
         entries.push(format!(
@@ -100,14 +100,26 @@ pub fn list_files(dir: &str, pattern: Option<&str>) -> String {
 
 /// Build a compact orientation summary for a large tree: per-top-level-dir
 /// file counts, surfaced key manifests wherever they sit, and a drill-in hint.
-fn summarize_tree(entries: &[String]) -> String {
+///
+/// `dir` is the scan root that was passed to `list_files`. Paths emitted by
+/// WalkBuilder are prefixed with `dir`, so we strip that prefix before taking
+/// the first remaining component — this ensures multi-segment dirs like
+/// `crates/mylib` attribute `crates/mylib/src/main.rs` to `src`, not `mylib`.
+fn summarize_tree(entries: &[String], dir: &str) -> String {
     use std::collections::BTreeMap;
     let mut dir_counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut manifests: Vec<String> = Vec::new();
+    let dir_prefix = dir.replace('\\', "/");
     for path in entries {
         // Normalize separators so the summary is stable cross-platform.
         let norm = path.replace('\\', "/");
-        let top = norm.split('/').nth(1).unwrap_or(".").to_string();
+        // Strip the scan-root prefix so we attribute to the correct top-level
+        // directory under `dir`, regardless of how many segments `dir` has.
+        let relative = norm
+            .strip_prefix(&dir_prefix)
+            .unwrap_or(&norm)
+            .trim_start_matches('/');
+        let top = relative.split('/').next().unwrap_or(".").to_string();
         *dir_counts.entry(top).or_insert(0) += 1;
         if let Some(name) = norm.rsplit('/').next() {
             if KEY_MANIFESTS.contains(&name) {
@@ -188,7 +200,14 @@ pub fn grep_code(pattern: &str, path: Option<&str>) -> String {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    // Tests that call std::env::set_current_dir must hold this lock to prevent
+    // races under parallel `cargo test`. We define it here (rather than relying
+    // on the integration-test CWD_LOCK in tests/agent_test.rs) because lib-unit
+    // tests run in a separate test binary and cannot share statics across crates.
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn list_files_rejects_parent_traversal() {
@@ -213,12 +232,14 @@ mod tests {
         fs::write(tmp.path().join("a.rs"), "x").unwrap();
         fs::write(tmp.path().join("b.rs"), "y").unwrap();
 
+        let _guard = CWD_LOCK.lock().unwrap();
         let _save_cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let out = list_files(".", None);
 
         std::env::set_current_dir(&_save_cwd).unwrap();
+        drop(_guard);
 
         // Check for file entries
         let lines: Vec<&str> = out.lines().collect();
@@ -240,17 +261,63 @@ mod tests {
             }
         }
 
+        let _guard = CWD_LOCK.lock().unwrap();
         let _save_cwd = std::env::current_dir().unwrap();
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let out = list_files(".", None);
 
         std::env::set_current_dir(&_save_cwd).unwrap();
+        drop(_guard);
 
         assert!(out.contains("Large repo"), "expected summary banner");
         assert!(out.contains("services") && out.contains("libs"), "expected dir names");
         assert!(out.contains("Cargo.toml"), "expected surfaced manifest");
         // Must not be a full path dump of every file.
         assert!(!out.contains("f149.rs"));
+    }
+
+    /// Regression test for multi-segment `dir` misattribution.
+    ///
+    /// Previously `summarize_tree` used `norm.split('/').nth(1)` which — for a
+    /// path like `crates/mylib/src/main.rs` — would return `mylib` (the second
+    /// segment) instead of `src` (the first component *under* the scan root
+    /// `crates/mylib`). The fix strips `dir` as a prefix before taking the
+    /// first remaining component, so attribution is always relative to the
+    /// scan root.
+    ///
+    /// This test calls `summarize_tree` directly with synthetic entries to
+    /// avoid any cwd mutation — no `CWD_LOCK` needed.
+    #[test]
+    fn summarize_tree_multi_segment_dir_attributes_correctly() {
+        // Build > SUMMARY_THRESHOLD synthetic entries under crates/mylib/src/
+        // so the summary is triggered.
+        let mut entries: Vec<String> = (0..=210)
+            .map(|i| format!("crates/mylib/src/file{i}.rs"))
+            .collect();
+        entries.push("crates/mylib/Cargo.toml".to_string());
+
+        let out = summarize_tree(&entries, "crates/mylib");
+
+        // The count should be attributed to "src", not "mylib".
+        // Check the top-level directories section specifically (before the blank
+        // line that separates it from "Key manifests:").
+        let top_section = out
+            .split("\nKey manifests:")
+            .next()
+            .unwrap_or(&out);
+        assert!(
+            top_section.contains("src/"),
+            "expected 'src/' in top-level dirs section, got:\n{out}"
+        );
+        assert!(
+            !top_section.contains("mylib/"),
+            "misattributed to 'mylib/' in top-level dirs — multi-segment dir fix regressed:\n{out}"
+        );
+        // Manifest should still surface (the full path is fine here).
+        assert!(
+            out.contains("Cargo.toml"),
+            "expected Cargo.toml in manifests:\n{out}"
+        );
     }
 }
