@@ -6,6 +6,11 @@ use std::path::{Component, Path};
 const MAX_FILE_BYTES: u64 = 100_000;
 const MAX_GREP_RESULTS: usize = 100;
 const MAX_LIST_ENTRIES: usize = 10_000;
+const SUMMARY_THRESHOLD: usize = 200;
+const KEY_MANIFESTS: &[&str] = &[
+    "package.json", "Cargo.toml", "go.mod", "pom.xml", "requirements.txt",
+    "pyproject.toml", "build.gradle", "composer.json", "Gemfile",
+];
 
 /// Reject absolute paths, `..` components, and — for paths that exist — any
 /// path that resolves (via symlinks) outside the current working directory,
@@ -81,6 +86,9 @@ pub fn list_files(dir: &str, pattern: Option<&str>) -> String {
         return "No files found".to_string();
     }
     entries.sort();
+    if entries.len() > SUMMARY_THRESHOLD {
+        return summarize_tree(&entries);
+    }
     if truncated {
         entries.push(format!(
             "... results truncated at {} entries",
@@ -88,6 +96,37 @@ pub fn list_files(dir: &str, pattern: Option<&str>) -> String {
         ));
     }
     entries.join("\n")
+}
+
+/// Build a compact orientation summary for a large tree: per-top-level-dir
+/// file counts, surfaced key manifests wherever they sit, and a drill-in hint.
+fn summarize_tree(entries: &[String]) -> String {
+    use std::collections::BTreeMap;
+    let mut dir_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut manifests: Vec<String> = Vec::new();
+    for path in entries {
+        // Normalize separators so the summary is stable cross-platform.
+        let norm = path.replace('\\', "/");
+        let top = norm.split('/').nth(1).unwrap_or(".").to_string();
+        *dir_counts.entry(top).or_insert(0) += 1;
+        if let Some(name) = norm.rsplit('/').next() {
+            if KEY_MANIFESTS.contains(&name) {
+                manifests.push(norm.clone());
+            }
+        }
+    }
+    let mut out = String::from("Large repo — summary shown. Pass a subdirectory to list_files, or use grep_code, to drill in.\n\nTop-level directories:\n");
+    for (dir, count) in &dir_counts {
+        out.push_str(&format!("  {dir}/ ({count} files)\n"));
+    }
+    if !manifests.is_empty() {
+        manifests.sort();
+        out.push_str("\nKey manifests:\n");
+        for m in &manifests {
+            out.push_str(&format!("  {m}\n"));
+        }
+    }
+    out
 }
 
 pub fn grep_code(pattern: &str, path: Option<&str>) -> String {
@@ -148,6 +187,8 @@ pub fn grep_code(pattern: &str, path: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
 
     #[test]
     fn list_files_rejects_parent_traversal() {
@@ -164,5 +205,52 @@ mod tests {
     #[test]
     fn grep_code_rejects_parent_traversal() {
         assert!(grep_code("x", Some("../..")).starts_with("Error: path must be relative"));
+    }
+
+    #[test]
+    fn small_tree_returns_flat_list() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("a.rs"), "x").unwrap();
+        fs::write(tmp.path().join("b.rs"), "y").unwrap();
+
+        let _save_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let out = list_files(".", None);
+
+        std::env::set_current_dir(&_save_cwd).unwrap();
+
+        // Check for file entries
+        let lines: Vec<&str> = out.lines().collect();
+        assert!(lines.iter().any(|l| l.contains("a.rs")), "Expected a.rs in output: {}", out);
+        assert!(lines.iter().any(|l| l.contains("b.rs")), "Expected b.rs in output: {}", out);
+        assert!(!out.contains("Large repo")); // no summary banner for small trees
+    }
+
+    #[test]
+    fn large_tree_returns_structured_summary() {
+        let tmp = TempDir::new().unwrap();
+        // Plant a manifest and > SUMMARY_THRESHOLD files across two dirs.
+        fs::write(tmp.path().join("Cargo.toml"), "[package]").unwrap();
+        for d in ["services", "libs"] {
+            let dir = tmp.path().join(d);
+            fs::create_dir_all(&dir).unwrap();
+            for i in 0..150 {
+                fs::write(dir.join(format!("f{i}.rs")), "x").unwrap();
+            }
+        }
+
+        let _save_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let out = list_files(".", None);
+
+        std::env::set_current_dir(&_save_cwd).unwrap();
+
+        assert!(out.contains("Large repo"), "expected summary banner");
+        assert!(out.contains("services") && out.contains("libs"), "expected dir names");
+        assert!(out.contains("Cargo.toml"), "expected surfaced manifest");
+        // Must not be a full path dump of every file.
+        assert!(!out.contains("f149.rs"));
     }
 }
