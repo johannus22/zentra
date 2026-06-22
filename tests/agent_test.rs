@@ -661,19 +661,15 @@ async fn orchestrator_continues_to_report_after_parallel_scanner_error() {
     let orchestrator =
         OrchestratorAgent::new(provider, registry, writer, tx, CancellationToken::new());
 
-    let result = orchestrator
+    let _failed = orchestrator
         .run(&[
             ScannerType::ThreatModel,
             ScannerType::Sast,
             ScannerType::IacScan,
             ScannerType::Report,
         ])
-        .await;
-
-    assert!(
-        result.is_ok(),
-        "pipeline should continue after scanner errors: {result:?}"
-    );
+        .await
+        .unwrap();
 
     let mut started = vec![];
     let mut completed = vec![];
@@ -696,6 +692,62 @@ async fn orchestrator_continues_to_report_after_parallel_scanner_error() {
         completed.contains(&ScannerType::Report),
         "report should still complete"
     );
+}
+
+#[tokio::test]
+async fn orchestrator_returns_failed_scanners() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        })))
+        .up_to_n_times(2)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("bad request"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(OpenAICompatProvider::new(
+        server.uri(),
+        "gpt-4o".to_string(),
+        "key".to_string(),
+    ));
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let writer = Arc::new(zentra_cli::state::StateWriter::new(dir.path()).unwrap());
+    let (tx, _rx) = mpsc::channel(32);
+
+    let orchestrator =
+        OrchestratorAgent::new(provider, registry, writer, tx, CancellationToken::new());
+
+    let failed = orchestrator
+        .run(&[
+            ScannerType::ThreatModel,
+            ScannerType::Sast,
+            ScannerType::IacScan,
+            ScannerType::Report,
+        ])
+        .await
+        .unwrap();
+
+    assert!(!failed.is_empty(), "expected at least one failed scanner in the Vec");
 }
 
 #[tokio::test]

@@ -228,8 +228,17 @@ async fn run_once(
 
     match outcome {
         ScanOutcome::Completed => {
-            scan_task.await??;
-            println!("\n✓ Scan complete. Findings in .zentra/");
+            let failed = scan_task.await??;
+            if !failed.is_empty() {
+                let names: Vec<&str> = failed.iter().map(|s| s.name()).collect();
+                println!(
+                    "\n✓ Scan complete. Findings in .zentra/\n\
+                     Warning: the following scanners failed: {}",
+                    names.join(", ")
+                );
+            } else {
+                println!("\n✓ Scan complete. Findings in .zentra/");
+            }
         }
         _ => {
             cancel_token.cancel();
