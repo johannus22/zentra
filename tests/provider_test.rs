@@ -278,3 +278,21 @@ async fn openai_compat_omits_reasoning_effort_when_unset() {
     let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert!(body.get("reasoning_effort").is_none());
 }
+
+#[test]
+fn openai_compat_honors_context_window_override() {
+    let p = OpenAICompatProvider::new(
+        "https://api.example.com".to_string(),
+        "some-unknown-model".to_string(),
+        "key".to_string(),
+    )
+    .with_context_window(Some(131_072));
+    assert_eq!(p.context_window(), 131_072);
+
+    let default = OpenAICompatProvider::new(
+        "https://api.example.com".to_string(),
+        "some-unknown-model".to_string(),
+        "key".to_string(),
+    );
+    assert_eq!(default.context_window(), 128_000); // existing fallback unchanged
+}

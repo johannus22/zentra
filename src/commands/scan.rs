@@ -127,7 +127,8 @@ async fn run_once(
                 profile.model.clone(),
                 api_key,
             )
-            .with_reasoning(profile.reasoning_effort.clone()),
+            .with_reasoning(profile.reasoning_effort.clone())
+            .with_context_window(profile.context_window),
         ),
     };
 
