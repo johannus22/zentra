@@ -19,12 +19,13 @@ fn in_zone(file: &str, change_set: &ChangeSet) -> bool {
         || change_set.impact.iter().any(|c| c.replace('\\', "/") == f)
 }
 
-/// Two findings refer to the same issue if they share normalized location and
-/// a case-insensitive title match (after stripping any NEW marker).
+/// Two findings refer to the same issue if they share the same scanner,
+/// normalized location, and a case-insensitive title match (after stripping
+/// any NEW marker).
 fn same_issue(a: &Finding, b: &Finding) -> bool {
     let title_a = a.title.trim_start_matches(NEW_MARKER).to_ascii_lowercase();
     let title_b = b.title.trim_start_matches(NEW_MARKER).to_ascii_lowercase();
-    file_of(&a.location) == file_of(&b.location) && title_a == title_b
+    a.scanner == b.scanner && file_of(&a.location) == file_of(&b.location) && title_a == title_b
 }
 
 pub fn reconcile(
@@ -74,7 +75,8 @@ pub fn is_arch_significant(changed: &[String]) -> bool {
     changed.iter().any(|f| {
         let lower = f.replace('\\', "/").to_ascii_lowercase();
         let name = lower.rsplit('/').next().unwrap_or(&lower);
-        matches!(
+        // Exact filename matches for manifests / lockfiles / IaC
+        let manifest = matches!(
             name,
             "cargo.toml"
                 | "cargo.lock"
@@ -93,18 +95,32 @@ pub fn is_arch_significant(changed: &[String]) -> bool {
                 | "dockerfile"
                 | "docker-compose.yml"
                 | "docker-compose.yaml"
-        ) || lower.ends_with(".tf")
+        );
+        // Path-substring matches for IaC directories / CI (unchanged from original)
+        let iac = lower.ends_with(".tf")
             || lower.contains("k8s/")
             || lower.contains("kubernetes/")
             || lower.contains("helm/")
-            || lower.contains(".github/workflows/")
-            || lower.contains("/auth")
-            || lower.contains("auth/")
-            || lower.contains("config")
-            || lower.contains("main.rs")
-            || lower.contains("/index.")
-            || lower.contains("app.")
-            || lower.contains("server")
+            || lower.contains(".github/workflows/");
+        // Segment-boundary-aware check: a path segment must BE the keyword
+        // (or start/end with it as a separator-adjacent token) to avoid matching
+        // unrelated words like "reconfiguration" or "observer".
+        let seg = |needle: &str| {
+            lower.split('/').any(|s| {
+                s == needle
+                    || s.starts_with(&format!("{needle}."))
+                    || s.starts_with(&format!("{needle}_"))
+                    || s.ends_with(&format!("_{needle}"))
+            })
+        };
+        let entrypoint = seg("auth")
+            || seg("config")
+            || seg("server")
+            || name == "main.rs"
+            || name == "index.js"
+            || name == "index.ts"
+            || name.starts_with("app.");
+        manifest || iac || entrypoint
     })
 }
 
@@ -215,5 +231,83 @@ mod tests {
         assert!(is_arch_significant(&["src/auth/mod.rs".into()]));
         assert!(is_arch_significant(&["Dockerfile".into()]));
         assert!(!is_arch_significant(&["src/util/format.rs".into()]));
+    }
+
+    #[test]
+    fn new_marker_is_not_doubled() {
+        // A fresh finding whose title already starts with the 🆕 marker should
+        // NOT get a second prefix applied.
+        let cs = change_set(&["src/changed.rs"], &["src/changed.rs"]);
+        let fresh = vec![finding(
+            "sast",
+            "🆕 Pre-marked bug",
+            Some("src/changed.rs:1"),
+        )];
+        let (merged, delta) = reconcile(vec![], fresh, &cs);
+        assert_eq!(delta.new, 1);
+        assert_eq!(merged.len(), 1);
+        assert!(
+            !merged[0].title.starts_with("🆕 🆕"),
+            "title must not be double-prefixed: {:?}",
+            merged[0].title
+        );
+    }
+
+    #[test]
+    fn cross_scanner_same_title_not_matched() {
+        // A prior finding from "sast" and a fresh one from "supply_chain" with
+        // identical title + location must NOT be treated as the same issue.
+        let prior = vec![finding("sast", "Issue", Some("src/changed.rs:1"))];
+        let fresh = vec![finding("supply_chain", "Issue", Some("src/changed.rs:1"))];
+        let cs = change_set(&["src/changed.rs"], &["src/changed.rs"]);
+        let (merged, delta) = reconcile(prior, fresh, &cs);
+        // The supply_chain finding is brand-new (no prior supply_chain match).
+        assert_eq!(delta.new, 1, "supply_chain finding must be counted as new");
+        // The sast finding was not reproduced by sast this run → resolved.
+        assert_eq!(
+            delta.resolved, 1,
+            "sast finding must be counted as resolved"
+        );
+        // They must not be collapsed: the 🆕-prefixed supply_chain finding
+        // should be the only finding in merged.
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].scanner, "supply_chain");
+    }
+
+    #[test]
+    fn build_focus_context_lists_changed_and_impact() {
+        let cs = change_set(&["a.rs", "b.rs"], &["a.rs", "b.rs", "c.rs"]);
+        let ctx = build_focus_context(&cs);
+        assert!(
+            ctx.contains("Changed files (2)"),
+            "must mention Changed files (2), got: {ctx}"
+        );
+        assert!(
+            ctx.contains("Impact files (3)"),
+            "must mention Impact files (3), got: {ctx}"
+        );
+        assert!(ctx.contains("- a.rs"), "must list a.rs, got: {ctx}");
+    }
+
+    #[test]
+    fn arch_significant_segment_boundaries() {
+        // These must be true:
+        assert!(
+            is_arch_significant(&["auth.rs".into()]),
+            "auth.rs must be arch-significant"
+        );
+        assert!(
+            is_arch_significant(&["src/config/db.rs".into()]),
+            "src/config/db.rs must be arch-significant"
+        );
+        // These must be false:
+        assert!(
+            !is_arch_significant(&["src/reconfiguration.rs".into()]),
+            "src/reconfiguration.rs must NOT be arch-significant"
+        );
+        assert!(
+            !is_arch_significant(&["src/observer.rs".into()]),
+            "src/observer.rs must NOT be arch-significant"
+        );
     }
 }
