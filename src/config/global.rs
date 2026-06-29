@@ -31,6 +31,11 @@ pub struct GlobalConfig {
     /// theme file stem). `None` means the default (Muted Slate).
     #[serde(default)]
     pub theme: Option<String>,
+    /// URL template for resolving CWE ids in findings. `{id}` is replaced by the
+    /// numeric id (the part after "CWE-"). `None` uses [`DEFAULT_CWE_URL_TEMPLATE`].
+    /// Set to an internal mirror/wiki to point CWE links there.
+    #[serde(default)]
+    pub cwe_url_template: Option<String>,
 }
 
 /// Resolve the global zentra directory (`~/.zentra`). Centralizes the inline
@@ -39,6 +44,24 @@ pub fn global_zentra_dir() -> Result<PathBuf> {
     let home =
         dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?;
     Ok(home.join(".zentra"))
+}
+
+/// Default CWE reference: links to the canonical MITRE definition page.
+pub const DEFAULT_CWE_URL_TEMPLATE: &str = "https://cwe.mitre.org/data/definitions/{id}.html";
+
+/// Resolve a CWE id (e.g. "CWE-89" or "89") to a reference URL using `template`.
+/// `{id}` in the template is replaced by the numeric id; if the template has no
+/// `{id}` placeholder, the numeric id is appended.
+pub fn cwe_link(cwe_id: &str, template: &str) -> String {
+    let numeric = cwe_id
+        .trim()
+        .trim_start_matches("CWE-")
+        .trim_start_matches("cwe-");
+    if template.contains("{id}") {
+        template.replace("{id}", numeric)
+    } else {
+        format!("{template}{numeric}")
+    }
 }
 
 /// Expand a leading `~` / `~/` / `~\` to the user's home directory.
@@ -135,5 +158,51 @@ impl GlobalConfig {
             return home.join("Documents").join("Zentra");
         }
         PathBuf::from("Zentra")
+    }
+}
+
+#[cfg(test)]
+mod cwe_tests {
+    use super::*;
+
+    #[test]
+    fn default_template_links_to_mitre() {
+        assert_eq!(
+            cwe_link("CWE-89", DEFAULT_CWE_URL_TEMPLATE),
+            "https://cwe.mitre.org/data/definitions/89.html"
+        );
+    }
+
+    #[test]
+    fn custom_template_substitutes_id() {
+        assert_eq!(
+            cwe_link("CWE-89", "https://wiki.acme.com/cwe/{id}"),
+            "https://wiki.acme.com/cwe/89"
+        );
+    }
+
+    #[test]
+    fn template_without_placeholder_appends_id() {
+        assert_eq!(cwe_link("CWE-89", "https://x.test/"), "https://x.test/89");
+    }
+
+    #[test]
+    fn bare_or_malformed_id_handled() {
+        assert_eq!(
+            cwe_link("89", DEFAULT_CWE_URL_TEMPLATE),
+            "https://cwe.mitre.org/data/definitions/89.html"
+        );
+    }
+
+    #[test]
+    fn config_roundtrips_cwe_template() {
+        let mut cfg = GlobalConfig::default();
+        cfg.cwe_url_template = Some("https://wiki.acme.com/cwe/{id}".to_string());
+        let json = serde_json::to_string(&cfg).unwrap();
+        let back: GlobalConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.cwe_url_template.as_deref(),
+            Some("https://wiki.acme.com/cwe/{id}")
+        );
     }
 }

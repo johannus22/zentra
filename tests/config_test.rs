@@ -28,6 +28,7 @@ fn global_config_roundtrip() {
         default_profile: Some("openai".to_string()),
         output_dir: None,
         theme: None,
+        cwe_url_template: None,
     };
     config.save_to(&path).unwrap();
 
@@ -61,6 +62,7 @@ fn save_to_writes_schema_directive_and_sidecar_and_roundtrips() {
         default_profile: Some("anthropic".to_string()),
         output_dir: None,
         theme: Some("matrix".to_string()),
+        cwe_url_template: None,
     };
     config.save_to(&path).unwrap();
 

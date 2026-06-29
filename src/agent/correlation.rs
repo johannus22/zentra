@@ -130,7 +130,8 @@ vulnerability. Each inner array is one group of 2+ indices. Omit findings that h
         }),
     };
 
-    let system = "You are a security finding de-duplication engine. You receive a numbered list of \
+    let system =
+        "You are a security finding de-duplication engine. You receive a numbered list of \
 findings produced by independent scanners. Cluster together findings that describe the SAME \
 underlying vulnerability, even if the wording, scanner, or location differ. An architectural \
 finding (no file:line) and a code-level finding (with file:line) that share the same root cause \
@@ -268,6 +269,27 @@ fn merge_group(findings: &[Finding], idxs: &[usize]) -> Finding {
     corroborators.remove(&primary.scanner);
     primary.corroborated_by = corroborators.into_iter().collect();
 
+    // Backfill enriched classification fields the primary lacks from other members.
+    for &idx in idxs {
+        if idx == primary_idx {
+            continue;
+        }
+        let m = &findings[idx];
+        if primary.cwe.is_none() {
+            primary.cwe = m.cwe.clone();
+        }
+        if primary.secondary_cwe.is_empty() {
+            primary.secondary_cwe = m.secondary_cwe.clone();
+        }
+        if primary.cvss_vector.is_none() {
+            primary.cvss_vector = m.cvss_vector.clone();
+            primary.cvss_score = m.cvss_score;
+        }
+        if primary.owasp.is_none() {
+            primary.owasp = m.owasp.clone();
+        }
+    }
+
     primary
 }
 
@@ -331,14 +353,29 @@ mod tests {
             location: loc.map(str::to_string),
             recommendation: "fix it".to_string(),
             corroborated_by: Vec::new(),
+            cwe: None,
+            secondary_cwe: Vec::new(),
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
         }
     }
 
     #[test]
     fn prepass_merges_same_location_and_title() {
         let findings = vec![
-            f("sast", Severity::High, "SQL injection in login", Some("src/auth.rs:42")),
-            f("api_scan", Severity::Medium, "SQL injection login flow", Some("src/auth.rs:42")),
+            f(
+                "sast",
+                Severity::High,
+                "SQL injection in login",
+                Some("src/auth.rs:42"),
+            ),
+            f(
+                "api_scan",
+                Severity::Medium,
+                "SQL injection login flow",
+                Some("src/auth.rs:42"),
+            ),
         ];
         let out = deterministic_prepass(findings);
         assert_eq!(out.len(), 1);
@@ -349,8 +386,18 @@ mod tests {
     #[test]
     fn prepass_keeps_distinct_findings() {
         let findings = vec![
-            f("sast", Severity::High, "SQL injection in login", Some("src/auth.rs:42")),
-            f("sast", Severity::Low, "Missing CSRF token", Some("src/web.rs:10")),
+            f(
+                "sast",
+                Severity::High,
+                "SQL injection in login",
+                Some("src/auth.rs:42"),
+            ),
+            f(
+                "sast",
+                Severity::Low,
+                "Missing CSRF token",
+                Some("src/web.rs:10"),
+            ),
         ];
         let out = deterministic_prepass(findings);
         assert_eq!(out.len(), 2);
@@ -359,8 +406,18 @@ mod tests {
     #[test]
     fn apply_clusters_merges_across_scanners_keeping_highest_severity() {
         let findings = vec![
-            f("threat_model", Severity::Critical, "Broken access control", None),
-            f("sast", Severity::Medium, "Missing auth check on admin route", Some("src/admin.rs:5")),
+            f(
+                "threat_model",
+                Severity::Critical,
+                "Broken access control",
+                None,
+            ),
+            f(
+                "sast",
+                Severity::Medium,
+                "Missing auth check on admin route",
+                Some("src/admin.rs:5"),
+            ),
         ];
         // LLM says these two are the same issue.
         let out = apply_clusters(findings, vec![vec![0, 1]]);
@@ -394,5 +451,79 @@ mod tests {
         let out = apply_clusters(findings, vec![vec![0, 1], vec![0, 1]]);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].corroborated_by, vec!["threat_model".to_string()]);
+    }
+
+    #[test]
+    fn merge_backfills_enriched_fields_from_corroborator() {
+        // Primary (concrete location, sast) lacks CWE; corroborator (threat_model) has it.
+        let primary = Finding {
+            scanner: "sast".into(),
+            severity: Severity::High,
+            title: "SQLi".into(),
+            description: "d".into(),
+            location: Some("src/db.rs:1".into()),
+            recommendation: "r".into(),
+            corroborated_by: vec![],
+            cwe: None,
+            secondary_cwe: vec![],
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
+        };
+        let other = Finding {
+            scanner: "threat_model".into(),
+            severity: Severity::High,
+            title: "SQLi".into(),
+            description: "d".into(),
+            location: None,
+            recommendation: "r".into(),
+            corroborated_by: vec![],
+            cwe: Some("CWE-89".into()),
+            secondary_cwe: vec!["CWE-20".into()],
+            cvss_vector: Some("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H".into()),
+            cvss_score: Some(9.8),
+            owasp: Some("A03:2021-Injection".into()),
+        };
+        let group = vec![primary, other];
+        let merged = merge_group(&group, &[0, 1]);
+        assert_eq!(merged.scanner, "sast"); // primary unchanged
+        assert_eq!(merged.cwe.as_deref(), Some("CWE-89")); // backfilled
+        assert_eq!(merged.secondary_cwe, vec!["CWE-20".to_string()]);
+        assert_eq!(merged.owasp.as_deref(), Some("A03:2021-Injection"));
+        assert!((merged.cvss_score.unwrap() - 9.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn merge_keeps_primary_enriched_fields_when_present() {
+        let primary = Finding {
+            scanner: "sast".into(),
+            severity: Severity::High,
+            title: "SQLi".into(),
+            description: "d".into(),
+            location: Some("src/db.rs:1".into()),
+            recommendation: "r".into(),
+            corroborated_by: vec![],
+            cwe: Some("CWE-89".into()),
+            secondary_cwe: vec![],
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
+        };
+        let other = Finding {
+            scanner: "threat_model".into(),
+            severity: Severity::High,
+            title: "SQLi".into(),
+            description: "d".into(),
+            location: None,
+            recommendation: "r".into(),
+            corroborated_by: vec![],
+            cwe: Some("CWE-999".into()),
+            secondary_cwe: vec![],
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
+        };
+        let merged = merge_group(&vec![primary, other], &[0, 1]);
+        assert_eq!(merged.cwe.as_deref(), Some("CWE-89")); // primary wins
     }
 }

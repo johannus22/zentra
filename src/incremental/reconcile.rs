@@ -163,6 +163,11 @@ mod tests {
             location: loc.map(|s| s.into()),
             recommendation: "r".into(),
             corroborated_by: vec![],
+            cwe: None,
+            secondary_cwe: Vec::new(),
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
         }
     }
 

@@ -1,3 +1,4 @@
+pub mod cvss;
 pub mod finding;
 pub use finding::{Finding, Severity};
 
@@ -9,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 pub struct StateWriter {
     zentra_dir: PathBuf,
+    cwe_template: String,
 }
 
 impl StateWriter {
@@ -30,14 +32,25 @@ impl StateWriter {
                 .truncate(true)
                 .open(&findings_path)?;
         }
-        Ok(Self { zentra_dir })
+        let cwe_template = crate::config::GlobalConfig::load()
+            .ok()
+            .and_then(|c| c.cwe_url_template)
+            .unwrap_or_else(|| crate::config::DEFAULT_CWE_URL_TEMPLATE.to_string());
+        Ok(Self {
+            zentra_dir,
+            cwe_template,
+        })
     }
 
     pub fn write_finding(&self, finding: &Finding) -> Result<()> {
         let path = self.zentra_dir.join("detailed-findings.md");
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
 
-        write!(file, "{}", format_finding_block(finding))?;
+        write!(
+            file,
+            "{}",
+            format_finding_block(finding, &self.cwe_template)
+        )?;
         self.sort_findings_file()?;
         Ok(())
     }
@@ -56,7 +69,10 @@ impl StateWriter {
     /// severity. Used by the correlation pass to write back the deduped findings.
     pub fn rewrite_findings(&self, findings: &[Finding]) -> Result<()> {
         let path = self.zentra_dir.join("detailed-findings.md");
-        let body: String = findings.iter().map(format_finding_block).collect();
+        let body: String = findings
+            .iter()
+            .map(|f| format_finding_block(f, &self.cwe_template))
+            .collect();
         std::fs::write(&path, body)?;
         self.sort_findings_file()?;
         Ok(())
@@ -114,7 +130,7 @@ impl StateWriter {
     }
 }
 
-fn format_finding_block(finding: &Finding) -> String {
+fn format_finding_block(finding: &Finding, cwe_template: &str) -> String {
     let location_line = finding
         .location
         .as_deref()
@@ -131,12 +147,51 @@ fn format_finding_block(finding: &Finding) -> String {
         )
     };
 
+    let cwe_line = finding
+        .cwe
+        .as_deref()
+        .map(|id| {
+            format!(
+                "**CWE:** [{}]({})\n",
+                id,
+                crate::config::cwe_link(id, cwe_template)
+            )
+        })
+        .unwrap_or_default();
+
+    let secondary_line = if finding.secondary_cwe.is_empty() {
+        String::new()
+    } else {
+        format!("**Secondary CWE:** {}\n", finding.secondary_cwe.join(", "))
+    };
+
+    // CVSS line only when a score was computed (vector parsed).
+    let cvss_line = match (finding.cvss_score, finding.cvss_vector.as_deref()) {
+        (Some(score), Some(vector)) => format!(
+            "**CVSS:** {:.1} {} ({})\n",
+            score,
+            crate::state::cvss::rating(score),
+            vector
+        ),
+        _ => String::new(),
+    };
+
+    let owasp_line = finding
+        .owasp
+        .as_deref()
+        .map(|o| format!("**OWASP:** {}\n", o))
+        .unwrap_or_default();
+
     format!(
-        "## [{}] {}\n**Scanner:** {}\n{}{}**Description:** {}\n**Recommendation:** {}\n\n---\n",
+        "## [{}] {}\n**Scanner:** {}\n{}{}{}{}{}{}**Description:** {}\n**Recommendation:** {}\n\n---\n",
         finding.severity,
         finding.title,
         finding.scanner,
         corroborated_line,
+        cwe_line,
+        secondary_line,
+        cvss_line,
+        owasp_line,
         location_line,
         finding.description,
         finding.recommendation,
@@ -168,6 +223,10 @@ fn parse_finding_block(block: &str) -> Option<Finding> {
     let mut description = String::new();
     let mut recommendation = String::new();
     let mut corroborated_by = Vec::new();
+    let mut cwe = None;
+    let mut secondary_cwe: Vec<String> = Vec::new();
+    let mut cvss_vector = None;
+    let mut owasp = None;
 
     for line in lines {
         if let Some(v) = line.strip_prefix("**Scanner:** ") {
@@ -184,6 +243,29 @@ fn parse_finding_block(block: &str) -> Option<Finding> {
             description = v.trim().to_string();
         } else if let Some(v) = line.strip_prefix("**Recommendation:** ") {
             recommendation = v.trim().to_string();
+        } else if let Some(v) = line.strip_prefix("**CWE:** ") {
+            // value is either "[CWE-89](url)" or "CWE-89"
+            let id = v.trim();
+            let id = id
+                .strip_prefix('[')
+                .and_then(|s| s.split(']').next())
+                .unwrap_or(id);
+            cwe = Some(id.trim().to_string());
+        } else if let Some(v) = line.strip_prefix("**Secondary CWE:** ") {
+            secondary_cwe = v
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        } else if let Some(v) = line.strip_prefix("**CVSS:** ") {
+            // value is "<score> <rating> (<vector>)"; recover the vector from parens.
+            if let (Some(start), Some(end)) = (v.find('('), v.rfind(')')) {
+                if start < end {
+                    cvss_vector = Some(v[start + 1..end].trim().to_string());
+                }
+            }
+        } else if let Some(v) = line.strip_prefix("**OWASP:** ") {
+            owasp = Some(v.trim().to_string());
         }
     }
 
@@ -199,6 +281,14 @@ fn parse_finding_block(block: &str) -> Option<Finding> {
         location,
         recommendation,
         corroborated_by,
+        cwe,
+        secondary_cwe,
+        cvss_score: cvss_vector
+            .as_deref()
+            .and_then(crate::state::cvss::compute_base_score)
+            .map(|(s, _)| s),
+        cvss_vector,
+        owasp,
     })
 }
 
@@ -225,5 +315,73 @@ fn finding_block_order(block: &str) -> u8 {
         Severity::Low.order()
     } else {
         Severity::Info.order()
+    }
+}
+
+#[cfg(test)]
+mod enriched_tests {
+    use super::*;
+    use crate::config::DEFAULT_CWE_URL_TEMPLATE;
+    use crate::state::finding::{Finding, Severity};
+
+    fn enriched() -> Finding {
+        Finding {
+            scanner: "sast".into(),
+            severity: Severity::High,
+            title: "SQL Injection".into(),
+            description: "concat".into(),
+            location: Some("src/db.rs:10".into()),
+            recommendation: "params".into(),
+            corroborated_by: vec![],
+            cwe: Some("CWE-89".into()),
+            secondary_cwe: vec!["CWE-20".into(), "CWE-74".into()],
+            cvss_vector: Some("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H".into()),
+            cvss_score: Some(9.8),
+            owasp: Some("A03:2021-Injection".into()),
+        }
+    }
+
+    #[test]
+    fn enriched_round_trips() {
+        let block = format_finding_block(&enriched(), DEFAULT_CWE_URL_TEMPLATE);
+        assert!(block.contains("**CWE:** [CWE-89](https://cwe.mitre.org/data/definitions/89.html)"));
+        assert!(block.contains("**Secondary CWE:** CWE-20, CWE-74"));
+        assert!(
+            block.contains("**CVSS:** 9.8 Critical (CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H)")
+        );
+        assert!(block.contains("**OWASP:** A03:2021-Injection"));
+
+        let parsed = &parse_findings(&block)[0];
+        assert_eq!(parsed.cwe.as_deref(), Some("CWE-89"));
+        assert_eq!(
+            parsed.secondary_cwe,
+            vec!["CWE-20".to_string(), "CWE-74".to_string()]
+        );
+        assert_eq!(
+            parsed.cvss_vector.as_deref(),
+            Some("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H")
+        );
+        assert!((parsed.cvss_score.unwrap() - 9.8).abs() < 0.001);
+        assert_eq!(parsed.owasp.as_deref(), Some("A03:2021-Injection"));
+    }
+
+    #[test]
+    fn legacy_block_without_enrichment_parses() {
+        let legacy =
+            "## [LOW] Old finding\n**Scanner:** sast\n**Description:** d\n**Recommendation:** r\n\n---\n";
+        let f = &parse_findings(legacy)[0];
+        assert!(f.cwe.is_none());
+        assert!(f.secondary_cwe.is_empty());
+        assert!(f.cvss_vector.is_none());
+        assert!(f.owasp.is_none());
+    }
+
+    #[test]
+    fn no_cvss_line_when_score_absent() {
+        let mut f = enriched();
+        f.cvss_vector = None;
+        f.cvss_score = None;
+        let block = format_finding_block(&f, DEFAULT_CWE_URL_TEMPLATE);
+        assert!(!block.contains("**CVSS:**"));
     }
 }

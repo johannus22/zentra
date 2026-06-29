@@ -71,7 +71,11 @@ impl ToolRegistry {
                         "title": {"type": "string", "description": "Short finding title (under 80 chars)"},
                         "description": {"type": "string", "description": "Detailed description of the vulnerability"},
                         "location": {"type": "string", "description": "File and line, e.g. src/auth.rs:42"},
-                        "recommendation": {"type": "string", "description": "Concrete fix recommendation"}
+                        "recommendation": {"type": "string", "description": "Concrete fix recommendation"},
+                        "cwe": {"type": "string", "description": "Primary CWE id, e.g. CWE-89"},
+                        "secondary_cwe": {"type": "array", "items": {"type": "string"}, "description": "Additional related CWE ids, e.g. [\"CWE-20\"]"},
+                        "cvss_vector": {"type": "string", "description": "CVSS v3.1 base vector, e.g. CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H (provide the vector, not a score)"},
+                        "owasp": {"type": "string", "description": "OWASP Top 10 category, e.g. A03:2021-Injection"}
                     },
                     "required": ["severity", "title", "description", "recommendation"]
                 }),
@@ -193,6 +197,45 @@ data entry points, security middleware already present, and known safety guarant
             }
             "write_finding" => {
                 let severity = parse_severity(args["severity"].as_str().unwrap_or("info"));
+
+                // Validate CWE ids: keep only well-formed "CWE-<digits>".
+                let is_cwe = |s: &str| {
+                    s.strip_prefix("CWE-")
+                        .map(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+                        .unwrap_or(false)
+                };
+                let cwe = args["cwe"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| is_cwe(s))
+                    .map(str::to_string);
+                let secondary_cwe: Vec<String> = args["secondary_cwe"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|s| is_cwe(s))
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                // CVSS: compute the score ourselves; keep the vector only if it parsed.
+                let (cvss_vector, cvss_score) = match args["cvss_vector"].as_str() {
+                    Some(v) => match crate::state::cvss::compute_base_score(v) {
+                        Some((score, _)) => (Some(v.to_string()), Some(score)),
+                        None => (None, None),
+                    },
+                    None => (None, None),
+                };
+
+                let owasp = args["owasp"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+
                 let finding = Finding {
                     scanner: scanner.name().to_string(),
                     severity,
@@ -204,6 +247,11 @@ data entry points, security middleware already present, and known safety guarant
                     location: args["location"].as_str().map(str::to_string),
                     recommendation: args["recommendation"].as_str().unwrap_or("").to_string(),
                     corroborated_by: Vec::new(),
+                    cwe,
+                    secondary_cwe,
+                    cvss_vector,
+                    cvss_score,
+                    owasp,
                 };
                 if let Err(e) = state_writer.write_finding(&finding) {
                     return format!("Error writing finding: {}", e);

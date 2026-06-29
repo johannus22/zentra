@@ -37,6 +37,11 @@ fn state_writer_creates_findings_file() {
             location: Some("src/db.rs:42".to_string()),
             recommendation: "Use parameterized queries.".to_string(),
             corroborated_by: vec![],
+            cwe: None,
+            secondary_cwe: vec![],
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
         })
         .unwrap();
 
@@ -67,6 +72,11 @@ fn state_writer_appends_multiple_findings() {
                 location: None,
                 recommendation: "fix it".to_string(),
                 corroborated_by: vec![],
+                cwe: None,
+                secondary_cwe: vec![],
+                cvss_vector: None,
+                cvss_score: None,
+                owasp: None,
             })
             .unwrap();
     }
@@ -92,6 +102,11 @@ fn state_writer_sorts_findings_by_severity_in_markdown() {
             location: None,
             recommendation: "fix low".to_string(),
             corroborated_by: vec![],
+            cwe: None,
+            secondary_cwe: vec![],
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
         })
         .unwrap();
     writer
@@ -103,6 +118,11 @@ fn state_writer_sorts_findings_by_severity_in_markdown() {
             location: None,
             recommendation: "fix critical".to_string(),
             corroborated_by: vec![],
+            cwe: None,
+            secondary_cwe: vec![],
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
         })
         .unwrap();
 
@@ -170,6 +190,11 @@ fn read_findings_raw_returns_written_findings() {
             location: None,
             recommendation: "fix".to_string(),
             corroborated_by: vec![],
+            cwe: None,
+            secondary_cwe: vec![],
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
         })
         .unwrap();
 
@@ -363,6 +388,43 @@ async fn tool_registry_dispatches_write_finding() {
     // Event should have been sent
     let event = rx.try_recv().unwrap();
     assert!(matches!(event, ScanEvent::FindingAdded(_)));
+}
+
+#[tokio::test]
+async fn write_finding_captures_cwe_cvss_owasp() {
+    let dir = TempDir::new().unwrap();
+    let writer = Arc::new(StateWriter::new(dir.path()).unwrap());
+    let registry = zentra_cli::tools::ToolRegistry::new();
+    let (tx, mut rx) = mpsc::channel(16);
+
+    let args = serde_json::json!({
+        "severity": "high",
+        "title": "SQL Injection",
+        "description": "Concatenated SQL",
+        "location": "src/db.rs:10",
+        "recommendation": "Use parameterized queries",
+        "cwe": "CWE-89",
+        "secondary_cwe": ["CWE-20", "garbage"],
+        "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+        "owasp": "A03:2021-Injection"
+    });
+
+    registry
+        .dispatch("write_finding", &args, &writer, &tx, ScannerType::Sast)
+        .await;
+
+    let f = match rx.recv().await.expect("event emitted") {
+        ScanEvent::FindingAdded(f) => f,
+        other => panic!("expected FindingAdded, got {other:?}"),
+    };
+    assert_eq!(f.cwe.as_deref(), Some("CWE-89"));
+    assert_eq!(f.secondary_cwe, vec!["CWE-20".to_string()]); // "garbage" dropped
+    assert_eq!(
+        f.cvss_vector.as_deref(),
+        Some("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H")
+    );
+    assert!((f.cvss_score.unwrap() - 9.8).abs() < 0.001);
+    assert_eq!(f.owasp.as_deref(), Some("A03:2021-Injection"));
 }
 
 #[test]
@@ -856,6 +918,11 @@ fn finding_block_roundtrips_corroboration() {
             location: Some("src/admin.rs:5".to_string()),
             recommendation: "Add an auth middleware.".to_string(),
             corroborated_by: vec!["threat_model".to_string(), "api_scan".to_string()],
+            cwe: None,
+            secondary_cwe: vec![],
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
         })
         .unwrap();
 
@@ -896,6 +963,11 @@ fn singleton_finding_markdown_has_no_corroboration_line() {
             location: None,
             recommendation: "fix".to_string(),
             corroborated_by: vec![],
+            cwe: None,
+            secondary_cwe: vec![],
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
         })
         .unwrap();
     let raw = writer.read_findings_raw().unwrap();
@@ -948,6 +1020,11 @@ async fn correlate_merges_semantic_duplicates_via_llm() {
             location: None,
             recommendation: "Enforce RBAC.".to_string(),
             corroborated_by: vec![],
+            cwe: None,
+            secondary_cwe: vec![],
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
         },
         Finding {
             scanner: "sast".to_string(),
@@ -957,6 +1034,11 @@ async fn correlate_merges_semantic_duplicates_via_llm() {
             location: Some("src/admin.rs:5".to_string()),
             recommendation: "Add a role check.".to_string(),
             corroborated_by: vec![],
+            cwe: None,
+            secondary_cwe: vec![],
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
         },
     ];
 
@@ -1040,6 +1122,11 @@ async fn correlate_preserves_findings_on_llm_failure() {
             location: None,
             recommendation: "r1".to_string(),
             corroborated_by: vec![],
+            cwe: None,
+            secondary_cwe: vec![],
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
         },
         Finding {
             scanner: "sast".to_string(),
@@ -1049,6 +1136,11 @@ async fn correlate_preserves_findings_on_llm_failure() {
             location: Some("src/two.rs:9".to_string()),
             recommendation: "r2".to_string(),
             corroborated_by: vec![],
+            cwe: None,
+            secondary_cwe: vec![],
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
         },
     ];
 
@@ -1118,6 +1210,11 @@ async fn orchestrator_incremental_carries_and_reconciles() {
             location: Some("src/changed.rs:1".into()),
             recommendation: "r".into(),
             corroborated_by: vec![],
+            cwe: None,
+            secondary_cwe: vec![],
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
         })
         .unwrap();
 
@@ -1129,6 +1226,11 @@ async fn orchestrator_incremental_carries_and_reconciles() {
         location: Some("src/untouched.rs:9".into()),
         recommendation: "r".into(),
         corroborated_by: vec![],
+        cwe: None,
+        secondary_cwe: vec![],
+        cvss_vector: None,
+        cvss_score: None,
+        owasp: None,
     }];
     let change_set = ChangeSet {
         changed: vec!["src/changed.rs".into()],
@@ -1157,4 +1259,21 @@ async fn orchestrator_incremental_carries_and_reconciles() {
     assert_eq!(delta.new, 1, "changed-file finding is new");
     let merged = zentra_cli::state::parse_findings(&writer.read_findings_raw().unwrap());
     assert_eq!(merged.len(), 2);
+}
+
+#[test]
+fn scanner_prompts_request_classification() {
+    use zentra_cli::scanners;
+    use zentra_cli::agent::ScannerType;
+    for st in [
+        ScannerType::Sast,
+        ScannerType::ApiScan,
+        ScannerType::SupplyChain,
+        ScannerType::IacScan,
+        ScannerType::ThreatModel,
+    ] {
+        let p = scanners::system_prompt(st);
+        assert!(p.contains("CWE"), "{st:?} prompt should mention CWE");
+        assert!(p.contains("CVSS"), "{st:?} prompt should mention CVSS");
+    }
 }

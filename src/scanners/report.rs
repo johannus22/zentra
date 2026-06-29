@@ -28,7 +28,7 @@ Report structure:
 | Info | N |
 
 ## Top Findings
-[Top 5 findings by severity, with title, scanner, location, brief description, and recommended action]
+[Top 5 findings by severity, with title, scanner, location, CWE, CVSS score, OWASP category, brief description, and recommended action]
 
 ## Scanner Results
 [Per-scanner breakdown with finding counts and note any scanner that failed]
@@ -37,7 +37,7 @@ Report structure:
 [Top 3 actionable recommendations in priority order]
 
 ## All Findings
-[List every finding grouped by severity with Critical first and Low near the bottom]
+[List every finding grouped by severity (Critical first), including each finding's CWE, CVSS score, and OWASP category when present]
 ```
 
 Risk Grade:
