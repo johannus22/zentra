@@ -21,6 +21,11 @@ use crate::tui::{scan_ui::run_scan_ui, ScanOutcome};
 use crate::wizard;
 use tokio_util::sync::CancellationToken;
 
+/// Max files in the incremental impact set. When the impact set hits this cap,
+/// findings in files beyond it are carried forward unverified — we surface a
+/// notice so the truncation is never silent.
+const INCREMENTAL_IMPACT_CAP: usize = 200;
+
 pub async fn run(
     provider_override: Option<String>,
     only: Option<String>,
@@ -182,8 +187,13 @@ async fn run_once(
         let prior_raw =
             std::fs::read_to_string(zentra_dir.join("detailed-findings.md")).unwrap_or_default();
         let prior = crate::state::parse_findings(&prior_raw);
-        match compute_change_set(&target_root, &decision.baseline, 200) {
+        match compute_change_set(&target_root, &decision.baseline, INCREMENTAL_IMPACT_CAP) {
             Ok(cs) => {
+                if cs.impact.len() >= INCREMENTAL_IMPACT_CAP {
+                    println!(
+                        "⚠ Impact set capped at {INCREMENTAL_IMPACT_CAP} files; findings in files beyond the cap are carried forward unverified. Run with --full for a complete rescan."
+                    );
+                }
                 let focus = build_focus_context(&cs);
                 (Some((prior, cs)), Some(focus))
             }
