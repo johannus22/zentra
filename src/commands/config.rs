@@ -140,6 +140,7 @@ mod tests {
             default_profile: Some("oauth".to_string()),
             output_dir: None,
             theme: None,
+            cwe_url_template: None,
         }
         .save_to(&path)
         .unwrap();
