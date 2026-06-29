@@ -20,7 +20,7 @@ pub struct ScannerAgent {
     state_writer: Arc<StateWriter>,
     tx: mpsc::Sender<ScanEvent>,
     context: Option<String>,
-    ci_focus_context: Option<String>,
+    focus_context: Option<String>,
     cancel_token: CancellationToken,
     security: SecurityContext,
 }
@@ -42,7 +42,7 @@ impl ScannerAgent {
             state_writer,
             tx,
             context,
-            ci_focus_context: None,
+            focus_context: None,
             cancel_token,
             security: SecurityContext::disabled(),
         }
@@ -55,7 +55,7 @@ impl ScannerAgent {
         state_writer: Arc<StateWriter>,
         tx: mpsc::Sender<ScanEvent>,
         context: Option<String>,
-        ci_focus_context: Option<String>,
+        focus_context: Option<String>,
         cancel_token: CancellationToken,
     ) -> Self {
         Self {
@@ -65,7 +65,7 @@ impl ScannerAgent {
             state_writer,
             tx,
             context,
-            ci_focus_context,
+            focus_context,
             cancel_token,
             security: SecurityContext::disabled(),
         }
@@ -88,8 +88,8 @@ for example, do not flag SQL injection if the ORM listed here auto-parameterises
             ),
             None => base_system.to_string(),
         };
-        if let Some(ctx) = &self.ci_focus_context {
-            effective_system.push_str("\n\n## CI PR/MR Focus Context\n\n");
+        if let Some(ctx) = &self.focus_context {
+            effective_system.push_str("\n\n## Scan Focus Context\n\n");
             effective_system.push_str(ctx);
         }
         let system = effective_system.as_str();

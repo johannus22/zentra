@@ -168,7 +168,7 @@ pub async fn run_headless_scan_with_provider(
         tx,
         cancel_token.clone(),
     )
-    .with_ci_focus_context(ci_focus_context)
+    .with_focus_context(ci_focus_context)
     .with_security(security_ctx);
 
     let scan_task = tokio::spawn(async move { orchestrator.run(&scanners).await });

@@ -23,7 +23,7 @@ pub struct OrchestratorAgent {
     state_writer: Arc<StateWriter>,
     tx: mpsc::Sender<ScanEvent>,
     cancel_token: CancellationToken,
-    ci_focus_context: Option<String>,
+    focus_context: Option<String>,
     security: SecurityContext,
 }
 
@@ -41,13 +41,13 @@ impl OrchestratorAgent {
             state_writer,
             tx,
             cancel_token,
-            ci_focus_context: None,
+            focus_context: None,
             security: SecurityContext::disabled(),
         }
     }
 
-    pub fn with_ci_focus_context(mut self, ci_focus_context: Option<String>) -> Self {
-        self.ci_focus_context = ci_focus_context;
+    pub fn with_focus_context(mut self, focus_context: Option<String>) -> Self {
+        self.focus_context = focus_context;
         self
     }
 
@@ -114,7 +114,7 @@ Delete this file and re-run the scan to retry.",
                 let writer = Arc::clone(&self.state_writer);
                 let tx = self.tx.clone();
                 let ctx = context_opt.clone();
-                let ci_ctx = self.ci_focus_context.clone();
+                let focus_ctx = self.focus_context.clone();
                 let token = cancel_token.clone();
                 let security = self.security.clone();
                 handles.push((
@@ -127,7 +127,7 @@ Delete this file and re-run the scan to retry.",
                             writer,
                             tx,
                             ctx,
-                            ci_ctx,
+                            focus_ctx,
                             token,
                         )
                         .with_security(security)
@@ -201,7 +201,7 @@ Delete this file and re-run the scan to retry.",
             Arc::clone(&self.state_writer),
             self.tx.clone(),
             context.map(str::to_string),
-            self.ci_focus_context.clone(),
+            self.focus_context.clone(),
             self.cancel_token.clone(),
         )
         .with_security(self.security.clone())
