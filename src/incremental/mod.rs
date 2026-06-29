@@ -1,10 +1,12 @@
 pub mod detect;
 pub mod manifest;
 pub mod mode;
+pub mod reconcile;
 
 pub use detect::{compute_change_set, Baseline, ChangeSet};
 pub use manifest::{ScanManifest, MANIFEST_FILE};
 pub use mode::{decide_mode, ModeDecision, ModeInputs, ScanMode};
+pub use reconcile::{build_focus_context, is_arch_significant, reconcile};
 
 /// New/Resolved/Carried summary for one incremental rescan. Computed by
 /// reconciliation (Task 4); surfaced by the CLI/TUI (Tasks 7-8).
