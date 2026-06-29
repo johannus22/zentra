@@ -133,7 +133,11 @@ async fn run() -> anyhow::Result<()> {
             cli::ConfigAction::Show => commands::config::show().await?,
             cli::ConfigAction::Remove { name } => commands::config::remove(&name).await?,
         },
-        Some(cli::Commands::Scan { provider, only }) => commands::scan::run(provider, only).await?,
+        Some(cli::Commands::Scan {
+            provider,
+            only,
+            full,
+        }) => commands::scan::run(provider, only, full).await?,
         Some(cli::Commands::Pentest {
             url,
             allow_hosts,

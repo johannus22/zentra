@@ -32,6 +32,9 @@ pub enum Commands {
         /// Override the default provider profile for this scan
         #[arg(long)]
         provider: Option<String>,
+        /// Force a full rescan instead of an incremental one
+        #[arg(long)]
+        full: bool,
     },
     /// Run dynamic browser pentest against an authorized target
     Pentest {
@@ -193,8 +196,12 @@ mod tests {
     #[test]
     fn parses_pentest_escalate_flag() {
         let cli = Cli::try_parse_from([
-            "zentra", "pentest", "--url", "https://app.example.test",
-            "--authorized", "--escalate",
+            "zentra",
+            "pentest",
+            "--url",
+            "https://app.example.test",
+            "--authorized",
+            "--escalate",
         ])
         .unwrap();
         assert!(matches!(
@@ -206,13 +213,19 @@ mod tests {
     #[test]
     fn pentest_escalate_defaults_false() {
         let cli = Cli::try_parse_from([
-            "zentra", "pentest", "--url", "https://app.example.test",
+            "zentra",
+            "pentest",
+            "--url",
+            "https://app.example.test",
             "--authorized",
         ])
         .unwrap();
         assert!(matches!(
             cli.command,
-            Some(Commands::Pentest { escalate: false, .. })
+            Some(Commands::Pentest {
+                escalate: false,
+                ..
+            })
         ));
     }
 }
