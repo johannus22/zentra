@@ -2017,3 +2017,13 @@ fn toggle_error_is_noop_without_error() {
     state.toggle_error_expanded();
     assert!(!state.error_expanded);
 }
+
+#[test]
+fn incremental_banner_formats_counts() {
+    let s = zentra_cli::tui::scan_ui::incremental_banner(3, 12, 14, "abc12345def");
+    assert!(s.contains("Incremental rescan"));
+    assert!(s.contains("baseline abc12345"));
+    assert!(s.contains("3 changed"));
+    assert!(s.contains("12 impacted"));
+    assert!(s.contains("14 carried"));
+}

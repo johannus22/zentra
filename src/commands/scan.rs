@@ -197,6 +197,13 @@ async fn run_once(
     };
     let is_incremental = incremental.is_some();
 
+    // Capture banner counts before incremental is moved into the spawned task.
+    let banner_info: Option<(usize, usize, usize, String)> =
+        incremental.as_ref().map(|(prior, cs)| {
+            let baseline_str = head_commit.as_deref().unwrap_or("working-tree").to_string();
+            (cs.changed.len(), cs.impact.len(), prior.len(), baseline_str)
+        });
+
     let state_writer = Arc::new(
         StateWriter::open(&target_root, false)
             .context("Failed to initialize .zentra/ directory")?,
@@ -256,6 +263,14 @@ async fn run_once(
         }
         orch.run(&scanners_for_agent).await
     });
+
+    // Print incremental banner before launching TUI
+    if let Some((changed, impacted, carried, baseline)) = banner_info {
+        println!(
+            "{}",
+            crate::tui::scan_ui::incremental_banner(changed, impacted, carried, &baseline)
+        );
+    }
 
     let outcome = run_scan_ui(
         rx,
