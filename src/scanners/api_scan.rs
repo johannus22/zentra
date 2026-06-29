@@ -19,7 +19,9 @@ OWASP API Top 10 to check:
 - API10 Unsafe Consumption of APIs: no validation of data from third-party APIs
 
 Search for route definitions, middleware chains, input validation, and response serialization.
-When done, stop making tool calls."
+When done, stop making tool calls.
+
+For each finding you record, also classify: the primary CWE (e.g. CWE-89), any secondary CWEs, the OWASP Top 10 category (e.g. A03:2021-Injection), and a CVSS v3.1 vector string (e.g. CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H) — provide the vector, not a score. Pass these via the write_finding tool's cwe, secondary_cwe, owasp, and cvss_vector parameters. Omit any field you cannot determine confidently."
 }
 
 pub fn allowed_tools() -> &'static [&'static str] {

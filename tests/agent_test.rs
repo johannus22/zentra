@@ -1260,3 +1260,20 @@ async fn orchestrator_incremental_carries_and_reconciles() {
     let merged = zentra_cli::state::parse_findings(&writer.read_findings_raw().unwrap());
     assert_eq!(merged.len(), 2);
 }
+
+#[test]
+fn scanner_prompts_request_classification() {
+    use zentra_cli::scanners;
+    use zentra_cli::agent::ScannerType;
+    for st in [
+        ScannerType::Sast,
+        ScannerType::ApiScan,
+        ScannerType::SupplyChain,
+        ScannerType::IacScan,
+        ScannerType::ThreatModel,
+    ] {
+        let p = scanners::system_prompt(st);
+        assert!(p.contains("CWE"), "{st:?} prompt should mention CWE");
+        assert!(p.contains("CVSS"), "{st:?} prompt should mention CVSS");
+    }
+}
