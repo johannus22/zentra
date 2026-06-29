@@ -106,14 +106,16 @@ pub enum SettingsCategory {
     Providers,
     Theme,
     OutputDir,
+    CweReference,
     About,
 }
 
 impl SettingsCategory {
-    pub const ALL: [SettingsCategory; 4] = [
+    pub const ALL: [SettingsCategory; 5] = [
         SettingsCategory::Providers,
         SettingsCategory::Theme,
         SettingsCategory::OutputDir,
+        SettingsCategory::CweReference,
         SettingsCategory::About,
     ];
 
@@ -122,6 +124,7 @@ impl SettingsCategory {
             SettingsCategory::Providers => "Providers",
             SettingsCategory::Theme => "Theme",
             SettingsCategory::OutputDir => "Output dir",
+            SettingsCategory::CweReference => "CWE reference",
             SettingsCategory::About => "About",
         }
     }
@@ -132,6 +135,7 @@ impl SettingsCategory {
             SettingsCategory::Providers => DetailMode::ProviderList,
             SettingsCategory::Theme => DetailMode::ThemeList,
             SettingsCategory::OutputDir => DetailMode::OutputEdit,
+            SettingsCategory::CweReference => DetailMode::CweEdit,
             SettingsCategory::About => DetailMode::About,
         }
     }
@@ -151,6 +155,7 @@ pub enum DetailMode {
     ProviderForm,
     ThemeList,
     OutputEdit,
+    CweEdit,
     About,
 }
 
@@ -162,6 +167,10 @@ pub struct SettingsFormState {
     pub output_dir: String,
     /// Resolved default path, shown as a hint when `output_dir` is empty.
     pub default_dir: String,
+    /// User-entered CWE reference URL template (empty = default).
+    pub cwe_url_template: String,
+    /// Default template, shown as a hint when `cwe_url_template` is empty.
+    pub default_cwe: String,
     pub error: Option<String>,
     pub saved: bool,
 }
@@ -189,6 +198,36 @@ impl SettingsFormState {
         let mut global = crate::config::GlobalConfig::load_from(config_path)?;
         let trimmed = self.output_dir.trim();
         global.output_dir = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+        global.save_to(config_path)?;
+        self.saved = true;
+        self.error = None;
+        Ok(())
+    }
+
+    pub fn append_char_cwe(&mut self, c: char) {
+        self.cwe_url_template.push(c);
+        self.saved = false;
+        self.error = None;
+    }
+
+    pub fn backspace_cwe(&mut self) {
+        self.cwe_url_template.pop();
+        self.saved = false;
+        self.error = None;
+    }
+
+    pub fn save_cwe(&mut self) -> anyhow::Result<()> {
+        self.save_cwe_to(&crate::config::GlobalConfig::default_path()?)
+    }
+
+    pub fn save_cwe_to(&mut self, config_path: &std::path::Path) -> anyhow::Result<()> {
+        let mut global = crate::config::GlobalConfig::load_from(config_path)?;
+        let trimmed = self.cwe_url_template.trim();
+        global.cwe_url_template = if trimmed.is_empty() {
             None
         } else {
             Some(trimmed.to_string())
@@ -676,15 +715,19 @@ impl MenuState {
     /// Build the Settings form from the current global config (best-effort —
     /// falls back to defaults if the config can't be read).
     fn load_settings() -> SettingsFormState {
-        let output_dir = crate::config::GlobalConfig::load()
-            .ok()
-            .and_then(|g| g.output_dir)
+        let loaded = crate::config::GlobalConfig::load().ok();
+        let output_dir = loaded
+            .as_ref()
+            .and_then(|g| g.output_dir.clone())
             .unwrap_or_default();
+        let cwe_url_template = loaded.and_then(|g| g.cwe_url_template).unwrap_or_default();
         SettingsFormState {
             output_dir,
             default_dir: crate::config::GlobalConfig::default_output_base_dir()
                 .display()
                 .to_string(),
+            cwe_url_template,
+            default_cwe: crate::config::DEFAULT_CWE_URL_TEMPLATE.to_string(),
             error: None,
             saved: false,
         }
@@ -1280,6 +1323,27 @@ fn run_menu_loop(
                                         KeyCode::Left | KeyCode::Esc => state.settings_leave_detail(),
                                         _ => {}
                                     },
+                                    DetailMode::CweEdit => match key.code {
+                                        KeyCode::Char(c) => state.settings.append_char_cwe(c),
+                                        KeyCode::Backspace => state.settings.backspace_cwe(),
+                                        KeyCode::Enter => match state.settings.save_cwe() {
+                                            Ok(()) => {
+                                                state.settings_status = Some((
+                                                    true,
+                                                    "CWE reference URL saved".to_string(),
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                state.settings.error = Some(e.to_string());
+                                                state.settings_status = Some((
+                                                    false,
+                                                    format!("Could not save: {e}"),
+                                                ));
+                                            }
+                                        },
+                                        KeyCode::Left | KeyCode::Esc => state.settings_leave_detail(),
+                                        _ => {}
+                                    },
                                     DetailMode::About => match key.code {
                                         KeyCode::Left | KeyCode::Esc => state.settings_leave_detail(),
                                         _ => {}
@@ -1621,6 +1685,7 @@ fn render_settings_hub(frame: &mut Frame, area: Rect, state: &MenuState) {
         DetailMode::ProviderForm => render_settings_provider_form(frame, detail_inner, state),
         DetailMode::ThemeList => render_settings_theme_list(frame, detail_inner, state),
         DetailMode::OutputEdit => render_settings_output(frame, detail_inner, state),
+        DetailMode::CweEdit => render_settings_cwe(frame, detail_inner, state),
         DetailMode::About => render_settings_about(frame, detail_inner, state),
     }
 
@@ -1910,6 +1975,50 @@ fn render_settings_output(frame: &mut Frame, area: Rect, state: &MenuState) {
     );
 }
 
+fn render_settings_cwe(frame: &mut Frame, area: Rect, state: &MenuState) {
+    let s = &state.settings;
+    let max_w = area.width.saturating_sub(8) as usize;
+    let shown = if s.cwe_url_template.is_empty() {
+        format!("(default: {})", s.default_cwe)
+    } else {
+        s.cwe_url_template.clone()
+    };
+    let field_style = Style::default()
+        .fg(state.theme.warning)
+        .add_modifier(Modifier::BOLD);
+    let lines = vec![
+        Line::from(Span::styled(
+            "CWE reference URL template",
+            Style::default().fg(state.theme.accent),
+        )),
+        Line::from(Span::styled(
+            "Use {id} as placeholder, e.g. https://cwe.mitre.org/data/definitions/{id}.html",
+            Style::default().fg(state.theme.text_dim),
+        )),
+        Line::from(Span::styled(
+            "Blank = default (cwe.mitre.org).",
+            Style::default().fg(state.theme.text_dim),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("▶ "),
+            Span::styled("URL  ", field_style),
+            Span::styled(clip_with_ellipsis(&shown, max_w), field_style),
+        ]),
+    ];
+
+    let chunks = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+    frame.render_widget(
+        Paragraph::new("type to edit · Enter save · ← back")
+            .style(Style::default().fg(state.theme.text_dim)),
+        chunks[1],
+    );
+}
+
 fn render_settings_about(frame: &mut Frame, area: Rect, state: &MenuState) {
     let config_path = crate::config::GlobalConfig::default_path()
         .map(|p| p.display().to_string())
@@ -2170,4 +2279,41 @@ fn render_oauth_modal(
             .wrap(Wrap { trim: false }),
         modal_area,
     );
+}
+
+#[cfg(test)]
+mod cwe_settings_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn save_cwe_writes_template_and_blank_clears() {
+        let dir = TempDir::new().unwrap();
+        let cfg_path = dir.path().join("config.toml");
+        // seed an empty config so load_from succeeds
+        crate::config::GlobalConfig::default()
+            .save_to(&cfg_path)
+            .unwrap();
+
+        let mut form = SettingsFormState::default();
+        form.cwe_url_template = "https://wiki.acme.com/cwe/{id}".to_string();
+        form.save_cwe_to(&cfg_path).unwrap();
+        let g = crate::config::GlobalConfig::load_from(&cfg_path).unwrap();
+        assert_eq!(
+            g.cwe_url_template.as_deref(),
+            Some("https://wiki.acme.com/cwe/{id}")
+        );
+
+        // blank clears the override
+        form.cwe_url_template = "   ".to_string();
+        form.save_cwe_to(&cfg_path).unwrap();
+        let g = crate::config::GlobalConfig::load_from(&cfg_path).unwrap();
+        assert!(g.cwe_url_template.is_none());
+    }
+
+    #[test]
+    fn settings_categories_include_cwe_reference() {
+        assert!(SettingsCategory::ALL.contains(&SettingsCategory::CweReference));
+        assert_eq!(SettingsCategory::CweReference.label(), "CWE reference");
+    }
 }

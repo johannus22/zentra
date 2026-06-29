@@ -1044,12 +1044,14 @@ fn settings_hub_nav_cycles_categories_and_resets_detail() {
     assert_eq!(state.settings_category(), SettingsCategory::Theme);
     assert_eq!(state.settings_detail, DetailMode::ThemeList);
     state.settings_nav_down(); // Output dir
+    state.settings_nav_down(); // CWE reference
+    assert_eq!(state.settings_category(), SettingsCategory::CweReference);
     state.settings_nav_down(); // About
     assert_eq!(state.settings_category(), SettingsCategory::About);
     state.settings_nav_down(); // clamp
     assert_eq!(state.settings_category(), SettingsCategory::About);
-    state.settings_nav_up(); // Output dir
-    assert_eq!(state.settings_category(), SettingsCategory::OutputDir);
+    state.settings_nav_up(); // CWE reference
+    assert_eq!(state.settings_category(), SettingsCategory::CweReference);
 }
 
 #[test]
