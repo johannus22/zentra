@@ -195,7 +195,12 @@ Delete this file and re-run the scan to retry.",
             let raw = self.state_writer.read_findings_raw().unwrap_or_default();
             let fresh = crate::state::parse_findings(&raw);
             let (merged, d) = reconcile(ctx.prior, fresh, &ctx.change_set);
-            let _ = self.state_writer.rewrite_findings(&merged);
+            if let Err(e) = self.state_writer.rewrite_findings(&merged) {
+                crate::logging::warn(
+                    "orchestrator",
+                    format!("incremental reconcile: failed to rewrite findings: {e}"),
+                );
+            }
             delta = Some(d);
         }
 
