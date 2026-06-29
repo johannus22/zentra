@@ -13,12 +13,18 @@ pub struct StateWriter {
 
 impl StateWriter {
     pub fn new(project_root: &Path) -> Result<Self> {
+        Self::open(project_root, false)
+    }
+
+    /// `preserve_findings = true` keeps an existing detailed-findings.md (used by
+    /// incremental scans, which reconcile against the prior set). `false`
+    /// truncates it (full scan — the historical default).
+    pub fn open(project_root: &Path, preserve_findings: bool) -> Result<Self> {
         let zentra_dir = project_root.join(".zentra");
         fs::create_dir_all(&zentra_dir)?;
         fs::create_dir_all(zentra_dir.join("reports"))?;
-        // Truncate only findings — architecture.md persists across scans
         let findings_path = zentra_dir.join("detailed-findings.md");
-        if findings_path.exists() {
+        if !preserve_findings && findings_path.exists() {
             OpenOptions::new()
                 .write(true)
                 .truncate(true)
@@ -119,7 +125,10 @@ fn format_finding_block(finding: &Finding) -> String {
     let corroborated_line = if finding.corroborated_by.is_empty() {
         String::new()
     } else {
-        format!("**Corroborated by:** {}\n", finding.corroborated_by.join(", "))
+        format!(
+            "**Corroborated by:** {}\n",
+            finding.corroborated_by.join(", ")
+        )
     };
 
     format!(

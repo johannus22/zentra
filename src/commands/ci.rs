@@ -178,7 +178,8 @@ pub async fn run_headless_scan_with_provider(
     }
     cancel_token.cancel(); // clean up on normal completion too
 
-    let failed = scan_task.await??;
+    let summary = scan_task.await??;
+    let failed = summary.failed;
     if !failed.is_empty() {
         let names: Vec<&str> = failed.iter().map(|s| s.name()).collect();
         crate::logging::warn("ci", format!("Scanners failed: {}", names.join(", ")));
@@ -238,12 +239,8 @@ async fn load_provider() -> Result<Arc<dyn LLMProvider>> {
             api_key,
         )),
         _ => Arc::new(
-            OpenAICompatProvider::new(
-                profile.base_url.clone(),
-                profile.model.clone(),
-                api_key,
-            )
-            .with_reasoning(profile.reasoning_effort.clone()),
+            OpenAICompatProvider::new(profile.base_url.clone(), profile.model.clone(), api_key)
+                .with_reasoning(profile.reasoning_effort.clone()),
         ),
     };
 

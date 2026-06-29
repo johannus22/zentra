@@ -122,13 +122,9 @@ async fn run_once(
             .with_event_channel(tx.clone()),
         ),
         _ => Arc::new(
-            OpenAICompatProvider::new(
-                profile.base_url.clone(),
-                profile.model.clone(),
-                api_key,
-            )
-            .with_reasoning(profile.reasoning_effort.clone())
-            .with_context_window(profile.context_window),
+            OpenAICompatProvider::new(profile.base_url.clone(), profile.model.clone(), api_key)
+                .with_reasoning(profile.reasoning_effort.clone())
+                .with_context_window(profile.context_window),
         ),
     };
 
@@ -228,7 +224,8 @@ async fn run_once(
 
     match outcome {
         ScanOutcome::Completed => {
-            let failed = scan_task.await??;
+            let summary = scan_task.await??;
+            let failed = summary.failed;
             if !failed.is_empty() {
                 let names: Vec<&str> = failed.iter().map(|s| s.name()).collect();
                 println!(
