@@ -570,7 +570,7 @@ fn render_activity(frame: &mut Frame, area: Rect, state: &UiState) {
             ),
         ])
     } else {
-        let animation_speed = 20;
+        let animation_speed = 85;
         let word_index = (state.animation_index / animation_speed) % ACTIVITY_VERBS.len();
         let current_verb = ACTIVITY_VERBS[word_index];
         let glow_color = state.theme.accent;
