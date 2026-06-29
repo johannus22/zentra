@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use sha2::{Digest, Sha256};
 
 use crate::ci::{changed_files_from_git, select_impact_files};
@@ -30,6 +30,14 @@ pub fn working_tree_changes(root: &Path) -> Result<Vec<String>> {
         .args(["status", "--porcelain", "--untracked-files=all"])
         .current_dir(root)
         .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(anyhow!(if stderr.is_empty() {
+            format!("git status failed with status {}", output.status)
+        } else {
+            stderr
+        }));
+    }
     let text = String::from_utf8_lossy(&output.stdout);
     let mut files = Vec::new();
     for line in text.lines() {
@@ -100,11 +108,14 @@ pub fn compute_change_set(
         None => {
             let prior = baseline.file_hashes.clone().unwrap_or_default();
             let current = hash_tree(root)?;
-            current
+            let mut c: Vec<String> = current
                 .iter()
                 .filter(|(path, hash)| prior.get(*path) != Some(*hash))
                 .map(|(path, _)| path.clone())
-                .collect()
+                .collect();
+            // Surface files that existed in the baseline but are no longer on disk.
+            c.extend(prior.keys().filter(|p| !current.contains_key(*p)).cloned());
+            c
         }
     };
     changed.iter_mut().for_each(|p| *p = normalize(p));
@@ -202,5 +213,36 @@ mod tests {
         };
         let cs = compute_change_set(dir.path(), &baseline, 200).unwrap();
         assert!(cs.changed.contains(&"a.rs".to_string()));
+    }
+
+    #[test]
+    fn hash_path_detects_deletion() {
+        let dir = TempDir::new().unwrap();
+        // Build a prior baseline that contains "gone.rs" — but don't write the file.
+        let mut prior = BTreeMap::new();
+        prior.insert("gone.rs".to_string(), "deadbeef".to_string());
+        let baseline = Baseline {
+            commit: None,
+            file_hashes: Some(prior),
+        };
+        // The temp dir is empty, so hash_tree will return an empty map.
+        let cs = compute_change_set(dir.path(), &baseline, 200).unwrap();
+        assert!(
+            cs.changed.contains(&"gone.rs".to_string()),
+            "deleted file must appear in changed: {:?}",
+            cs.changed
+        );
+    }
+
+    #[test]
+    fn working_tree_changes_errors_outside_git_repo() {
+        let dir = TempDir::new().unwrap();
+        // A fresh TempDir has no .git directory; git status will exit non-zero.
+        let result = working_tree_changes(dir.path());
+        assert!(
+            result.is_err(),
+            "expected Err outside a git repo, got {:?}",
+            result
+        );
     }
 }
