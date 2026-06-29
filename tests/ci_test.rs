@@ -83,6 +83,11 @@ fn sample_finding(severity: Severity, title: &str) -> Finding {
         location: Some("src/auth.rs:42".to_string()),
         recommendation: "Use parameterized queries.".to_string(),
         corroborated_by: vec![],
+        cwe: None,
+        secondary_cwe: vec![],
+        cvss_vector: None,
+        cvss_score: None,
+        owasp: None,
     }
 }
 

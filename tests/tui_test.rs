@@ -78,6 +78,11 @@ fn ui_state_apply_finding_added() {
         location: Some("src/main.rs:1".to_string()),
         recommendation: "fix it".to_string(),
         corroborated_by: vec![],
+        cwe: None,
+        secondary_cwe: vec![],
+        cvss_vector: None,
+        cvss_score: None,
+        owasp: None,
     };
     state.apply_event(ScanEvent::FindingAdded(f));
     assert_eq!(state.findings.len(), 1);
@@ -527,6 +532,11 @@ fn ui_state_select_next_wraps() {
         location: None,
         recommendation: "r".to_string(),
         corroborated_by: vec![],
+        cwe: None,
+        secondary_cwe: vec![],
+        cvss_vector: None,
+        cvss_score: None,
+        owasp: None,
     };
     state.apply_event(ScanEvent::FindingAdded(f.clone()));
     state.apply_event(ScanEvent::FindingAdded(f));
@@ -1152,6 +1162,7 @@ fn settings_provider_change_persists_via_hub() {
         default_profile: Some("anthropic".to_string()),
         output_dir: None,
         theme: None,
+        cwe_url_template: None,
     }
     .save_to(&config_path)
     .unwrap();
@@ -1817,6 +1828,7 @@ fn apply_provider_change_persists_default_and_refreshes_state_in_place() {
         default_profile: Some("anthropic".to_string()),
         output_dir: None,
         theme: None,
+        cwe_url_template: None,
     }
     .save_to(&config_path)
     .unwrap();
