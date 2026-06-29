@@ -130,7 +130,8 @@ vulnerability. Each inner array is one group of 2+ indices. Omit findings that h
         }),
     };
 
-    let system = "You are a security finding de-duplication engine. You receive a numbered list of \
+    let system =
+        "You are a security finding de-duplication engine. You receive a numbered list of \
 findings produced by independent scanners. Cluster together findings that describe the SAME \
 underlying vulnerability, even if the wording, scanner, or location differ. An architectural \
 finding (no file:line) and a code-level finding (with file:line) that share the same root cause \
@@ -331,14 +332,29 @@ mod tests {
             location: loc.map(str::to_string),
             recommendation: "fix it".to_string(),
             corroborated_by: Vec::new(),
+            cwe: None,
+            secondary_cwe: Vec::new(),
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
         }
     }
 
     #[test]
     fn prepass_merges_same_location_and_title() {
         let findings = vec![
-            f("sast", Severity::High, "SQL injection in login", Some("src/auth.rs:42")),
-            f("api_scan", Severity::Medium, "SQL injection login flow", Some("src/auth.rs:42")),
+            f(
+                "sast",
+                Severity::High,
+                "SQL injection in login",
+                Some("src/auth.rs:42"),
+            ),
+            f(
+                "api_scan",
+                Severity::Medium,
+                "SQL injection login flow",
+                Some("src/auth.rs:42"),
+            ),
         ];
         let out = deterministic_prepass(findings);
         assert_eq!(out.len(), 1);
@@ -349,8 +365,18 @@ mod tests {
     #[test]
     fn prepass_keeps_distinct_findings() {
         let findings = vec![
-            f("sast", Severity::High, "SQL injection in login", Some("src/auth.rs:42")),
-            f("sast", Severity::Low, "Missing CSRF token", Some("src/web.rs:10")),
+            f(
+                "sast",
+                Severity::High,
+                "SQL injection in login",
+                Some("src/auth.rs:42"),
+            ),
+            f(
+                "sast",
+                Severity::Low,
+                "Missing CSRF token",
+                Some("src/web.rs:10"),
+            ),
         ];
         let out = deterministic_prepass(findings);
         assert_eq!(out.len(), 2);
@@ -359,8 +385,18 @@ mod tests {
     #[test]
     fn apply_clusters_merges_across_scanners_keeping_highest_severity() {
         let findings = vec![
-            f("threat_model", Severity::Critical, "Broken access control", None),
-            f("sast", Severity::Medium, "Missing auth check on admin route", Some("src/admin.rs:5")),
+            f(
+                "threat_model",
+                Severity::Critical,
+                "Broken access control",
+                None,
+            ),
+            f(
+                "sast",
+                Severity::Medium,
+                "Missing auth check on admin route",
+                Some("src/admin.rs:5"),
+            ),
         ];
         // LLM says these two are the same issue.
         let out = apply_clusters(findings, vec![vec![0, 1]]);

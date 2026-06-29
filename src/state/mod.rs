@@ -200,6 +200,11 @@ fn parse_finding_block(block: &str) -> Option<Finding> {
         location,
         recommendation,
         corroborated_by,
+        cwe: None,
+        secondary_cwe: Vec::new(),
+        cvss_vector: None,
+        cvss_score: None,
+        owasp: None,
     })
 }
 

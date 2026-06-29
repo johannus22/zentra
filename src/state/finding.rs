@@ -48,4 +48,19 @@ pub struct Finding {
     /// confidence signal (independent corroboration ⇒ likely true positive).
     #[serde(default)]
     pub corroborated_by: Vec<String>,
+    /// Primary CWE id, e.g. "CWE-89". Model-supplied (best-effort).
+    #[serde(default)]
+    pub cwe: Option<String>,
+    /// Additional related CWE ids, e.g. ["CWE-20", "CWE-74"].
+    #[serde(default)]
+    pub secondary_cwe: Vec<String>,
+    /// CVSS v3.1 base vector string (model-supplied). Present only when valid.
+    #[serde(default)]
+    pub cvss_vector: Option<String>,
+    /// CVSS v3.1 base score, computed by us from `cvss_vector` — never model-supplied.
+    #[serde(default)]
+    pub cvss_score: Option<f32>,
+    /// OWASP Top 10 category, e.g. "A03:2021-Injection". Model-supplied (best-effort).
+    #[serde(default)]
+    pub owasp: Option<String>,
 }

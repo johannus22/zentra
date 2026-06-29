@@ -204,6 +204,11 @@ data entry points, security middleware already present, and known safety guarant
                     location: args["location"].as_str().map(str::to_string),
                     recommendation: args["recommendation"].as_str().unwrap_or("").to_string(),
                     corroborated_by: Vec::new(),
+                    cwe: None,
+                    secondary_cwe: Vec::new(),
+                    cvss_vector: None,
+                    cvss_score: None,
+                    owasp: None,
                 };
                 if let Err(e) = state_writer.write_finding(&finding) {
                     return format!("Error writing finding: {}", e);
