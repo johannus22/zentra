@@ -269,6 +269,27 @@ fn merge_group(findings: &[Finding], idxs: &[usize]) -> Finding {
     corroborators.remove(&primary.scanner);
     primary.corroborated_by = corroborators.into_iter().collect();
 
+    // Backfill enriched classification fields the primary lacks from other members.
+    for &idx in idxs {
+        if idx == primary_idx {
+            continue;
+        }
+        let m = &findings[idx];
+        if primary.cwe.is_none() {
+            primary.cwe = m.cwe.clone();
+        }
+        if primary.secondary_cwe.is_empty() {
+            primary.secondary_cwe = m.secondary_cwe.clone();
+        }
+        if primary.cvss_vector.is_none() {
+            primary.cvss_vector = m.cvss_vector.clone();
+            primary.cvss_score = m.cvss_score;
+        }
+        if primary.owasp.is_none() {
+            primary.owasp = m.owasp.clone();
+        }
+    }
+
     primary
 }
 
@@ -430,5 +451,79 @@ mod tests {
         let out = apply_clusters(findings, vec![vec![0, 1], vec![0, 1]]);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].corroborated_by, vec!["threat_model".to_string()]);
+    }
+
+    #[test]
+    fn merge_backfills_enriched_fields_from_corroborator() {
+        // Primary (concrete location, sast) lacks CWE; corroborator (threat_model) has it.
+        let primary = Finding {
+            scanner: "sast".into(),
+            severity: Severity::High,
+            title: "SQLi".into(),
+            description: "d".into(),
+            location: Some("src/db.rs:1".into()),
+            recommendation: "r".into(),
+            corroborated_by: vec![],
+            cwe: None,
+            secondary_cwe: vec![],
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
+        };
+        let other = Finding {
+            scanner: "threat_model".into(),
+            severity: Severity::High,
+            title: "SQLi".into(),
+            description: "d".into(),
+            location: None,
+            recommendation: "r".into(),
+            corroborated_by: vec![],
+            cwe: Some("CWE-89".into()),
+            secondary_cwe: vec!["CWE-20".into()],
+            cvss_vector: Some("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H".into()),
+            cvss_score: Some(9.8),
+            owasp: Some("A03:2021-Injection".into()),
+        };
+        let group = vec![primary, other];
+        let merged = merge_group(&group, &[0, 1]);
+        assert_eq!(merged.scanner, "sast"); // primary unchanged
+        assert_eq!(merged.cwe.as_deref(), Some("CWE-89")); // backfilled
+        assert_eq!(merged.secondary_cwe, vec!["CWE-20".to_string()]);
+        assert_eq!(merged.owasp.as_deref(), Some("A03:2021-Injection"));
+        assert!((merged.cvss_score.unwrap() - 9.8).abs() < 0.001);
+    }
+
+    #[test]
+    fn merge_keeps_primary_enriched_fields_when_present() {
+        let primary = Finding {
+            scanner: "sast".into(),
+            severity: Severity::High,
+            title: "SQLi".into(),
+            description: "d".into(),
+            location: Some("src/db.rs:1".into()),
+            recommendation: "r".into(),
+            corroborated_by: vec![],
+            cwe: Some("CWE-89".into()),
+            secondary_cwe: vec![],
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
+        };
+        let other = Finding {
+            scanner: "threat_model".into(),
+            severity: Severity::High,
+            title: "SQLi".into(),
+            description: "d".into(),
+            location: None,
+            recommendation: "r".into(),
+            corroborated_by: vec![],
+            cwe: Some("CWE-999".into()),
+            secondary_cwe: vec![],
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
+        };
+        let merged = merge_group(&vec![primary, other], &[0, 1]);
+        assert_eq!(merged.cwe.as_deref(), Some("CWE-89")); // primary wins
     }
 }
