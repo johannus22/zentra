@@ -5,10 +5,21 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::scanner::ScannerAgent;
 use crate::agent::{ScanEvent, ScannerType};
+use crate::incremental::{is_arch_significant, reconcile, ChangeSet, ScanDelta};
 use crate::provider::LLMProvider;
 use crate::security::SecurityContext;
-use crate::state::StateWriter;
+use crate::state::{Finding, StateWriter};
 use crate::tools::ToolRegistry;
+
+struct IncrementalCtx {
+    prior: Vec<Finding>,
+    change_set: ChangeSet,
+}
+
+pub struct RunSummary {
+    pub failed: Vec<ScannerType>,
+    pub delta: Option<ScanDelta>,
+}
 
 const PARALLEL_SCANNERS: &[ScannerType] = &[
     ScannerType::Sast,
@@ -23,8 +34,9 @@ pub struct OrchestratorAgent {
     state_writer: Arc<StateWriter>,
     tx: mpsc::Sender<ScanEvent>,
     cancel_token: CancellationToken,
-    ci_focus_context: Option<String>,
+    focus_context: Option<String>,
     security: SecurityContext,
+    incremental: Option<IncrementalCtx>,
 }
 
 impl OrchestratorAgent {
@@ -41,13 +53,14 @@ impl OrchestratorAgent {
             state_writer,
             tx,
             cancel_token,
-            ci_focus_context: None,
+            focus_context: None,
             security: SecurityContext::disabled(),
+            incremental: None,
         }
     }
 
-    pub fn with_ci_focus_context(mut self, ci_focus_context: Option<String>) -> Self {
-        self.ci_focus_context = ci_focus_context;
+    pub fn with_focus_context(mut self, focus_context: Option<String>) -> Self {
+        self.focus_context = focus_context;
         self
     }
 
@@ -56,7 +69,12 @@ impl OrchestratorAgent {
         self
     }
 
-    pub async fn run(self, scanners: &[ScannerType]) -> Result<Vec<ScannerType>> {
+    pub fn with_incremental(mut self, prior: Vec<Finding>, change_set: ChangeSet) -> Self {
+        self.incremental = Some(IncrementalCtx { prior, change_set });
+        self
+    }
+
+    pub async fn run(mut self, scanners: &[ScannerType]) -> Result<RunSummary> {
         let mut failed: Vec<ScannerType> = Vec::new();
 
         // Phase 0: FrameworkAnalysis — builds .zentra/architecture.md for all subsequent scanners
@@ -87,8 +105,14 @@ Delete this file and re-run the scan to retry.",
             Some(context)
         };
 
-        // Phase 1: ThreatModel — sequential
-        if scanners.contains(&ScannerType::ThreatModel) {
+        // Phase 1: ThreatModel — sequential. On incremental, skip unless
+        // architecturally-significant files changed (carried forward otherwise).
+        let run_threat_model = scanners.contains(&ScannerType::ThreatModel)
+            && match &self.incremental {
+                Some(ctx) => is_arch_significant(&ctx.change_set.changed),
+                None => true,
+            };
+        if run_threat_model {
             if self
                 .run_llm_scanner(ScannerType::ThreatModel, context_opt.as_deref())
                 .await
@@ -114,7 +138,7 @@ Delete this file and re-run the scan to retry.",
                 let writer = Arc::clone(&self.state_writer);
                 let tx = self.tx.clone();
                 let ctx = context_opt.clone();
-                let ci_ctx = self.ci_focus_context.clone();
+                let focus_ctx = self.focus_context.clone();
                 let token = cancel_token.clone();
                 let security = self.security.clone();
                 handles.push((
@@ -127,7 +151,7 @@ Delete this file and re-run the scan to retry.",
                             writer,
                             tx,
                             ctx,
-                            ci_ctx,
+                            focus_ctx,
                             token,
                         )
                         .with_security(security)
@@ -164,6 +188,22 @@ Delete this file and re-run the scan to retry.",
             }
         }
 
+        // Incremental reconciliation: merge fresh findings (just written by the
+        // focused scanners) with the prior set, before correlation/report read them.
+        let mut delta = None;
+        if let Some(ctx) = self.incremental.take() {
+            let raw = self.state_writer.read_findings_raw().unwrap_or_default();
+            let fresh = crate::state::parse_findings(&raw);
+            let (merged, d) = reconcile(ctx.prior, fresh, &ctx.change_set);
+            if let Err(e) = self.state_writer.rewrite_findings(&merged) {
+                crate::logging::warn(
+                    "orchestrator",
+                    format!("incremental reconcile: failed to rewrite findings: {e}"),
+                );
+            }
+            delta = Some(d);
+        }
+
         // Phase 2.5: correlate/dedup findings before the report consumes them.
         // Best-effort — never fatal, and never drops findings on failure.
         if scanners.contains(&ScannerType::Report) {
@@ -186,7 +226,7 @@ Delete this file and re-run the scan to retry.",
             }
         }
 
-        Ok(failed)
+        Ok(RunSummary { failed, delta })
     }
 
     async fn run_llm_scanner(
@@ -201,7 +241,7 @@ Delete this file and re-run the scan to retry.",
             Arc::clone(&self.state_writer),
             self.tx.clone(),
             context.map(str::to_string),
-            self.ci_focus_context.clone(),
+            self.focus_context.clone(),
             self.cancel_token.clone(),
         )
         .with_security(self.security.clone())

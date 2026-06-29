@@ -56,7 +56,7 @@ pub const ACTIVITY_VERBS: &[&str] = &[
     "Hacking",
     "Solodifying",
     "Zentranizing",
-    "Connecting to Biringan Servers"
+    "Connecting to Biringan Servers",
 ];
 
 const SCANNER_PANEL_WIDTH: u16 = 34;
@@ -116,7 +116,10 @@ async fn run_loop(
         provider_kind,
     );
     state.theme = crate::tui::theme::resolve(
-        crate::config::GlobalConfig::load().ok().and_then(|g| g.theme).as_deref(),
+        crate::config::GlobalConfig::load()
+            .ok()
+            .and_then(|g| g.theme)
+            .as_deref(),
     );
     let mut input_ticker = tokio::time::interval(std::time::Duration::from_millis(25));
     let mut animation_ticker = tokio::time::interval(std::time::Duration::from_millis(80));
@@ -222,7 +225,8 @@ fn render(frame: &mut Frame, state: &mut UiState) {
 
     // Paint the whole frame with the theme background first.
     frame.render_widget(
-        ratatui::widgets::Block::default().style(ratatui::style::Style::default().bg(state.theme.bg)),
+        ratatui::widgets::Block::default()
+            .style(ratatui::style::Style::default().bg(state.theme.bg)),
         frame.area(),
     );
 
@@ -239,13 +243,25 @@ fn render(frame: &mut Frame, state: &mut UiState) {
     render_body(frame, chunks[1], state);
     render_activity(frame, chunks[2], state);
     render_detail(frame, chunks[3], state);
-    render_keys(frame, chunks[4], state.popup_open, state.scan_done, &state.theme);
+    render_keys(
+        frame,
+        chunks[4],
+        state.popup_open,
+        state.scan_done,
+        &state.theme,
+    );
 
     if state.popup_open {
         render_popup(frame, area, &state.popup, state.scan_done, &state.theme);
     }
     if state.provider_popup_open {
-        render_provider_popup(frame, area, &state.provider_popup, &state.profiles, &state.theme);
+        render_provider_popup(
+            frame,
+            area,
+            &state.provider_popup,
+            &state.profiles,
+            &state.theme,
+        );
     }
 }
 
@@ -750,4 +766,18 @@ mod tests {
         assert_eq!(fmt_tokens(12_500_000), "12.5M");
         assert_eq!(fmt_tokens(13_000_000), "13M");
     }
+}
+
+/// One-line banner shown for an incremental rescan so it's never mistaken for a
+/// fresh full scan. `baseline` is the full commit SHA (truncated to 8 chars).
+pub fn incremental_banner(
+    changed: usize,
+    impacted: usize,
+    carried: usize,
+    baseline: &str,
+) -> String {
+    let short = &baseline[..baseline.len().min(8)];
+    format!(
+        "Incremental rescan · baseline {short} · {changed} changed · {impacted} impacted · {carried} carried"
+    )
 }

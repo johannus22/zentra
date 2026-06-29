@@ -5,6 +5,9 @@ use tokio::sync::mpsc;
 
 use crate::agent::{orchestrator::OrchestratorAgent, ScannerType};
 use crate::config::{keychain, GlobalConfig, ProjectConfig};
+use crate::incremental::{
+    build_focus_context, compute_change_set, decide_mode, ModeInputs, ScanManifest, ScanMode,
+};
 use crate::provider::{
     anthropic::AnthropicProvider,
     cli::{CliKind, CliProvider},
@@ -18,11 +21,20 @@ use crate::tui::{scan_ui::run_scan_ui, ScanOutcome};
 use crate::wizard;
 use tokio_util::sync::CancellationToken;
 
-pub async fn run(provider_override: Option<String>, only: Option<String>) -> Result<()> {
+/// Max files in the incremental impact set. When the impact set hits this cap,
+/// findings in files beyond it are carried forward unverified — we surface a
+/// notice so the truncation is never silent.
+const INCREMENTAL_IMPACT_CAP: usize = 200;
+
+pub async fn run(
+    provider_override: Option<String>,
+    only: Option<String>,
+    full: bool,
+) -> Result<()> {
     let scanners = resolve_scanners(only.as_deref());
     let mut provider_override = provider_override;
     loop {
-        match run_once(provider_override.clone(), scanners.clone()).await? {
+        match run_once(provider_override.clone(), scanners.clone(), full).await? {
             ScanOutcome::Completed | ScanOutcome::Aborted | ScanOutcome::BackToMenu => break,
             ScanOutcome::Reconfigure => {
                 wizard::run_setup(None).await?;
@@ -38,7 +50,7 @@ pub async fn run(provider_override: Option<String>, only: Option<String>) -> Res
 pub async fn run_with_scanners(scanners: Vec<ScannerType>) -> Result<()> {
     let mut provider_override: Option<String> = None;
     loop {
-        match run_once(provider_override.clone(), scanners.clone()).await? {
+        match run_once(provider_override.clone(), scanners.clone(), false).await? {
             ScanOutcome::Completed | ScanOutcome::Aborted | ScanOutcome::BackToMenu => break,
             ScanOutcome::Reconfigure => {
                 wizard::run_setup(None).await?;
@@ -54,6 +66,7 @@ pub async fn run_with_scanners(scanners: Vec<ScannerType>) -> Result<()> {
 async fn run_once(
     provider_override: Option<String>,
     scanners: Vec<ScannerType>,
+    full: bool,
 ) -> Result<ScanOutcome> {
     let global = GlobalConfig::load()?;
     let profile_name = provider_override
@@ -122,13 +135,9 @@ async fn run_once(
             .with_event_channel(tx.clone()),
         ),
         _ => Arc::new(
-            OpenAICompatProvider::new(
-                profile.base_url.clone(),
-                profile.model.clone(),
-                api_key,
-            )
-            .with_reasoning(profile.reasoning_effort.clone())
-            .with_context_window(profile.context_window),
+            OpenAICompatProvider::new(profile.base_url.clone(), profile.model.clone(), api_key)
+                .with_reasoning(profile.reasoning_effort.clone())
+                .with_context_window(profile.context_window),
         ),
     };
 
@@ -154,8 +163,59 @@ async fn run_once(
         config
     };
 
+    let target_root = Path::new(&project_config.target_path).to_path_buf();
+    let zentra_dir = target_root.join(".zentra");
+
+    // Decide full vs incremental from the prior manifest + current env.
+    let prior_manifest = ScanManifest::load(&zentra_dir);
+    let head_commit = git_head_commit(&target_root);
+    let is_git = head_commit.is_some() || git_is_repo(&target_root);
+    let engine_version = env!("CARGO_PKG_VERSION");
+    let model_id = format!("{} · {}", profile.model, profile_name);
+    let decision = decide_mode(ModeInputs {
+        forced_full: full,
+        is_git_repo: is_git,
+        current_engine_version: engine_version,
+        current_model_id: &model_id,
+        prior: prior_manifest.as_ref(),
+    });
+    println!("ℹ {}", decision.reason);
+
+    // For incremental: capture prior findings BEFORE StateWriter truncates the file,
+    // then compute the change set and build focus context.
+    let (incremental, focus_context) = if decision.mode == ScanMode::Incremental {
+        let prior_raw =
+            std::fs::read_to_string(zentra_dir.join("detailed-findings.md")).unwrap_or_default();
+        let prior = crate::state::parse_findings(&prior_raw);
+        match compute_change_set(&target_root, &decision.baseline, INCREMENTAL_IMPACT_CAP) {
+            Ok(cs) => {
+                if cs.impact.len() >= INCREMENTAL_IMPACT_CAP {
+                    println!(
+                        "⚠ Impact set capped at {INCREMENTAL_IMPACT_CAP} files; findings in files beyond the cap are carried forward unverified. Run with --full for a complete rescan."
+                    );
+                }
+                let focus = build_focus_context(&cs);
+                (Some((prior, cs)), Some(focus))
+            }
+            Err(e) => {
+                println!("ℹ change detection failed ({e}); running full scan");
+                (None, None)
+            }
+        }
+    } else {
+        (None, None)
+    };
+    let is_incremental = incremental.is_some();
+
+    // Capture banner counts before incremental is moved into the spawned task.
+    let banner_info: Option<(usize, usize, usize, String)> =
+        incremental.as_ref().map(|(prior, cs)| {
+            let baseline_str = head_commit.as_deref().unwrap_or("working-tree").to_string();
+            (cs.changed.len(), cs.impact.len(), prior.len(), baseline_str)
+        });
+
     let state_writer = Arc::new(
-        StateWriter::new(Path::new(&project_config.target_path))
+        StateWriter::open(&target_root, false)
             .context("Failed to initialize .zentra/ directory")?,
     );
     let tool_registry = Arc::new(ToolRegistry::new());
@@ -165,7 +225,6 @@ async fn run_once(
     // ZENTRA_SECURITY=off (disable) or ZENTRA_SECURITY=hardened (strictest).
     let security_config = SecurityConfig::load();
     let session_id = security::new_session_id();
-    let zentra_dir = Path::new(&project_config.target_path).join(".zentra");
     let mut audit = AuditLog::new(&zentra_dir, &session_id, security_config.audit_log)
         .context("Failed to open security audit log")?;
     audit
@@ -179,7 +238,6 @@ async fn run_once(
     let provider = security::GuardedProvider::wrap(provider, &security_ctx);
 
     let context_window = profile.context_window.unwrap_or(256_000);
-    let model_info = format!("{} · {}", profile.model, profile_name);
     let provider_kind = profile.kind.clone();
     let branch = current_branch();
     let project_name = current_project_name();
@@ -201,7 +259,7 @@ async fn run_once(
     let token_for_orchestrator = cancel_token.clone();
 
     let scan_task = tokio::spawn(async move {
-        OrchestratorAgent::new(
+        let mut orch = OrchestratorAgent::new(
             provider,
             tool_registry,
             state_writer,
@@ -209,14 +267,25 @@ async fn run_once(
             token_for_orchestrator,
         )
         .with_security(security_ctx)
-        .run(&scanners_for_agent)
-        .await
+        .with_focus_context(focus_context);
+        if let Some((prior, cs)) = incremental {
+            orch = orch.with_incremental(prior, cs);
+        }
+        orch.run(&scanners_for_agent).await
     });
+
+    // Print incremental banner before launching TUI
+    if let Some((changed, impacted, carried, baseline)) = banner_info {
+        println!(
+            "{}",
+            crate::tui::scan_ui::incremental_banner(changed, impacted, carried, &baseline)
+        );
+    }
 
     let outcome = run_scan_ui(
         rx,
-        scanners_with_framework,
-        model_info,
+        scanners_with_framework.clone(),
+        model_id.clone(),
         context_window,
         token_for_ui,
         profiles,
@@ -228,7 +297,34 @@ async fn run_once(
 
     match outcome {
         ScanOutcome::Completed => {
-            let failed = scan_task.await??;
+            let summary = scan_task.await??;
+            let failed = summary.failed;
+
+            // Persist the new baseline for the next scan.
+            let manifest = ScanManifest {
+                last_scan_commit: head_commit.clone(),
+                was_dirty: git_is_dirty(&target_root),
+                scanned_at: chrono::Utc::now().to_rfc3339(),
+                scanner_set: scanners_with_framework
+                    .iter()
+                    .map(|s| s.name().to_string())
+                    .collect(),
+                engine_version: engine_version.to_string(),
+                model_id: model_id.clone(),
+                mode: if is_incremental {
+                    "incremental"
+                } else {
+                    "full"
+                }
+                .to_string(),
+                file_hashes: if is_git {
+                    None
+                } else {
+                    crate::incremental::detect::hash_tree(&target_root).ok()
+                },
+            };
+            let _ = manifest.save(&zentra_dir);
+
             if !failed.is_empty() {
                 let names: Vec<&str> = failed.iter().map(|s| s.name()).collect();
                 println!(
@@ -238,6 +334,13 @@ async fn run_once(
                 );
             } else {
                 println!("\n✓ Scan complete. Findings in .zentra/");
+            }
+
+            if let Some(delta) = summary.delta {
+                println!(
+                    "  Δ since last scan: {} new, {} resolved, {} carried",
+                    delta.new, delta.resolved, delta.carried
+                );
             }
         }
         _ => {
@@ -321,6 +424,41 @@ fn resolve_scanners(only: Option<&str>) -> Vec<ScannerType> {
             ScannerType::Report,
         ],
     }
+}
+
+fn git_head_commit(root: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+fn git_is_repo(root: &Path) -> bool {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(root)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn git_is_dirty(root: &Path) -> bool {
+    std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(root)
+        .output()
+        .map(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty())
+        .unwrap_or(false)
 }
 
 fn current_branch() -> String {

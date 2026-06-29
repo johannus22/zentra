@@ -737,7 +737,7 @@ async fn orchestrator_returns_failed_scanners() {
     let orchestrator =
         OrchestratorAgent::new(provider, registry, writer, tx, CancellationToken::new());
 
-    let failed = orchestrator
+    let summary = orchestrator
         .run(&[
             ScannerType::ThreatModel,
             ScannerType::Sast,
@@ -746,14 +746,20 @@ async fn orchestrator_returns_failed_scanners() {
         ])
         .await
         .unwrap();
+    let failed = summary.failed;
 
-    assert!(!failed.is_empty(), "expected at least one failed scanner in the Vec");
+    assert!(
+        !failed.is_empty(),
+        "expected at least one failed scanner in the Vec"
+    );
     // ThreatModel is sequential (phase 1) and gets one of the two 200 responses.
     // Sast and IacScan run concurrently in phase 2; one gets the remaining 200,
     // the other receives the 400. Which one fails is non-deterministic, so we
     // assert membership in the set of parallel scanners that can plausibly fail.
     assert!(
-        failed.iter().any(|s| matches!(s, ScannerType::Sast | ScannerType::IacScan)),
+        failed
+            .iter()
+            .any(|s| matches!(s, ScannerType::Sast | ScannerType::IacScan)),
         "expected a parallel scanner (Sast or IacScan) in the failed list, got: {:?}",
         failed
     );
@@ -978,19 +984,13 @@ async fn scanner_aborts_when_context_budget_irreducible() {
         .await;
 
     let provider = Arc::new(
-        OpenAICompatProvider::new(
-            server.uri(),
-            "tiny-model".to_string(),
-            "key".to_string(),
-        )
-        .with_context_window(Some(1)),
+        OpenAICompatProvider::new(server.uri(), "tiny-model".to_string(), "key".to_string())
+            .with_context_window(Some(1)),
     );
 
     let (tx, mut rx) = mpsc::channel(128);
     let tmp = tempfile::TempDir::new().unwrap();
-    let state_writer = Arc::new(
-        zentra_cli::state::StateWriter::new(tmp.path()).unwrap(),
-    );
+    let state_writer = Arc::new(zentra_cli::state::StateWriter::new(tmp.path()).unwrap());
     let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
 
     let agent = ScannerAgent::new(
@@ -1053,5 +1053,108 @@ async fn correlate_preserves_findings_on_llm_failure() {
     ];
 
     let out = zentra_cli::agent::correlation::correlate(&provider, findings).await;
-    assert_eq!(out.len(), 2, "no findings may be dropped when correlation fails");
+    assert_eq!(
+        out.len(),
+        2,
+        "no findings may be dropped when correlation fails"
+    );
+}
+
+/// Minimal test-only provider that errors if actually called. Used by tests
+/// that run the orchestrator with an empty scanner list so no LLM call occurs.
+mod test_support {
+    use anyhow::anyhow;
+    use async_trait::async_trait;
+    use tokio_util::sync::CancellationToken;
+    use zentra_cli::provider::{
+        AgentMessage, CompletionRequest, CompletionResponse, LLMProvider, ToolDefinition,
+    };
+
+    #[derive(Default)]
+    pub struct NoopProvider;
+
+    #[async_trait]
+    impl LLMProvider for NoopProvider {
+        async fn complete(&self, _req: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+            Err(anyhow!("NoopProvider: should not be called"))
+        }
+
+        async fn complete_with_tools(
+            &self,
+            _system: &str,
+            _messages: &[AgentMessage],
+            _tools: &[ToolDefinition],
+            _max_tokens: u32,
+            _cancel_token: Option<&CancellationToken>,
+        ) -> anyhow::Result<CompletionResponse> {
+            Err(anyhow!("NoopProvider: should not be called"))
+        }
+
+        fn context_window(&self) -> u32 {
+            200_000
+        }
+
+        fn model_name(&self) -> &str {
+            "noop"
+        }
+    }
+}
+
+#[tokio::test]
+async fn orchestrator_incremental_carries_and_reconciles() {
+    use zentra_cli::agent::orchestrator::OrchestratorAgent;
+    use zentra_cli::incremental::ChangeSet;
+    use zentra_cli::state::{Finding, Severity, StateWriter};
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let writer = Arc::new(StateWriter::open(dir.path(), false).unwrap());
+    // Seed a "fresh" finding on disk as if a focused scanner wrote it.
+    writer
+        .write_finding(&Finding {
+            scanner: "sast".into(),
+            severity: Severity::High,
+            title: "Fresh in changed file".into(),
+            description: "d".into(),
+            location: Some("src/changed.rs:1".into()),
+            recommendation: "r".into(),
+            corroborated_by: vec![],
+        })
+        .unwrap();
+
+    let prior = vec![Finding {
+        scanner: "sast".into(),
+        severity: Severity::Medium,
+        title: "Old in untouched file".into(),
+        description: "d".into(),
+        location: Some("src/untouched.rs:9".into()),
+        recommendation: "r".into(),
+        corroborated_by: vec![],
+    }];
+    let change_set = ChangeSet {
+        changed: vec!["src/changed.rs".into()],
+        impact: vec!["src/changed.rs".into()],
+    };
+
+    // Provider unused: run with an empty scanner list so no LLM call happens;
+    // reconciliation still runs because `incremental` is set and Report is absent.
+    let provider = Arc::new(test_support::NoopProvider::default());
+    let (tx, _rx) = mpsc::channel(128);
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let summary = OrchestratorAgent::new(
+        provider,
+        registry,
+        writer.clone(),
+        tx,
+        CancellationToken::new(),
+    )
+    .with_incremental(prior, change_set)
+    .run(&[])
+    .await
+    .unwrap();
+
+    let delta = summary.delta.expect("incremental delta present");
+    assert_eq!(delta.carried, 1, "untouched finding carried");
+    assert_eq!(delta.new, 1, "changed-file finding is new");
+    let merged = zentra_cli::state::parse_findings(&writer.read_findings_raw().unwrap());
+    assert_eq!(merged.len(), 2);
 }

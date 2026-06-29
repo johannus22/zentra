@@ -4,6 +4,7 @@ pub mod ci;
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod incremental;
 pub mod logging;
 pub mod pentest;
 pub mod provider;
