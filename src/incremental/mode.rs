@@ -128,7 +128,9 @@ mod tests {
         let mut i = base_inputs();
         i.prior = Some(&p);
         i.forced_full = true;
-        assert_eq!(decide_mode(i).mode, ScanMode::Full);
+        let d = decide_mode(i);
+        assert_eq!(d.mode, ScanMode::Full);
+        assert!(d.reason.contains("full") || d.reason.contains("--full"));
     }
 
     #[test]
@@ -146,7 +148,9 @@ mod tests {
         let p = prior("base1", "0.10.0", "gpt-4o");
         let mut i = base_inputs();
         i.prior = Some(&p);
-        assert_eq!(decide_mode(i).mode, ScanMode::Full);
+        let d = decide_mode(i);
+        assert_eq!(d.mode, ScanMode::Full);
+        assert!(d.reason.contains("model"));
     }
 
     #[test]
@@ -170,5 +174,16 @@ mod tests {
         i.is_git_repo = false;
         i.prior = Some(&p);
         assert_eq!(decide_mode(i).mode, ScanMode::Full);
+    }
+
+    #[test]
+    fn git_repo_without_commit_is_full() {
+        let mut p = prior("base1", "0.10.0", "claude");
+        p.last_scan_commit = None;
+        let mut i = base_inputs(); // is_git_repo = true
+        i.prior = Some(&p);
+        let d = decide_mode(i);
+        assert_eq!(d.mode, ScanMode::Full);
+        assert!(d.reason.contains("baseline commit"));
     }
 }
