@@ -56,12 +56,18 @@ impl OrchestratorAgent {
         self
     }
 
-    pub async fn run(self, scanners: &[ScannerType]) -> Result<()> {
+    pub async fn run(self, scanners: &[ScannerType]) -> Result<Vec<ScannerType>> {
+        let mut failed: Vec<ScannerType> = Vec::new();
+
         // Phase 0: FrameworkAnalysis — builds .zentra/architecture.md for all subsequent scanners
         if scanners.contains(&ScannerType::FrameworkAnalysis) {
-            let _ = self
+            if self
                 .run_llm_scanner(ScannerType::FrameworkAnalysis, None)
-                .await;
+                .await
+                .is_err()
+            {
+                failed.push(ScannerType::FrameworkAnalysis);
+            }
 
             // Safety net: if the agent exhausted iterations without calling write_architecture,
             // write a minimal placeholder so Phase 0 won't re-trigger on the next scan.
@@ -83,9 +89,13 @@ Delete this file and re-run the scan to retry.",
 
         // Phase 1: ThreatModel — sequential
         if scanners.contains(&ScannerType::ThreatModel) {
-            let _ = self
+            if self
                 .run_llm_scanner(ScannerType::ThreatModel, context_opt.as_deref())
-                .await;
+                .await
+                .is_err()
+            {
+                failed.push(ScannerType::ThreatModel);
+            }
         }
 
         // Phase 2: parallel scanners (SAST, SCA, API, IaC)
@@ -128,7 +138,10 @@ Delete this file and re-run the scan to retry.",
             }
             for (scanner_type, handle) in handles {
                 match handle.await {
-                    Ok(Ok(())) | Ok(Err(_)) => {}
+                    Ok(Ok(())) => {}
+                    Ok(Err(_)) => {
+                        failed.push(scanner_type);
+                    }
                     Err(e) => {
                         crate::logging::error(
                             "scan",
@@ -145,6 +158,7 @@ Delete this file and re-run the scan to retry.",
                             .send(ScanEvent::ScannerCompleted(scanner_type))
                             .await
                             .ok();
+                        failed.push(scanner_type);
                     }
                 }
             }
@@ -163,12 +177,16 @@ Delete this file and re-run the scan to retry.",
 
         // Phase 3: Report — sequential, runs last
         if scanners.contains(&ScannerType::Report) {
-            let _ = self
+            if self
                 .run_llm_scanner(ScannerType::Report, context_opt.as_deref())
-                .await;
+                .await
+                .is_err()
+            {
+                failed.push(ScannerType::Report);
+            }
         }
 
-        Ok(())
+        Ok(failed)
     }
 
     async fn run_llm_scanner(

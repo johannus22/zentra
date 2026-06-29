@@ -76,23 +76,47 @@ fn run_results_blocking(findings: Vec<Finding>) -> Result<()> {
 }
 
 fn run_results_loop(terminal: &mut ratatui::DefaultTerminal, state: &mut UiState) -> Result<()> {
+    // Only redraw when something actually changed (a key press or a resize).
+    // The old loop redrew every 100ms unconditionally, burning CPU at idle.
+    let mut dirty = true;
     loop {
-        terminal.draw(|f| render_results(f, state))?;
+        if dirty {
+            terminal.draw(|f| render_results(f, state))?;
+            dirty = false;
+        }
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind != KeyEventKind::Press {
-                    continue;
-                }
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Down => state.select_next(),
-                    KeyCode::Up => state.select_prev(),
+            // Drain ALL buffered input each wake-up, not just one event. On
+            // Windows the console input buffer accumulates records (mouse/focus/
+            // resize, etc.) while the screen sits idle; reading only one per
+            // 100ms tick lets that backlog build up and — because it lives in the
+            // OS buffer, which survives ratatui::restore()/init() — get inherited
+            // by the menu, making it laggy after an idle results view. Draining
+            // matches scan_ui/pentest_ui (see commit 1ccb39f).
+            while event::poll(Duration::from_millis(0))? {
+                match event::read()? {
+                    Event::Resize(_, _) => dirty = true,
+                    Event::Key(key) => {
+                        if key.kind != KeyEventKind::Press {
+                            continue;
+                        }
+                        match key.code {
+                            KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
+                            KeyCode::Down => {
+                                state.select_next();
+                                dirty = true;
+                            }
+                            KeyCode::Up => {
+                                state.select_prev();
+                                dirty = true;
+                            }
+                            _ => {}
+                        }
+                    }
                     _ => {}
                 }
             }
         }
     }
-    Ok(())
 }
 
 fn render_results(frame: &mut Frame, state: &mut UiState) {

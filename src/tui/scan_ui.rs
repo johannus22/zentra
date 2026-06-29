@@ -46,15 +46,17 @@ pub fn popup_items(scan_done: bool) -> Vec<&'static str> {
 pub const LOADING_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 pub const ACTIVITY_VERBS: &[&str] = &[
-    "Heraldizzing",
-    "Gingerizing",
-    "Jekloysizing",
-    "Jedding",
-    "Kodecrafting",
-    "Jaredizing",
+    "Heraldiphosing",
+    "Syronysynthesizing",
+    "Gabonitificating",
+    "Jeddifying",
+    "Kodecrafteristicizing",
+    "Jaredystimating",
     "Adding Salt",
-    "ML BangBangizing",
-    "Gabottizzizing",
+    "Hacking",
+    "Solodifying",
+    "Zentranizing",
+    "Connecting to Biringan Servers"
 ];
 
 const SCANNER_PANEL_WIDTH: u16 = 34;
@@ -568,7 +570,7 @@ fn render_activity(frame: &mut Frame, area: Rect, state: &UiState) {
             ),
         ])
     } else {
-        let animation_speed = 20;
+        let animation_speed = 85;
         let word_index = (state.animation_index / animation_speed) % ACTIVITY_VERBS.len();
         let current_verb = ACTIVITY_VERBS[word_index];
         let glow_color = state.theme.accent;

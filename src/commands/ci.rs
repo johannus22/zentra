@@ -178,7 +178,11 @@ pub async fn run_headless_scan_with_provider(
     }
     cancel_token.cancel(); // clean up on normal completion too
 
-    scan_task.await??;
+    let failed = scan_task.await??;
+    if !failed.is_empty() {
+        let names: Vec<&str> = failed.iter().map(|s| s.name()).collect();
+        crate::logging::warn("ci", format!("Scanners failed: {}", names.join(", ")));
+    }
 
     if let Some(message) = events.iter().find_map(|event| match event {
         ScanEvent::Error { message, .. } => Some(message),

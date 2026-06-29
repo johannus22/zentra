@@ -661,19 +661,15 @@ async fn orchestrator_continues_to_report_after_parallel_scanner_error() {
     let orchestrator =
         OrchestratorAgent::new(provider, registry, writer, tx, CancellationToken::new());
 
-    let result = orchestrator
+    let _failed = orchestrator
         .run(&[
             ScannerType::ThreatModel,
             ScannerType::Sast,
             ScannerType::IacScan,
             ScannerType::Report,
         ])
-        .await;
-
-    assert!(
-        result.is_ok(),
-        "pipeline should continue after scanner errors: {result:?}"
-    );
+        .await
+        .unwrap();
 
     let mut started = vec![];
     let mut completed = vec![];
@@ -695,6 +691,71 @@ async fn orchestrator_continues_to_report_after_parallel_scanner_error() {
     assert!(
         completed.contains(&ScannerType::Report),
         "report should still complete"
+    );
+}
+
+#[tokio::test]
+async fn orchestrator_returns_failed_scanners() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        })))
+        .up_to_n_times(2)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("bad request"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(OpenAICompatProvider::new(
+        server.uri(),
+        "gpt-4o".to_string(),
+        "key".to_string(),
+    ));
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let writer = Arc::new(zentra_cli::state::StateWriter::new(dir.path()).unwrap());
+    let (tx, _rx) = mpsc::channel(32);
+
+    let orchestrator =
+        OrchestratorAgent::new(provider, registry, writer, tx, CancellationToken::new());
+
+    let failed = orchestrator
+        .run(&[
+            ScannerType::ThreatModel,
+            ScannerType::Sast,
+            ScannerType::IacScan,
+            ScannerType::Report,
+        ])
+        .await
+        .unwrap();
+
+    assert!(!failed.is_empty(), "expected at least one failed scanner in the Vec");
+    // ThreatModel is sequential (phase 1) and gets one of the two 200 responses.
+    // Sast and IacScan run concurrently in phase 2; one gets the remaining 200,
+    // the other receives the 400. Which one fails is non-deterministic, so we
+    // assert membership in the set of parallel scanners that can plausibly fail.
+    assert!(
+        failed.iter().any(|s| matches!(s, ScannerType::Sast | ScannerType::IacScan)),
+        "expected a parallel scanner (Sast or IacScan) in the failed list, got: {:?}",
+        failed
     );
 }
 
@@ -902,6 +963,57 @@ async fn correlate_merges_semantic_duplicates_via_llm() {
     assert!(matches!(out[0].severity, Severity::Critical));
     // The other scanner is recorded as corroborating.
     assert_eq!(out[0].corroborated_by, vec!["threat_model".to_string()]);
+}
+
+#[tokio::test]
+async fn scanner_aborts_when_context_budget_irreducible() {
+    let server = MockServer::start().await;
+    // Expect ZERO calls: the guard must abort before any request.
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{ "message": { "content": "should not be called" } }]
+        })))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let provider = Arc::new(
+        OpenAICompatProvider::new(
+            server.uri(),
+            "tiny-model".to_string(),
+            "key".to_string(),
+        )
+        .with_context_window(Some(1)),
+    );
+
+    let (tx, mut rx) = mpsc::channel(128);
+    let tmp = tempfile::TempDir::new().unwrap();
+    let state_writer = Arc::new(
+        zentra_cli::state::StateWriter::new(tmp.path()).unwrap(),
+    );
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+
+    let agent = ScannerAgent::new(
+        ScannerType::Sast,
+        provider,
+        registry,
+        state_writer,
+        tx,
+        None,
+        CancellationToken::new(),
+    );
+    let result = agent.run().await;
+    assert!(result.is_err(), "irreducible budget must return Err");
+
+    let mut saw_error = false;
+    while let Ok(ev) = rx.try_recv() {
+        if let ScanEvent::Error { message, .. } = ev {
+            assert!(message.contains("context budget exceeded"));
+            saw_error = true;
+        }
+    }
+    assert!(saw_error, "must emit a context-budget Error event");
+    // .expect(0) on the mock verifies the provider was never called on drop.
 }
 
 #[tokio::test]

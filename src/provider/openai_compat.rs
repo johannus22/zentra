@@ -9,6 +9,7 @@ pub struct OpenAICompatProvider {
     api_key: zeroize::Zeroizing<String>,
     client: reqwest::Client,
     reasoning_effort: Option<String>,
+    context_window_override: Option<u32>,
 }
 
 impl OpenAICompatProvider {
@@ -25,6 +26,7 @@ impl OpenAICompatProvider {
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
             reasoning_effort: None,
+            context_window_override: None,
         }
     }
 
@@ -32,6 +34,13 @@ impl OpenAICompatProvider {
     /// `None` (the default) omits the field from requests entirely.
     pub fn with_reasoning(mut self, effort: Option<String>) -> Self {
         self.reasoning_effort = effort;
+        self
+    }
+
+    /// Builder: set the context window override.
+    /// When set, `context_window()` returns this value; otherwise defaults based on model name.
+    pub fn with_context_window(mut self, cw: Option<u32>) -> Self {
+        self.context_window_override = cw;
         self
     }
 
@@ -199,6 +208,9 @@ impl LLMProvider for OpenAICompatProvider {
     }
 
     fn context_window(&self) -> u32 {
+        if let Some(cw) = self.context_window_override {
+            return cw;
+        }
         match self.model.as_str() {
             m if m.contains("gpt-4o") || m.contains("o1") || m.contains("llama-3") => 128_000,
             m if m.contains("claude") => 200_000,
