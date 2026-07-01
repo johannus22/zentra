@@ -38,6 +38,11 @@ const ACTION_EXIT: usize = 6;
 /// Highest selectable action index in the main menu (7 items: 0-6).
 const MAX_MENU_ACTION: usize = 6;
 
+/// Menu input poll interval. Matches the scan UI's 25ms input ticker so
+/// navigation feels equally responsive (the dirty-flag redraw gating keeps
+/// idle CPU low regardless).
+const MENU_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
+
 pub fn main_menu_actions() -> &'static [&'static str] {
     &[
         "Run Full Scan (this directory)",
@@ -1177,7 +1182,7 @@ fn run_menu_loop(
             dirty = false;
         }
 
-        if event::poll(Duration::from_millis(100))? {
+        if event::poll(MENU_POLL_INTERVAL)? {
             let ev = event::read()?;
             if matches!(ev, Event::Resize(_, _)) {
                 dirty = true;
@@ -2279,6 +2284,16 @@ fn render_oauth_modal(
             .wrap(Wrap { trim: false }),
         modal_area,
     );
+}
+
+#[cfg(test)]
+mod menu_tests {
+    use super::*;
+
+    #[test]
+    fn menu_poll_interval_is_responsive() {
+        assert_eq!(MENU_POLL_INTERVAL.as_millis(), 25);
+    }
 }
 
 #[cfg(test)]
