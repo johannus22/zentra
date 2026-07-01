@@ -16,6 +16,14 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::Duration;
 
+/// Whether TUI phase-timing logs are enabled (env `ZENTRA_TUI_TIMING` non-empty).
+/// Off by default; best-effort diagnostics only.
+pub fn tui_timing_enabled() -> bool {
+    std::env::var("ZENTRA_TUI_TIMING")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+}
+
 pub fn clip_with_ellipsis(s: &str, max_width: usize) -> String {
     let count = s.chars().count();
     if count > max_width && max_width > 0 {
@@ -1140,7 +1148,14 @@ fn run_menu_blocking(
         main_menu_actions().len() == MAX_MENU_ACTION + 1,
         "MAX_MENU_ACTION out of sync with main_menu_actions()"
     );
+    let init_start = std::time::Instant::now();
     let mut terminal = ratatui::init();
+    if tui_timing_enabled() {
+        crate::logging::warn(
+            "tui-timing",
+            format!("ratatui::init: {} ms", init_start.elapsed().as_millis()),
+        );
+    }
     let mut state = MenuState::new(
         provider_configured,
         project_configured,
@@ -1164,6 +1179,7 @@ fn run_menu_loop(
     // an OAuth modal update). The old loop redrew every 100ms unconditionally,
     // burning CPU at idle and reading as flicker on some Windows terminals.
     let mut dirty = true;
+    let mut first_draw = true;
     loop {
         if let Some(name) = state.poll_oauth_modal()? {
             // OAuth login finished — the profile is already persisted. Apply it
@@ -1178,7 +1194,15 @@ fn run_menu_loop(
         }
 
         if dirty {
+            let draw_start = std::time::Instant::now();
             terminal.draw(|f| render_menu(f, state))?;
+            if first_draw && tui_timing_enabled() {
+                crate::logging::warn(
+                    "tui-timing",
+                    format!("first render_menu: {} ms", draw_start.elapsed().as_millis()),
+                );
+                first_draw = false;
+            }
             dirty = false;
         }
 
@@ -2293,6 +2317,13 @@ mod menu_tests {
     #[test]
     fn menu_poll_interval_is_responsive() {
         assert_eq!(MENU_POLL_INTERVAL.as_millis(), 25);
+    }
+
+    #[test]
+    fn tui_timing_disabled_by_default() {
+        // With the var unset in the test env, the gate is off.
+        std::env::remove_var("ZENTRA_TUI_TIMING");
+        assert!(!tui_timing_enabled());
     }
 }
 

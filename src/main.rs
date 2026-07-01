@@ -49,6 +49,7 @@ async fn run() -> anyhow::Result<()> {
 
         loop {
             // Reload config every iteration so menu reflects any changes
+            let reload_start = std::time::Instant::now();
             let global = match GlobalConfig::load() {
                 Ok(g) => g,
                 Err(e) => {
@@ -77,6 +78,12 @@ async fn run() -> anyhow::Result<()> {
                 .get(&active_profile)
                 .map(|p| p.model.clone())
                 .unwrap_or_default();
+            if zentra_cli::tui::menu::tui_timing_enabled() {
+                zentra_cli::logging::warn(
+                    "tui-timing",
+                    format!("menu re-entry reload: {} ms", reload_start.elapsed().as_millis()),
+                );
+            }
 
             match run_menu(
                 provider_configured,
