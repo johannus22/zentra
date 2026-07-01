@@ -599,6 +599,76 @@ async fn scanner_agent_executes_tool_call_and_feeds_result_back() {
     assert!(found_tool_call, "should have sent ToolCall event");
 }
 
+#[tokio::test]
+async fn scanner_cancel_emits_completed_and_returns() {
+    // A pre-cancelled token must cause the scanner to return promptly and
+    // still emit ScannerCompleted (the clean exit path, not an error path).
+    let server = MockServer::start().await;
+
+    // Provide a response with a tool call — but cancel token fires before
+    // the LLM call is even attempted, so the server should see zero requests.
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "list_files",
+                            "arguments": "{\"dir\": \".\"}"
+                        }
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let provider = Arc::new(OpenAICompatProvider::new(
+        server.uri(),
+        "gpt-4o".to_string(),
+        "test-key".to_string(),
+    ));
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let writer = Arc::new(StateWriter::new(dir.path()).unwrap());
+    let (tx, mut rx) = mpsc::channel(32);
+
+    let cancel = CancellationToken::new();
+    cancel.cancel(); // pre-cancelled: scanner must exit fast
+
+    let agent = ScannerAgent::new(
+        ScannerType::Sast,
+        provider,
+        registry,
+        writer,
+        tx,
+        None,
+        cancel,
+    );
+
+    let handle = tokio::spawn(async move { agent.run().await });
+    let res = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
+    assert!(res.is_ok(), "scanner did not return promptly after cancel");
+
+    // Drain the channel and assert ScannerCompleted was emitted
+    let mut found_completed = false;
+    while let Ok(event) = rx.try_recv() {
+        if matches!(event, zentra_cli::agent::ScanEvent::ScannerCompleted(_)) {
+            found_completed = true;
+        }
+    }
+    assert!(
+        found_completed,
+        "scanner must emit ScannerCompleted even when cancelled"
+    );
+}
+
 #[test]
 fn git_log_returns_string_outside_git_repo() {
     // Run from a temp dir with no .git â€” should not panic, just return graceful message

@@ -115,7 +115,7 @@ for example, do not flag SQL injection if the ORM listed here auto-parameterises
             .await
             .ok();
 
-        for _iter in 0..MAX_ITERATIONS {
+        'react: for _iter in 0..MAX_ITERATIONS {
             // Guard: never send a request that would overflow the model's
             // context window. Compact oldest tool results to fit; if even the
             // minimal request is too large, abort this scanner visibly rather
@@ -215,6 +215,9 @@ for example, do not flag SQL injection if the ORM listed here auto-parameterises
 
             // Execute each tool call (gated) and append results
             for tc in &resp.tool_calls {
+                if self.cancel_token.is_cancelled() {
+                    break 'react;
+                }
                 // Security gate: block disallowed/suspicious calls without
                 // killing the scan — the LLM is told why and can adjust.
                 if let Err(blocked) = gate.check(&tc.name, &tc.arguments) {
@@ -235,16 +238,17 @@ for example, do not flag SQL injection if the ORM listed here auto-parameterises
                     arg_hash: sha256_json(&tc.arguments),
                 });
 
-                let result = self
-                    .tool_registry
-                    .dispatch(
+                let result = tokio::select! {
+                    biased;
+                    _ = self.cancel_token.cancelled() => break 'react,
+                    r = self.tool_registry.dispatch(
                         &tc.name,
                         &tc.arguments,
                         &self.state_writer,
                         &self.tx,
                         self.scanner_type,
-                    )
-                    .await;
+                    ) => r,
+                };
 
                 self.security.record(AuditEvent::ToolResult {
                     tool: tc.name.clone(),

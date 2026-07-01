@@ -346,7 +346,7 @@ async fn run_once(
         _ => {
             cancel_token.cancel();
             scan_task.abort();
-            let _ = scan_task.await;
+            let _ = tokio::time::timeout(std::time::Duration::from_millis(750), scan_task).await;
         }
     }
 
