@@ -669,6 +669,105 @@ async fn scanner_cancel_emits_completed_and_returns() {
     );
 }
 
+#[tokio::test]
+async fn scanner_agent_blocks_out_of_scope_tool_calls_under_incremental_scope() {
+    let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let original_cwd = std::env::current_dir().unwrap();
+    let dir = TempDir::new().unwrap();
+    // A file that would show up in a real list_files/read_file call if scope
+    // enforcement did NOT kick in — proves the real filesystem tools never ran.
+    std::fs::write(dir.path().join("secret.rs"), "fn leaked() {}").unwrap();
+    std::fs::write(dir.path().join("keep.rs"), "fn keep() {}").unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let server = MockServer::start().await;
+
+    // First response: agent calls list_files, which is always out of scope.
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "list_files",
+                            "arguments": "{\"dir\": \".\"}"
+                        }
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
+        })))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Fallback for all subsequent requests: agent is done.
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "Scan complete."}}],
+            "usage": {"prompt_tokens": 30, "completion_tokens": 5, "total_tokens": 35}
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = Arc::new(OpenAICompatProvider::new(
+        server.uri(),
+        "gpt-4o".to_string(),
+        "test-key".to_string(),
+    ));
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let writer = Arc::new(StateWriter::new(dir.path()).unwrap());
+    let (tx, _rx) = mpsc::channel(16);
+
+    let agent = ScannerAgent::new_with_contexts(
+        ScannerType::Sast,
+        provider,
+        registry,
+        writer,
+        tx,
+        None,
+        None,
+        CancellationToken::new(),
+    )
+    .with_incremental_scope(Some(vec!["keep.rs".to_string()]));
+    let result = agent.run().await;
+
+    std::env::set_current_dir(&original_cwd).unwrap();
+    result.unwrap();
+
+    // The second request carries the tool result for the blocked list_files
+    // call. It must show the block message and must NOT show a real
+    // directory listing (which would include "secret.rs").
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests.len() >= 2,
+        "expected at least 2 requests, got {}",
+        requests.len()
+    );
+    let second_body: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
+    let messages = second_body["messages"].as_array().unwrap();
+    let tool_result = messages
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("expected a tool-result message in the second request");
+    let content = tool_result["content"].as_str().unwrap_or("");
+    assert!(
+        content.contains("[INCREMENTAL SCOPE]"),
+        "expected block message, got: {content}"
+    );
+    assert!(
+        !content.contains("secret.rs"),
+        "list_files must never actually run under incremental scope, got: {content}"
+    );
+}
+
 #[test]
 fn git_log_returns_string_outside_git_repo() {
     // Run from a temp dir with no .git â€” should not panic, just return graceful message
@@ -1329,6 +1428,73 @@ async fn orchestrator_incremental_carries_and_reconciles() {
     assert_eq!(delta.new, 1, "changed-file finding is new");
     let merged = zentra_cli::state::parse_findings(&writer.read_findings_raw().unwrap());
     assert_eq!(merged.len(), 2);
+}
+
+#[tokio::test]
+async fn orchestrator_scopes_sast_but_not_supply_chain_on_incremental_run() {
+    use zentra_cli::incremental::ChangeSet;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(OpenAICompatProvider::new(
+        server.uri(),
+        "gpt-4o".to_string(),
+        "key".to_string(),
+    ));
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let writer = Arc::new(StateWriter::open(dir.path(), false).unwrap());
+    let (tx, _rx) = mpsc::channel(32);
+
+    let change_set = ChangeSet {
+        changed: vec!["src/keep.rs".to_string()],
+        impact: vec!["src/keep.rs".to_string()],
+    };
+
+    OrchestratorAgent::new(provider, registry, writer, tx, CancellationToken::new())
+        .with_incremental(vec![], change_set)
+        .run(&[ScannerType::Sast, ScannerType::SupplyChain])
+        .await
+        .unwrap();
+
+    let sast_sys = scanners::system_prompt(ScannerType::Sast);
+    let supply_sys = scanners::system_prompt(ScannerType::SupplyChain);
+
+    let requests = server.received_requests().await.unwrap();
+    let mut checked_sast = false;
+    let mut checked_supply_chain = false;
+    for r in &requests {
+        let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        let system_content = messages[0]["content"].as_str().unwrap_or("");
+        let user_content = messages[1]["content"].as_str().unwrap_or("");
+        if system_content == sast_sys {
+            assert!(
+                user_content.contains("Incremental rescan") && user_content.contains("src/keep.rs"),
+                "SAST must receive the incremental-scope prompt, got: {user_content}"
+            );
+            checked_sast = true;
+        } else if system_content == supply_sys {
+            assert!(
+                !user_content.contains("Incremental rescan"),
+                "SupplyChain must NOT be scoped, got: {user_content}"
+            );
+            checked_supply_chain = true;
+        }
+    }
+    assert!(checked_sast, "expected a request with SAST's system prompt");
+    assert!(
+        checked_supply_chain,
+        "expected a request with SupplyChain's system prompt"
+    );
 }
 
 #[test]

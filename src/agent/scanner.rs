@@ -21,8 +21,89 @@ pub struct ScannerAgent {
     tx: mpsc::Sender<ScanEvent>,
     context: Option<String>,
     focus_context: Option<String>,
+    incremental_scope: Option<Vec<String>>,
     cancel_token: CancellationToken,
     security: SecurityContext,
+}
+
+/// Render the impact-set file list for both the initial prompt and blocked-call
+/// messages. Empty scope is a real but rare case (e.g. only manifest/IaC files
+/// changed, nothing relevant to this scanner) — it gets an explicit placeholder
+/// rather than a blank list.
+fn format_scope_list(scope: &[String]) -> String {
+    if scope.is_empty() {
+        "(none — no impacted files for this scanner this run)".to_string()
+    } else {
+        scope
+            .iter()
+            .map(|f| format!("- {f}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+fn normalize_scope_path(p: &str) -> String {
+    p.replace('\\', "/")
+}
+
+fn path_in_scope(path: &str, scope: &[String]) -> bool {
+    let p = normalize_scope_path(path);
+    scope.iter().any(|s| normalize_scope_path(s) == p)
+}
+
+/// Build the initial user prompt for a scanner run. Incremental scope, when
+/// present, replaces the generic "list the project files" opener with the
+/// exact impact-set file list so the model never needs to crawl the tree.
+fn initial_prompt_for(scanner_type: ScannerType, incremental_scope: Option<&[String]>) -> String {
+    if scanner_type == ScannerType::FrameworkAnalysis {
+        return "Begin the framework analysis. Start by listing the project files and reading the package manifest.".to_string();
+    }
+    match incremental_scope {
+        Some(scope) => format!(
+            "Incremental rescan. Only these files changed or are impacted since the last scan:\n{}\n\n\
+             Read exactly these files with read_file; do not call list_files. Report findings only for code in this set.",
+            format_scope_list(scope)
+        ),
+        None => "Begin your security scan. Start by listing the project files.".to_string(),
+    }
+}
+
+/// Returns `Err(detail)` when `name`/`args` fall outside `scope` for an
+/// incremental rescan. Only the three source-reading tools are restricted;
+/// every other tool (write_finding, git_*, run_audit, write_architecture) is
+/// always allowed regardless of scope.
+fn check_incremental_scope(
+    name: &str,
+    args: &serde_json::Value,
+    scope: &[String],
+) -> Result<(), String> {
+    match name {
+        "list_files" => Err(format!(
+            "Directory listing is disabled for this incremental scan. In-scope files:\n{}\n\
+             Read one of the files listed above with read_file instead.",
+            format_scope_list(scope)
+        )),
+        "read_file" => {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            if path_in_scope(path, scope) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "'{}' is out of scope for this incremental scan. In-scope files:\n{}",
+                    path,
+                    format_scope_list(scope)
+                ))
+            }
+        }
+        "grep_code" => match args.get("path").and_then(|v| v.as_str()) {
+            Some(p) if path_in_scope(p, scope) => Ok(()),
+            _ => Err(format!(
+                "grep_code must target a specific in-scope file for this incremental scan. In-scope files:\n{}",
+                format_scope_list(scope)
+            )),
+        },
+        _ => Ok(()),
+    }
 }
 
 impl ScannerAgent {
@@ -43,6 +124,7 @@ impl ScannerAgent {
             tx,
             context,
             focus_context: None,
+            incremental_scope: None,
             cancel_token,
             security: SecurityContext::disabled(),
         }
@@ -66,6 +148,7 @@ impl ScannerAgent {
             tx,
             context,
             focus_context,
+            incremental_scope: None,
             cancel_token,
             security: SecurityContext::disabled(),
         }
@@ -74,6 +157,13 @@ impl ScannerAgent {
     /// Attach the security envelope (audit log, tool gate, prompt guard).
     pub fn with_security(mut self, security: SecurityContext) -> Self {
         self.security = security;
+        self
+    }
+
+    /// Restrict this scanner to only the given files (incremental rescans).
+    /// `None` (the default) means no restriction — full-scan behavior.
+    pub fn with_incremental_scope(mut self, scope: Option<Vec<String>>) -> Self {
+        self.incremental_scope = scope;
         self
     }
 
@@ -99,11 +189,8 @@ for example, do not flag SQL injection if the ORM listed here auto-parameterises
             .into_iter()
             .filter(|t| allowed.contains(&t.name.as_str()))
             .collect();
-        let initial_prompt = if self.scanner_type == ScannerType::FrameworkAnalysis {
-            "Begin the framework analysis. Start by listing the project files and reading the package manifest.".to_string()
-        } else {
-            "Begin your security scan. Start by listing the project files.".to_string()
-        };
+        let initial_prompt =
+            initial_prompt_for(self.scanner_type, self.incremental_scope.as_deref());
         let mut messages: Vec<AgentMessage> = vec![AgentMessage::User(initial_prompt)];
 
         // Per-scanner security state.
@@ -233,6 +320,17 @@ for example, do not flag SQL injection if the ORM listed here auto-parameterises
                     continue;
                 }
 
+                if let Some(scope) = &self.incremental_scope {
+                    if let Err(blocked) = check_incremental_scope(&tc.name, &tc.arguments, scope) {
+                        messages.push(AgentMessage::ToolResult {
+                            id: tc.id.clone(),
+                            name: tc.name.clone(),
+                            content: format!("[INCREMENTAL SCOPE] Call blocked: {}", blocked),
+                        });
+                        continue;
+                    }
+                }
+
                 self.security.record(AuditEvent::ToolDispatched {
                     tool: tc.name.clone(),
                     arg_hash: sha256_json(&tc.arguments),
@@ -301,5 +399,132 @@ for example, do not flag SQL injection if the ORM listed here auto-parameterises
             .await
             .ok();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_prompt_unchanged_for_full_scan() {
+        assert_eq!(
+            initial_prompt_for(ScannerType::Sast, None),
+            "Begin your security scan. Start by listing the project files."
+        );
+    }
+
+    #[test]
+    fn initial_prompt_unchanged_for_framework_analysis_regardless_of_scope() {
+        let scope = vec!["src/a.rs".to_string()];
+        assert_eq!(
+            initial_prompt_for(ScannerType::FrameworkAnalysis, None),
+            initial_prompt_for(ScannerType::FrameworkAnalysis, Some(&scope)),
+        );
+        assert!(initial_prompt_for(ScannerType::FrameworkAnalysis, Some(&scope))
+            .contains("framework analysis"));
+    }
+
+    #[test]
+    fn initial_prompt_lists_impact_files_for_incremental_scan() {
+        let scope = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
+        let prompt = initial_prompt_for(ScannerType::Sast, Some(&scope));
+        assert!(prompt.contains("Incremental rescan"));
+        assert!(prompt.contains("src/a.rs"));
+        assert!(prompt.contains("src/b.rs"));
+        assert!(!prompt.contains("Start by listing the project files"));
+    }
+
+    #[test]
+    fn initial_prompt_handles_empty_scope() {
+        let prompt = initial_prompt_for(ScannerType::Sast, Some(&[]));
+        assert!(prompt.contains("none — no impacted files"));
+    }
+
+    #[test]
+    fn scope_check_always_blocks_list_files() {
+        let scope = vec!["src/a.rs".to_string()];
+        let err = check_incremental_scope("list_files", &serde_json::json!({"dir": "."}), &scope)
+            .unwrap_err();
+        assert!(err.contains("Directory listing is disabled"));
+        assert!(err.contains("src/a.rs"));
+    }
+
+    #[test]
+    fn scope_check_allows_read_file_in_scope() {
+        let scope = vec!["src/a.rs".to_string()];
+        assert!(check_incremental_scope(
+            "read_file",
+            &serde_json::json!({"path": "src/a.rs"}),
+            &scope
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn scope_check_blocks_read_file_out_of_scope() {
+        let scope = vec!["src/a.rs".to_string()];
+        let err = check_incremental_scope(
+            "read_file",
+            &serde_json::json!({"path": "src/other.rs"}),
+            &scope,
+        )
+        .unwrap_err();
+        assert!(err.contains("src/other.rs"));
+        assert!(err.contains("src/a.rs"));
+    }
+
+    #[test]
+    fn scope_check_normalizes_backslash_paths() {
+        let scope = vec!["src/a.rs".to_string()];
+        assert!(check_incremental_scope(
+            "read_file",
+            &serde_json::json!({"path": "src\\a.rs"}),
+            &scope
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn scope_check_grep_requires_in_scope_path() {
+        let scope = vec!["src/a.rs".to_string()];
+        assert!(check_incremental_scope(
+            "grep_code",
+            &serde_json::json!({"pattern": "foo", "path": "src/a.rs"}),
+            &scope
+        )
+        .is_ok());
+        assert!(check_incremental_scope(
+            "grep_code",
+            &serde_json::json!({"pattern": "foo"}),
+            &scope
+        )
+        .is_err());
+        assert!(check_incremental_scope(
+            "grep_code",
+            &serde_json::json!({"pattern": "foo", "path": "src/other.rs"}),
+            &scope
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn scope_check_never_blocks_other_tools() {
+        let scope = vec!["src/a.rs".to_string()];
+        for tool in [
+            "write_finding",
+            "write_report",
+            "git_log",
+            "git_diff",
+            "git_blame",
+            "git_status",
+            "run_audit",
+            "write_architecture",
+        ] {
+            assert!(
+                check_incremental_scope(tool, &serde_json::json!({}), &scope).is_ok(),
+                "{tool} must never be blocked by incremental scope"
+            );
+        }
     }
 }
