@@ -669,6 +669,105 @@ async fn scanner_cancel_emits_completed_and_returns() {
     );
 }
 
+#[tokio::test]
+async fn scanner_agent_blocks_out_of_scope_tool_calls_under_incremental_scope() {
+    let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let original_cwd = std::env::current_dir().unwrap();
+    let dir = TempDir::new().unwrap();
+    // A file that would show up in a real list_files/read_file call if scope
+    // enforcement did NOT kick in — proves the real filesystem tools never ran.
+    std::fs::write(dir.path().join("secret.rs"), "fn leaked() {}").unwrap();
+    std::fs::write(dir.path().join("keep.rs"), "fn keep() {}").unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let server = MockServer::start().await;
+
+    // First response: agent calls list_files, which is always out of scope.
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "list_files",
+                            "arguments": "{\"dir\": \".\"}"
+                        }
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
+        })))
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // Fallback for all subsequent requests: agent is done.
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "Scan complete."}}],
+            "usage": {"prompt_tokens": 30, "completion_tokens": 5, "total_tokens": 35}
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = Arc::new(OpenAICompatProvider::new(
+        server.uri(),
+        "gpt-4o".to_string(),
+        "test-key".to_string(),
+    ));
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let writer = Arc::new(StateWriter::new(dir.path()).unwrap());
+    let (tx, _rx) = mpsc::channel(16);
+
+    let agent = ScannerAgent::new_with_contexts(
+        ScannerType::Sast,
+        provider,
+        registry,
+        writer,
+        tx,
+        None,
+        None,
+        CancellationToken::new(),
+    )
+    .with_incremental_scope(Some(vec!["keep.rs".to_string()]));
+    let result = agent.run().await;
+
+    std::env::set_current_dir(&original_cwd).unwrap();
+    result.unwrap();
+
+    // The second request carries the tool result for the blocked list_files
+    // call. It must show the block message and must NOT show a real
+    // directory listing (which would include "secret.rs").
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests.len() >= 2,
+        "expected at least 2 requests, got {}",
+        requests.len()
+    );
+    let second_body: serde_json::Value = serde_json::from_slice(&requests[1].body).unwrap();
+    let messages = second_body["messages"].as_array().unwrap();
+    let tool_result = messages
+        .iter()
+        .find(|m| m["role"] == "tool")
+        .expect("expected a tool-result message in the second request");
+    let content = tool_result["content"].as_str().unwrap_or("");
+    assert!(
+        content.contains("[INCREMENTAL SCOPE]"),
+        "expected block message, got: {content}"
+    );
+    assert!(
+        !content.contains("secret.rs"),
+        "list_files must never actually run under incremental scope, got: {content}"
+    );
+}
+
 #[test]
 fn git_log_returns_string_outside_git_repo() {
     // Run from a temp dir with no .git â€” should not panic, just return graceful message
