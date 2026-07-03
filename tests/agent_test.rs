@@ -1430,6 +1430,73 @@ async fn orchestrator_incremental_carries_and_reconciles() {
     assert_eq!(merged.len(), 2);
 }
 
+#[tokio::test]
+async fn orchestrator_scopes_sast_but_not_supply_chain_on_incremental_run() {
+    use zentra_cli::incremental::ChangeSet;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(OpenAICompatProvider::new(
+        server.uri(),
+        "gpt-4o".to_string(),
+        "key".to_string(),
+    ));
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let writer = Arc::new(StateWriter::open(dir.path(), false).unwrap());
+    let (tx, _rx) = mpsc::channel(32);
+
+    let change_set = ChangeSet {
+        changed: vec!["src/keep.rs".to_string()],
+        impact: vec!["src/keep.rs".to_string()],
+    };
+
+    OrchestratorAgent::new(provider, registry, writer, tx, CancellationToken::new())
+        .with_incremental(vec![], change_set)
+        .run(&[ScannerType::Sast, ScannerType::SupplyChain])
+        .await
+        .unwrap();
+
+    let sast_sys = scanners::system_prompt(ScannerType::Sast);
+    let supply_sys = scanners::system_prompt(ScannerType::SupplyChain);
+
+    let requests = server.received_requests().await.unwrap();
+    let mut checked_sast = false;
+    let mut checked_supply_chain = false;
+    for r in &requests {
+        let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        let system_content = messages[0]["content"].as_str().unwrap_or("");
+        let user_content = messages[1]["content"].as_str().unwrap_or("");
+        if system_content == sast_sys {
+            assert!(
+                user_content.contains("Incremental rescan") && user_content.contains("src/keep.rs"),
+                "SAST must receive the incremental-scope prompt, got: {user_content}"
+            );
+            checked_sast = true;
+        } else if system_content == supply_sys {
+            assert!(
+                !user_content.contains("Incremental rescan"),
+                "SupplyChain must NOT be scoped, got: {user_content}"
+            );
+            checked_supply_chain = true;
+        }
+    }
+    assert!(checked_sast, "expected a request with SAST's system prompt");
+    assert!(
+        checked_supply_chain,
+        "expected a request with SupplyChain's system prompt"
+    );
+}
+
 #[test]
 fn scanner_prompts_request_classification() {
     use zentra_cli::scanners;
