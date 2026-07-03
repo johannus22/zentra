@@ -154,6 +154,9 @@ async fn run() -> anyhow::Result<()> {
             skip_network,
             stealth,
             escalate,
+            no_nmap,
+            whatweb,
+            html_fingerprint,
         }) => {
             commands::pentest::run(
                 url,
@@ -164,6 +167,9 @@ async fn run() -> anyhow::Result<()> {
                 skip_network,
                 stealth,
                 escalate,
+                no_nmap,
+                whatweb,
+                html_fingerprint,
             )
             .await?
         }
