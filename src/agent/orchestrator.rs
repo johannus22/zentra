@@ -28,6 +28,19 @@ const PARALLEL_SCANNERS: &[ScannerType] = &[
     ScannerType::IacScan,
 ];
 
+/// Which files a given scanner is restricted to on an incremental run.
+/// SupplyChain is deliberately exempt: dependency CVE status can change with
+/// zero local code changes, so scoping it to the diff would silently miss
+/// newly-disclosed vulnerabilities in unchanged manifests.
+fn incremental_scope_for(scanner_type: ScannerType, change_set: &ChangeSet) -> Option<Vec<String>> {
+    match scanner_type {
+        ScannerType::Sast | ScannerType::ApiScan | ScannerType::IacScan => {
+            Some(change_set.impact.clone())
+        }
+        _ => None,
+    }
+}
+
 pub struct OrchestratorAgent {
     provider: Arc<dyn LLMProvider>,
     tool_registry: Arc<ToolRegistry>,
@@ -141,6 +154,10 @@ Delete this file and re-run the scan to retry.",
                 let focus_ctx = self.focus_context.clone();
                 let token = cancel_token.clone();
                 let security = self.security.clone();
+                let incremental_scope = self
+                    .incremental
+                    .as_ref()
+                    .and_then(|ic| incremental_scope_for(scanner_type, &ic.change_set));
                 handles.push((
                     scanner_type,
                     tokio::spawn(async move {
@@ -155,6 +172,7 @@ Delete this file and re-run the scan to retry.",
                             token,
                         )
                         .with_security(security)
+                        .with_incremental_scope(incremental_scope)
                         .run()
                         .await
                     }),
@@ -247,5 +265,32 @@ Delete this file and re-run the scan to retry.",
         .with_security(self.security.clone())
         .run()
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn change_set(impact: &[&str]) -> ChangeSet {
+        ChangeSet {
+            changed: vec![],
+            impact: impact.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn scopes_sast_api_and_iac_but_not_supply_chain_or_others() {
+        let cs = change_set(&["src/a.rs", "src/b.rs"]);
+        let expected = Some(vec!["src/a.rs".to_string(), "src/b.rs".to_string()]);
+
+        assert_eq!(incremental_scope_for(ScannerType::Sast, &cs), expected);
+        assert_eq!(incremental_scope_for(ScannerType::ApiScan, &cs), expected);
+        assert_eq!(incremental_scope_for(ScannerType::IacScan, &cs), expected);
+
+        assert_eq!(incremental_scope_for(ScannerType::SupplyChain, &cs), None);
+        assert_eq!(incremental_scope_for(ScannerType::ThreatModel, &cs), None);
+        assert_eq!(incremental_scope_for(ScannerType::Report, &cs), None);
+        assert_eq!(incremental_scope_for(ScannerType::FrameworkAnalysis, &cs), None);
     }
 }
