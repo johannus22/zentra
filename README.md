@@ -241,7 +241,7 @@ A pentest run combines network reconnaissance, browser-driven exploration, scope
 5. Captures evidence and findings as the run progresses.
 6. Writes pentest reports and an executive summary under `.zentra/pentest/`.
 
-Pentest mode may read previous static findings from `.zentra/detailed-findings.md` to prioritize dynamic validation, but it keeps dynamic pentest output separate from static scan output.
+Pentest mode may read previous static findings from `.zentra/detailed-findings.md` to prioritize dynamic validation. In project mode (with `.zentra/config.json`), pentest findings are co-located with scan output; in standalone mode, pentest output is kept separate in the configured base directory.
 
 ### Scope controls
 
@@ -300,8 +300,8 @@ Pentest output location depends on where the command is run:
 
 | Context | Output directory |
 | --- | --- |
-| Inside an initialized Zentra project with `.zentra/config.json` | `./.zentra/pentest/` |
-| Outside an initialized project | `~/.zentra/pentest/<target-host>/<run-id>/` |
+| Inside an initialized Zentra project with `.zentra/config.json` | `./.zentra/pentest/<host>/<run-id>/` |
+| Outside an initialized project | `<Documents>/Zentra/pentest/<host>/<run-id>/` (or configured `output_dir`) |
 
 Standalone pentest mode does not create `.zentra/config.json` or edit `.gitignore` in the current directory. Zentra prints the resolved output directory when the run starts.
 
