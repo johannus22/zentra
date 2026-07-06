@@ -1979,7 +1979,7 @@ fn render_settings_output(frame: &mut Frame, area: Rect, state: &MenuState) {
             Style::default().fg(state.theme.accent),
         )),
         Line::from(Span::styled(
-            "Pentest reports & evidence go here. Blank = default.",
+            "Standalone runs only — project-mode pentest uses .zentra/pentest instead. Blank = default.",
             Style::default().fg(state.theme.text_dim),
         )),
         Line::from(""),
