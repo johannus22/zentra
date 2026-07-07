@@ -59,6 +59,9 @@ pub enum Commands {
         /// Use low-concurrency requests to reduce IDS detection risk
         #[arg(long)]
         stealth: bool,
+        /// Base delay in ms for stealth-mode request pacing (actual sleep is jittered to [delay, delay*2)); has no effect unless --stealth is set
+        #[arg(long = "stealth-delay", default_value_t = 500)]
+        stealth_delay_ms: u64,
         /// Reactively spawn escalation agents that chain confirmed High/Critical findings
         #[arg(long)]
         escalate: bool,

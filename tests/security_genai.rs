@@ -47,6 +47,7 @@ fn pentest_config(url: &str) -> PentestConfig {
         skip_network: false,
         network: zentra_cli::pentest::NetworkScanConfig::default(),
         stealth: false,
+        stealth_delay_ms: 500,
         escalate: false,
     }
 }
