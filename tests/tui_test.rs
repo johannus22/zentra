@@ -1220,7 +1220,7 @@ fn settings_status_set_on_theme_save_and_cleared_on_nav() {
     assert!(state.settings_status.is_none());
 }
 
-use zentra_cli::tui::menu::{clip_with_ellipsis, ProviderFormState};
+use zentra_cli::tui::menu::{clip_with_ellipsis, ProviderEditContext, ProviderFormState};
 use zentra_cli::tui::scan_ui::{
     clip_failed_error_preview, failed_error_preview_width, popup_items, scan_body_chunks,
 };
@@ -1548,6 +1548,178 @@ fn provider_form_save_with_reasoning_persists_effort() {
     assert_eq!(cfg.profiles["r1"].reasoning_effort.as_deref(), Some("high"));
 }
 
+/// Seed a temp config with one provider profile and return (config_path, TempDir).
+fn seed_provider_config(name: &str) -> (std::path::PathBuf, TempDir) {
+    use zentra_cli::config::ProviderProfile;
+    let dir = TempDir::new().unwrap();
+    let config_path = dir.path().join("config.toml");
+    let mut global = GlobalConfig::default();
+    global.profiles.insert(
+        name.to_string(),
+        ProviderProfile {
+            kind: "openai_compat".to_string(),
+            base_url: "https://api.example.com/v1".to_string(),
+            model: "some-model".to_string(),
+            keyless: false,
+            auth_method: AuthMethod::ApiKey,
+            context_window: Some(128_000),
+            reasoning_effort: Some("high".to_string()),
+        },
+    );
+    global.default_profile = Some(name.to_string());
+    global.save_to(&config_path).unwrap();
+    (config_path, dir)
+}
+
+#[test]
+fn open_provider_edit_form_prefills_from_profile() {
+    let (config_path, _dir) = seed_provider_config("prod");
+    let mut state = MenuState::new(
+        true,
+        true,
+        vec![("prod".to_string(), "some-model".to_string())],
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+    );
+    state.provider_idx = 0;
+
+    state.open_provider_edit_form_from(&config_path);
+
+    assert_eq!(state.settings_detail, DetailMode::ProviderForm);
+    let editing = state
+        .form
+        .editing
+        .as_ref()
+        .expect("form should be in edit mode");
+    assert_eq!(editing.name, "prod");
+    assert_eq!(editing.kind, "openai_compat");
+    assert!(!editing.keyless);
+    assert_eq!(state.form.model, "some-model");
+    assert_eq!(state.form.base_url, "https://api.example.com/v1");
+    assert_eq!(state.form.reasoning_effort, "high");
+    assert_eq!(state.form.profile_name, "prod");
+    assert_eq!(
+        state.form.api_key, "",
+        "key field starts blank (blank = keep current)"
+    );
+    // Cursor lands on the API-key field for quick rotation.
+    assert_eq!(state.form.focused_field, 4);
+}
+
+#[test]
+fn edit_save_with_blank_key_preserves_existing_key() {
+    let (config_path, _dir) = seed_provider_config("prod");
+
+    let form = ProviderFormState {
+        provider_idx: 0,
+        model: "new-model".to_string(),
+        base_url: "https://api.example.com/v2".to_string(),
+        auth_method: AuthMethod::ApiKey,
+        api_key: String::new(), // blank → keep current key
+        profile_name: "prod".to_string(),
+        reasoning_effort: String::new(),
+        focused_field: 4,
+        error: None,
+        editing: Some(ProviderEditContext {
+            name: "prod".to_string(),
+            kind: "openai_compat".to_string(),
+            keyless: false,
+        }),
+    };
+
+    let saved_name = form
+        .save_with_oauth_to_path_using(
+            &config_path,
+            || unreachable!(),
+            |_, _| Ok(()),
+            |_| Ok(()),
+            |_, _| panic!("store_key must NOT be called when the key field is blank"),
+            |_| Ok(()),
+        )
+        .unwrap();
+
+    assert_eq!(saved_name, "prod");
+    let cfg = GlobalConfig::load_from(&config_path).unwrap();
+    let profile = cfg.profiles.get("prod").unwrap();
+    // Editable fields were updated, identity (kind) preserved, key untouched.
+    assert_eq!(profile.model, "new-model");
+    assert_eq!(profile.base_url, "https://api.example.com/v2");
+    assert_eq!(profile.kind, "openai_compat");
+}
+
+#[test]
+fn edit_save_with_new_key_rotates_under_original_name() {
+    let (config_path, _dir) = seed_provider_config("prod");
+    let stored_keys = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+    let form = ProviderFormState {
+        provider_idx: 0,
+        model: "some-model".to_string(),
+        base_url: "https://api.example.com/v1".to_string(),
+        auth_method: AuthMethod::ApiKey,
+        api_key: "sk-rotated-999".to_string(),
+        profile_name: "prod".to_string(),
+        reasoning_effort: String::new(),
+        focused_field: 4,
+        error: None,
+        editing: Some(ProviderEditContext {
+            name: "prod".to_string(),
+            kind: "openai_compat".to_string(),
+            keyless: false,
+        }),
+    };
+
+    form.save_with_oauth_to_path_using(
+        &config_path,
+        || unreachable!(),
+        |_, _| Ok(()),
+        |_| Ok(()),
+        {
+            let stored_keys = stored_keys.clone();
+            move |profile_name, api_key| {
+                stored_keys
+                    .lock()
+                    .unwrap()
+                    .push((profile_name.to_string(), api_key.to_string()));
+                Ok(())
+            }
+        },
+        |_| Ok(()),
+    )
+    .unwrap();
+
+    assert_eq!(
+        stored_keys.lock().unwrap().as_slice(),
+        [("prod".to_string(), "sk-rotated-999".to_string())]
+    );
+}
+
+#[test]
+fn edit_mode_validate_allows_blank_key() {
+    let form = ProviderFormState {
+        provider_idx: 0,
+        model: "m".to_string(),
+        base_url: "https://api.example.com/v1".to_string(),
+        auth_method: AuthMethod::ApiKey,
+        api_key: String::new(),
+        profile_name: "prod".to_string(),
+        reasoning_effort: String::new(),
+        focused_field: 4,
+        error: None,
+        editing: Some(ProviderEditContext {
+            name: "prod".to_string(),
+            kind: "openai_compat".to_string(),
+            keyless: false,
+        }),
+    };
+    assert!(
+        form.validate().is_ok(),
+        "blank key is valid while editing (means keep current)"
+    );
+}
+
 #[test]
 fn provider_form_save_with_blank_reasoning_omits_effort() {
     let dir = TempDir::new().unwrap();
@@ -1679,7 +1851,7 @@ fn provider_selector_arms_delete_for_non_active_profile() {
 
     assert_eq!(
         provider_selector_footer_hint(&state),
-        " ↑↓ navigate · Enter use · a add · d delete · ← back"
+        " ↑↓ navigate · Enter use · a add · e edit · d delete · ← back"
     );
 
     let deleted = state.handle_provider_delete_key().unwrap();
@@ -1722,7 +1894,7 @@ fn provider_selector_blocks_delete_for_active_profile() {
     assert_eq!(state.profiles.len(), 2);
     assert_eq!(
         provider_selector_footer_hint(&state),
-        " ↑↓ navigate · Enter use · a add · d delete · ← back"
+        " ↑↓ navigate · Enter use · a add · e edit · d delete · ← back"
     );
 }
 

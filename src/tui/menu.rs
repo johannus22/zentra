@@ -93,7 +93,7 @@ pub fn provider_selector_footer_hint(state: &MenuState) -> &'static str {
     if state.pending_delete_profile.is_some() {
         " d again confirm delete · ↑↓ move cancel · ← back"
     } else {
-        " ↑↓ navigate · Enter use · a add · d delete · ← back"
+        " ↑↓ navigate · Enter use · a add · e edit · d delete · ← back"
     }
 }
 
@@ -274,6 +274,18 @@ enum OAuthModalEvent {
     Completed(anyhow::Result<crate::auth::OAuthTokens>),
 }
 
+/// When set, the provider form is editing an existing profile rather than
+/// adding a new one. Carries the original `kind`/`keyless` so the save path
+/// stays correct even though `provider_idx` → `kind` is lossy (many providers
+/// share `kind: "openai_compat"`), and the original `name` so the key file is
+/// never orphaned by a rename.
+#[derive(Clone, Debug)]
+pub struct ProviderEditContext {
+    pub name: String,
+    pub kind: String,
+    pub keyless: bool,
+}
+
 #[derive(Clone)]
 pub struct ProviderFormState {
     pub provider_idx: usize,
@@ -285,6 +297,8 @@ pub struct ProviderFormState {
     pub reasoning_effort: String,
     pub focused_field: usize,
     pub error: Option<String>,
+    /// `None` = adding a new provider; `Some` = editing an existing one.
+    pub editing: Option<ProviderEditContext>,
 }
 
 /// Default profile name to pre-fill for a given provider. "custom" is a generic
@@ -311,6 +325,7 @@ impl Default for ProviderFormState {
             reasoning_effort: String::new(),
             focused_field: 0,
             error: None,
+            editing: None,
         }
     }
 }
@@ -327,6 +342,7 @@ impl std::fmt::Debug for ProviderFormState {
             .field("reasoning_effort", &self.reasoning_effort)
             .field("focused_field", &self.focused_field)
             .field("error", &self.error)
+            .field("editing", &self.editing)
             .finish()
     }
 }
@@ -363,6 +379,11 @@ impl ProviderFormState {
     }
 
     pub fn cycle_provider(&mut self, delta: isize) {
+        // Provider type is locked while editing an existing profile — changing
+        // it would rewrite the stored `kind` and break the profile.
+        if self.editing.is_some() {
+            return;
+        }
         let len = KNOWN_PROVIDER_NAMES.len() as isize;
         let new_idx = ((self.provider_idx as isize + delta).rem_euclid(len)) as usize;
         self.provider_idx = new_idx;
@@ -398,7 +419,10 @@ impl ProviderFormState {
             2 => self.base_url.push(c),
             field if field == self.reasoning_field_idx() => self.reasoning_effort.push(c),
             field if field == self.api_key_field_idx() => self.api_key.push(c),
-            field if field == self.profile_name_field_idx() => self.profile_name.push(c),
+            // Profile name is locked while editing (renaming would orphan the key file).
+            field if field == self.profile_name_field_idx() && self.editing.is_none() => {
+                self.profile_name.push(c)
+            }
             _ => {}
         }
     }
@@ -417,7 +441,8 @@ impl ProviderFormState {
             field if field == self.api_key_field_idx() => {
                 self.api_key.pop();
             }
-            field if field == self.profile_name_field_idx() => {
+            // Profile name is locked while editing (renaming would orphan the key file).
+            field if field == self.profile_name_field_idx() && self.editing.is_none() => {
                 self.profile_name.pop();
             }
             _ => {}
@@ -458,7 +483,9 @@ impl ProviderFormState {
         if !is_cli_provider {
             crate::config::validation::validate_provider_base_url(&self.base_url)?;
         }
-        if self.requires_api_key() && self.api_key.trim().is_empty() {
+        // While editing, a blank key means "keep the current one", so don't
+        // require it. When adding, a key-requiring provider must supply one.
+        if self.editing.is_none() && self.requires_api_key() && self.api_key.trim().is_empty() {
             anyhow::bail!("API key cannot be empty for this provider");
         }
         Ok(())
@@ -536,11 +563,18 @@ impl ProviderFormState {
         let cw = model_context_window(&self.model);
         let oauth_tokens = None;
 
+        // When editing, the profile's identity (name/kind/keyless) comes from
+        // the original profile, not the form's provider selector.
+        let (kind, keyless, target_name) = match &self.editing {
+            Some(ctx) => (ctx.kind.clone(), ctx.keyless, ctx.name.clone()),
+            None => (d.kind.clone(), d.keyless, self.profile_name.clone()),
+        };
+
         let profile = ProviderProfile {
-            kind: d.kind.clone(),
+            kind,
             base_url: self.base_url.clone(),
             model: self.model.clone(),
-            keyless: d.keyless,
+            keyless,
             auth_method: AuthMethod::ApiKey,
             context_window: Some(cw),
             reasoning_effort: {
@@ -550,9 +584,9 @@ impl ProviderFormState {
         };
 
         if let Some(ref tokens) = oauth_tokens {
-            store_oauth(&self.profile_name, tokens)?;
-            if let Err(delete_err) = delete_key(&self.profile_name) {
-                if let Err(cleanup_err) = delete_oauth(&self.profile_name) {
+            store_oauth(&target_name, tokens)?;
+            if let Err(delete_err) = delete_key(&target_name) {
+                if let Err(cleanup_err) = delete_oauth(&target_name) {
                     return Err(anyhow::anyhow!(
                         "{}; additionally failed to rollback OAuth tokens: {}",
                         delete_err,
@@ -561,18 +595,20 @@ impl ProviderFormState {
                 }
                 return Err(delete_err);
             }
-        } else if !d.keyless && !self.api_key.is_empty() {
-            store_key(&self.profile_name, &self.api_key)?;
+        } else if !keyless && !self.api_key.is_empty() {
+            // A blank key while editing means "keep the current key" — the file
+            // is left untouched. A typed key rotates it in place.
+            store_key(&target_name, &self.api_key)?;
         }
 
         let mut global = GlobalConfig::load_from(config_path)?;
-        global.profiles.insert(self.profile_name.clone(), profile);
+        global.profiles.insert(target_name.clone(), profile);
         if global.default_profile.is_none() {
-            global.default_profile = Some(self.profile_name.clone());
+            global.default_profile = Some(target_name.clone());
         }
         if let Err(save_err) = global.save_to(config_path) {
             if oauth_tokens.is_some() {
-                if let Err(cleanup_err) = delete_oauth(&self.profile_name) {
+                if let Err(cleanup_err) = delete_oauth(&target_name) {
                     return Err(anyhow::anyhow!(
                         "{}; additionally failed to rollback OAuth tokens: {}",
                         save_err,
@@ -583,7 +619,7 @@ impl ProviderFormState {
             return Err(save_err);
         }
 
-        Ok(self.profile_name.clone())
+        Ok(target_name)
     }
 }
 
@@ -807,6 +843,63 @@ impl MenuState {
     /// Open a fresh inline provider form from the provider list.
     pub fn open_provider_form(&mut self) {
         self.form = ProviderFormState::default();
+        self.settings_detail = DetailMode::ProviderForm;
+    }
+
+    /// Open the provider form pre-filled from the currently selected profile so
+    /// its API key can be rotated (or other fields edited) in place. The cursor
+    /// lands on the API-key field, since key rotation is the primary use case.
+    pub fn open_provider_edit_form(&mut self) {
+        let path = match crate::config::GlobalConfig::default_path() {
+            Ok(p) => p,
+            Err(e) => {
+                self.settings_status = Some((false, format!("Cannot locate config: {e}")));
+                return;
+            }
+        };
+        self.open_provider_edit_form_from(&path);
+    }
+
+    /// Path-injectable core of [`open_provider_edit_form`] (see that method).
+    /// Split out so tests can drive it against a temp config.
+    pub fn open_provider_edit_form_from(&mut self, config_path: &std::path::Path) {
+        let Some((name, _)) = self.profiles.get(self.provider_idx).cloned() else {
+            self.settings_status = Some((false, "No provider selected to edit".to_string()));
+            return;
+        };
+        let global = crate::config::GlobalConfig::load_from(config_path).unwrap_or_default();
+        let Some(profile) = global.profiles.get(&name) else {
+            self.settings_status = Some((false, format!("Provider “{name}” not found in config")));
+            return;
+        };
+
+        // Best-effort display index: first known provider whose kind matches,
+        // else "custom". This only drives the (locked) provider label.
+        let provider_idx = KNOWN_PROVIDER_NAMES
+            .iter()
+            .position(|n| provider_defaults(n).kind == profile.kind)
+            .or_else(|| KNOWN_PROVIDER_NAMES.iter().position(|n| *n == "custom"))
+            .unwrap_or(0);
+
+        let mut form = ProviderFormState {
+            provider_idx,
+            model: profile.model.clone(),
+            base_url: profile.base_url.clone(),
+            auth_method: AuthMethod::ApiKey,
+            api_key: String::new(), // blank = keep current key
+            profile_name: name.clone(),
+            reasoning_effort: profile.reasoning_effort.clone().unwrap_or_default(),
+            focused_field: 0,
+            error: None,
+            editing: Some(ProviderEditContext {
+                name: name.clone(),
+                kind: profile.kind.clone(),
+                keyless: profile.keyless,
+            }),
+        };
+        form.focused_field = form.api_key_field_idx();
+
+        self.form = form;
         self.settings_detail = DetailMode::ProviderForm;
     }
 
@@ -1240,6 +1333,7 @@ fn run_menu_loop(
                                         KeyCode::Up => state.provider_selector_move_up(),
                                         KeyCode::Down => state.provider_selector_move_down(),
                                         KeyCode::Char('a') => state.open_provider_form(),
+                                        KeyCode::Char('e') => state.open_provider_edit_form(),
                                         KeyCode::Char('d') => {
                                             state.handle_provider_delete_key()?;
                                         }
@@ -1280,14 +1374,21 @@ fn run_menu_loop(
                                                     if state.form.focused_field
                                                         == state.form.save_field_idx()
                                                     {
+                                                        let was_editing =
+                                                            state.form.editing.is_some();
                                                         match state.form.save() {
                                                             Ok(name) => {
                                                                 let applied = state
                                                                     .apply_provider_change(&name);
+                                                                let verb = if was_editing {
+                                                                    "updated"
+                                                                } else {
+                                                                    "saved"
+                                                                };
                                                                 state.settings_status = Some(match applied {
                                                                     Ok(()) => (
                                                                         true,
-                                                                        format!("Provider “{name}” saved"),
+                                                                        format!("Provider “{name}” {verb}"),
                                                                     ),
                                                                     Err(e) => (
                                                                         false,
@@ -1862,11 +1963,12 @@ fn render_settings_provider_form(frame: &mut Frame, area: Rect, state: &MenuStat
     let cursor = |idx: usize| if form.focused_field == idx { "▶ " } else { "  " };
     let pad = |s: String| format!("{:width$}", s, width = max_field_width);
 
+    let title = match &form.editing {
+        Some(ctx) => format!("Edit provider — {}", ctx.name),
+        None => "Add provider".to_string(),
+    };
     let mut lines = vec![
-        Line::from(Span::styled(
-            "Add provider",
-            Style::default().fg(state.theme.accent),
-        )),
+        Line::from(Span::styled(title, Style::default().fg(state.theme.accent))),
         Line::from(vec![
             Span::raw("  Provider   "),
             Span::styled(format!("◀ {} ▶", provider_name), field_style(0)),
@@ -1900,13 +2002,28 @@ fn render_settings_provider_form(frame: &mut Frame, area: Rect, state: &MenuStat
             Span::raw(cursor(form.api_key_field_idx())),
             Span::styled("API Key    ", field_style(form.api_key_field_idx())),
             Span::styled(
-                pad(clip_with_ellipsis(&form.masked_key(), max_field_width)),
+                pad(clip_with_ellipsis(
+                    if form.editing.is_some() && form.api_key.is_empty() {
+                        "(blank = keep current)".to_string()
+                    } else {
+                        form.masked_key()
+                    }
+                    .as_str(),
+                    max_field_width,
+                )),
                 field_style(form.api_key_field_idx()),
             ),
         ]),
         Line::from(vec![
             Span::raw(cursor(form.profile_name_field_idx())),
-            Span::styled("Name       ", field_style(form.profile_name_field_idx())),
+            Span::styled(
+                if form.editing.is_some() {
+                    "Name (🔒) "
+                } else {
+                    "Name       "
+                },
+                field_style(form.profile_name_field_idx()),
+            ),
             Span::styled(
                 pad(clip_with_ellipsis(&form.profile_name, max_field_width)),
                 field_style(form.profile_name_field_idx()),
