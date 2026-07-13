@@ -418,10 +418,24 @@ async fn claude_complete_with_tools(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        // `claude -p --output-format json` reports some failures (e.g. an
+        // unrecognized --model) as a JSON error object on stdout while still
+        // exiting non-zero, leaving stderr empty. Fall back to that when
+        // stderr has nothing useful to say.
+        let detail = if stderr.trim().is_empty() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            match parse_claude_json_output(&stdout) {
+                Err(e) => e.to_string(),
+                Ok(text) if !stdout.trim().is_empty() => text,
+                Ok(_) => "(no output)".to_string(),
+            }
+        } else {
+            stderr.to_string()
+        };
         return Err(anyhow::anyhow!(
             "claude exited {}: {}",
             output.status,
-            stderr
+            detail
         ));
     }
 
