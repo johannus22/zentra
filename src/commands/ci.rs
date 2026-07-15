@@ -208,6 +208,10 @@ fn print_startup_summary(context: &CiContext) {
 }
 
 async fn load_provider() -> Result<Arc<dyn LLMProvider>> {
+    if let Some((profile, api_key)) = provider_config_from_env() {
+        return Ok(build_provider(&profile, api_key));
+    }
+
     let global = GlobalConfig::load()?;
     let profile_name = global.default_profile.clone().ok_or_else(|| {
         anyhow::anyhow!("No provider configured. Run 'zentra config setup' first.")
@@ -232,7 +236,35 @@ async fn load_provider() -> Result<Arc<dyn LLMProvider>> {
         })?
     };
 
-    let provider: Arc<dyn LLMProvider> = match profile.kind.as_str() {
+    Ok(build_provider(&profile, api_key))
+}
+
+/// Build a provider profile straight from env vars, for headless CI runners that
+/// have no `~/.zentra/config.toml` and no home-directory keychain. Requires
+/// `ZENTRA_API_KEY`, `ZENTRA_PROVIDER_BASE_URL`, and `ZENTRA_PROVIDER_MODEL`; returns
+/// `None` if any are unset so callers fall back to the `GlobalConfig`/keychain path.
+fn provider_config_from_env() -> Option<(ProviderProfile, String)> {
+    let non_empty = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+
+    let api_key = non_empty("ZENTRA_API_KEY")?;
+    let base_url = non_empty("ZENTRA_PROVIDER_BASE_URL")?;
+    let model = non_empty("ZENTRA_PROVIDER_MODEL")?;
+
+    let profile = ProviderProfile {
+        kind: non_empty("ZENTRA_PROVIDER_KIND").unwrap_or_else(|| "openai_compat".to_string()),
+        base_url,
+        model,
+        keyless: false,
+        auth_method: AuthMethod::ApiKey,
+        context_window: non_empty("ZENTRA_PROVIDER_CONTEXT_WINDOW").and_then(|v| v.parse().ok()),
+        reasoning_effort: non_empty("ZENTRA_PROVIDER_REASONING_EFFORT"),
+    };
+
+    Some((profile, api_key))
+}
+
+fn build_provider(profile: &ProviderProfile, api_key: String) -> Arc<dyn LLMProvider> {
+    match profile.kind.as_str() {
         "anthropic" => Arc::new(AnthropicProvider::new(
             profile.base_url.clone(),
             profile.model.clone(),
@@ -242,9 +274,7 @@ async fn load_provider() -> Result<Arc<dyn LLMProvider>> {
             OpenAICompatProvider::new(profile.base_url.clone(), profile.model.clone(), api_key)
                 .with_reasoning(profile.reasoning_effort.clone()),
         ),
-    };
-
-    Ok(provider)
+    }
 }
 
 fn ensure_supported_ci_auth(profile_name: &str, profile: &ProviderProfile) -> Result<()> {
@@ -333,4 +363,130 @@ fn is_iac_file(path: &str) -> bool {
 
 fn file_name(path: &str) -> &str {
     path.rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ENV_VARS: &[&str] = &[
+        "ZENTRA_API_KEY",
+        "ZENTRA_PROVIDER_BASE_URL",
+        "ZENTRA_PROVIDER_MODEL",
+        "ZENTRA_PROVIDER_KIND",
+        "ZENTRA_PROVIDER_REASONING_EFFORT",
+        "ZENTRA_PROVIDER_CONTEXT_WINDOW",
+    ];
+
+    static ENV_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+    fn env_lock() -> &'static std::sync::Mutex<()> {
+        ENV_LOCK.get_or_init(|| std::sync::Mutex::new(()))
+    }
+
+    /// Clears all provider env vars for the duration of the guard, restoring
+    /// their prior values on drop so tests don't leak state into each other.
+    struct EnvGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn new() -> Self {
+            let saved = ENV_VARS
+                .iter()
+                .map(|k| (*k, std::env::var(k).ok()))
+                .collect();
+            for k in ENV_VARS {
+                std::env::remove_var(k);
+            }
+            Self { saved }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (k, v) in &self.saved {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn provider_config_from_env_none_when_unset() {
+        let _lock = env_lock().lock().unwrap();
+        let _guard = EnvGuard::new();
+        assert!(provider_config_from_env().is_none());
+    }
+
+    #[test]
+    fn provider_config_from_env_none_when_partially_set() {
+        let _lock = env_lock().lock().unwrap();
+        let _guard = EnvGuard::new();
+        std::env::set_var("ZENTRA_API_KEY", "secret");
+        std::env::set_var("ZENTRA_PROVIDER_BASE_URL", "https://example.test");
+        // ZENTRA_PROVIDER_MODEL intentionally left unset.
+        assert!(provider_config_from_env().is_none());
+    }
+
+    #[test]
+    fn provider_config_from_env_builds_profile_with_defaults() {
+        let _lock = env_lock().lock().unwrap();
+        let _guard = EnvGuard::new();
+        std::env::set_var("ZENTRA_API_KEY", "secret");
+        std::env::set_var("ZENTRA_PROVIDER_BASE_URL", "https://example.test");
+        std::env::set_var("ZENTRA_PROVIDER_MODEL", "glm-4.6");
+
+        let (profile, api_key) = provider_config_from_env().expect("should be Some");
+        assert_eq!(api_key, "secret");
+        assert_eq!(profile.kind, "openai_compat");
+        assert_eq!(profile.base_url, "https://example.test");
+        assert_eq!(profile.model, "glm-4.6");
+        assert!(!profile.keyless);
+        assert!(matches!(profile.auth_method, AuthMethod::ApiKey));
+        assert_eq!(profile.context_window, None);
+        assert_eq!(profile.reasoning_effort, None);
+    }
+
+    #[test]
+    fn provider_config_from_env_honors_optional_overrides() {
+        let _lock = env_lock().lock().unwrap();
+        let _guard = EnvGuard::new();
+        std::env::set_var("ZENTRA_API_KEY", "secret");
+        std::env::set_var("ZENTRA_PROVIDER_BASE_URL", "https://api.anthropic.com");
+        std::env::set_var("ZENTRA_PROVIDER_MODEL", "claude-sonnet-5");
+        std::env::set_var("ZENTRA_PROVIDER_KIND", "anthropic");
+        std::env::set_var("ZENTRA_PROVIDER_REASONING_EFFORT", "high");
+        std::env::set_var("ZENTRA_PROVIDER_CONTEXT_WINDOW", "200000");
+
+        let (profile, _) = provider_config_from_env().expect("should be Some");
+        assert_eq!(profile.kind, "anthropic");
+        assert_eq!(profile.reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(profile.context_window, Some(200_000));
+    }
+
+    #[test]
+    fn build_provider_picks_anthropic_only_for_anthropic_kind() {
+        let anthropic = ProviderProfile {
+            kind: "anthropic".to_string(),
+            base_url: "https://api.anthropic.com".to_string(),
+            model: "claude-sonnet-5".to_string(),
+            keyless: false,
+            auth_method: AuthMethod::ApiKey,
+            context_window: None,
+            reasoning_effort: None,
+        };
+        // build_provider returns a trait object; the concrete type can't be
+        // downcast here without exposing internals, so we only assert it
+        // doesn't panic for either branch.
+        let _ = build_provider(&anthropic, "key".to_string());
+
+        let other = ProviderProfile {
+            kind: "openai_compat".to_string(),
+            ..anthropic
+        };
+        let _ = build_provider(&other, "key".to_string());
+    }
 }

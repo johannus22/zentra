@@ -49,7 +49,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Install Zentra CLI
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/johannus22/zentra-cli/releases/latest/download/zentra-cli-installer.sh | sh
       - name: Run Zentra CI
+        env:
+          ZENTRA_API_KEY: ${{ secrets.ZENTRA_API_KEY }}
+          ZENTRA_PROVIDER_BASE_URL: ${{ secrets.ZENTRA_PROVIDER_BASE_URL }}
+          ZENTRA_PROVIDER_MODEL: ${{ vars.ZENTRA_PROVIDER_MODEL }}
         run: zentra ci
       - name: Upload Zentra CI report
         uses: actions/upload-artifact@v4

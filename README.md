@@ -139,16 +139,22 @@ The generated workflow:
 - Runs on pull requests.
 - Uses `actions/checkout@v4` with `fetch-depth: 0`.
 - Grants `contents: read` and `pull-requests: write`.
+- Installs the `zentra` binary via the release installer script.
 - Runs `zentra ci`.
 - Uploads `.zentra/ci-report.md` and `.zentra/ci-report.json` as artifacts.
 
-Set your provider key as a GitHub Actions secret, for example:
+`zentra ci` reads provider credentials from these environment variables, so it can run on a fresh runner with no `~/.zentra/config.toml` and no keychain. Set them under **Settings → Secrets and variables → Actions**:
 
-```text
-ZENTRA_API_KEY
-```
+| Variable | Required | Notes |
+|---|---|---|
+| `ZENTRA_API_KEY` | yes | Secret — the LLM provider API key. |
+| `ZENTRA_PROVIDER_BASE_URL` | yes | Secret or variable — e.g. `https://api.anthropic.com` or your OpenAI-compatible endpoint. |
+| `ZENTRA_PROVIDER_MODEL` | yes | Variable — e.g. `claude-sonnet-5` or `glm-4.6`. |
+| `ZENTRA_PROVIDER_KIND` | no | Defaults to `openai_compat`. Set to `anthropic` to use the native Anthropic provider. |
+| `ZENTRA_PROVIDER_REASONING_EFFORT` | no | Passed through to OpenAI-compatible providers. |
+| `ZENTRA_PROVIDER_CONTEXT_WINDOW` | no | Overrides the provider's default context window. |
 
-Use the environment variable expected by your provider/profile setup.
+If none of `ZENTRA_API_KEY`/`ZENTRA_PROVIDER_BASE_URL`/`ZENTRA_PROVIDER_MODEL` are set, `zentra ci` falls back to the profile configured via `zentra config setup` in `~/.zentra/config.toml`.
 
 ### Generate GitLab CI workflow
 
