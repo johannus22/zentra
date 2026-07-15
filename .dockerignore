@@ -1,0 +1,9 @@
+target
+.git
+.zentra
+.github
+.worktrees
+.claude
+docs
+.superpowers
+*.log
