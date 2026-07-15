@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+    # Temporary, throwaway-branch-only filter: this test PR only adds
+    # .github/workflows/zentra.yml, so skip the full test/clippy matrix here.
+    # Never merges to main, so main's real CI trigger is unaffected.
+    paths-ignore:
+      - ".github/workflows/zentra.yml"
 
 permissions:
   contents: read
