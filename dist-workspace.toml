@@ -9,6 +9,9 @@ cargo-dist-version = "0.32.0"
 ci = "github"
 # The installers to generate for each app
 installers = ["shell", "powershell"]
+# release.yml intentionally drops the pull_request trigger (CI only runs on
+# merge to main, not every PR) -- tell dist not to treat that as drift.
+allow-dirty = ["ci"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 
