@@ -24,7 +24,7 @@ jobs:
         env:
           ZENTRA_API_KEY: ${{ secrets.ZENTRA_API_KEY }}
           ZENTRA_PROVIDER_BASE_URL: ${{ secrets.ZENTRA_PROVIDER_BASE_URL }}
-          ZENTRA_PROVIDER_MODEL: ${{ vars.ZENTRA_PROVIDER_MODEL }}
+          ZENTRA_PROVIDER_MODEL: ${{ secrets.ZENTRA_PROVIDER_MODEL }}
         run: zentra ci
       - name: Upload Zentra CI report
         uses: actions/upload-artifact@v4
