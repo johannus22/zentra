@@ -1,14 +1,27 @@
 # GitLab CI mirror of .github/workflows/{ci,audit,docker,release}.yml
 #
-# Parity notes (see AGENTS.md / CLAUDE.md for the GitHub-side source of truth):
-# - test/clippy mirrors ci.yml. Linux runs on GitLab shared/self-hosted runners.
-#   macOS/Windows jobs are included but gated behind `test:macos`/`test:windows`
-#   CI/CD variables since this is self-hosted GitLab Enterprise -- flip them on
-#   once you confirm runners with the `macos`/`windows` tags exist on this instance.
-# - audit mirrors audit.yml (RustSec advisory scan via cargo-audit).
+# Remote layout: `origin` fetches from GitHub only, but pushes to BOTH GitHub
+# and GitLab (2 push URLs), so every `git push origin` triggers GitHub Actions
+# and this pipeline for the same refs. This file keeps the two sides in parity:
+# - test/clippy mirrors ci.yml. GitHub CI is deliberately post-merge only
+#   (push to main, no pull_request trigger), so this pipeline has no
+#   merge_request rules either. macOS/Windows jobs are gated behind the
+#   `ZENTRA_CI_MACOS`/`ZENTRA_CI_WINDOWS` CI/CD variables since this is
+#   self-hosted GitLab Enterprise -- flip them on once you confirm runners
+#   with the `macos`/`windows` tags exist on this instance.
+# - `interruptible: true` on test/audit mirrors the GitHub `concurrency:
+#   cancel-in-progress` blocks. Also enable "Auto-cancel redundant pipelines"
+#   in the GitLab project settings (Settings > Merge requests) for it to
+#   actually cancel older runs.
+# - audit mirrors audit.yml (RustSec advisory scan via cargo-audit). The
+#   weekly cron (Mon 06:00 UTC) has no YAML equivalent -- create a pipeline
+#   schedule in the GitLab UI (Build > Pipeline schedules); the `schedule`
+#   rule below matches it.
 # - docker mirrors docker.yml, but pushes to the GitLab Container Registry
 #   ($CI_REGISTRY_IMAGE) instead of GHCR, using the built-in CI_JOB_TOKEN --
-#   no extra secrets needed.
+#   no extra secrets needed. Tag rules use an unanchored semver regex to
+#   match the GitHub glob '**[0-9]+.[0-9]+.[0-9]+*' (also covers
+#   cargo-dist-style tags like `my-app/0.1.0` or `releases/v1.0.0`).
 # - release builds a Linux x86_64 binary tarball and publishes a GitLab
 #   Release on tag push. The full cross-platform matrix (macOS/Windows +
 #   shell/powershell installers) is cargo-dist-generated and GitHub-only
@@ -31,7 +44,6 @@ workflow:
     - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
     - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_TAG
     - if: $CI_PIPELINE_SOURCE == "schedule"
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 
 .cargo-cache: &cargo-cache
   key:
@@ -44,6 +56,7 @@ workflow:
 test:linux:
   stage: test
   image: rust:1-slim-trixie
+  interruptible: true
   cache:
     <<: *cargo-cache
   before_script:
@@ -54,10 +67,10 @@ test:linux:
     - cargo clippy --all-targets --locked
   rules:
     - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
 
 test:macos:
   stage: test
+  interruptible: true
   tags:
     - macos
   script:
@@ -69,6 +82,7 @@ test:macos:
 
 test:windows:
   stage: test
+  interruptible: true
   tags:
     - windows
   script:
@@ -81,6 +95,7 @@ test:windows:
 audit:
   stage: audit
   image: rust:1-slim-trixie
+  interruptible: true
   cache:
     <<: *cargo-cache
   script:
@@ -104,7 +119,7 @@ docker:
     - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
     - docker push "$CI_REGISTRY_IMAGE:latest"
   rules:
-    - if: '$CI_COMMIT_TAG =~ /^v?[0-9]+\.[0-9]+\.[0-9]+.*$/'
+    - if: '$CI_COMMIT_TAG =~ /[0-9]+\.[0-9]+\.[0-9]+/'
 
 release:build-linux:
   stage: release
@@ -119,7 +134,7 @@ release:build-linux:
       - dist/*.tar.gz
     expire_in: never
   rules:
-    - if: '$CI_COMMIT_TAG =~ /^v?[0-9]+\.[0-9]+\.[0-9]+.*$/'
+    - if: '$CI_COMMIT_TAG =~ /[0-9]+\.[0-9]+\.[0-9]+/'
 
 release:publish:
   stage: release
@@ -150,4 +165,4 @@ release:publish:
         - name: "Container image"
           url: "${CI_PROJECT_URL}/container_registry"
   rules:
-    - if: '$CI_COMMIT_TAG =~ /^v?[0-9]+\.[0-9]+\.[0-9]+.*$/'
+    - if: '$CI_COMMIT_TAG =~ /[0-9]+\.[0-9]+\.[0-9]+/'
