@@ -1,0 +1,153 @@
+# GitLab CI mirror of .github/workflows/{ci,audit,docker,release}.yml
+#
+# Parity notes (see AGENTS.md / CLAUDE.md for the GitHub-side source of truth):
+# - test/clippy mirrors ci.yml. Linux runs on GitLab shared/self-hosted runners.
+#   macOS/Windows jobs are included but gated behind `test:macos`/`test:windows`
+#   CI/CD variables since this is self-hosted GitLab Enterprise -- flip them on
+#   once you confirm runners with the `macos`/`windows` tags exist on this instance.
+# - audit mirrors audit.yml (RustSec advisory scan via cargo-audit).
+# - docker mirrors docker.yml, but pushes to the GitLab Container Registry
+#   ($CI_REGISTRY_IMAGE) instead of GHCR, using the built-in CI_JOB_TOKEN --
+#   no extra secrets needed.
+# - release builds a Linux x86_64 binary tarball and publishes a GitLab
+#   Release on tag push. The full cross-platform matrix (macOS/Windows +
+#   shell/powershell installers) is cargo-dist-generated and GitHub-only
+#   (`ci = "github"` in dist-workspace.toml has no GitLab backend), so that
+#   part keeps running via .github/workflows/release.yml when the tag reaches
+#   origin/GitHub. This job is the GitLab-side complement, not a replacement.
+
+stages:
+  - test
+  - audit
+  - release
+
+variables:
+  CARGO_TERM_COLOR: "always"
+  ZENTRA_NO_OS_KEYCHAIN: "1"
+  CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_TAG
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+.cargo-cache: &cargo-cache
+  key:
+    files: [Cargo.lock]
+  paths:
+    - .cargo/registry/cache
+    - .cargo/registry/index
+    - target
+
+test:linux:
+  stage: test
+  image: rust:1-slim-trixie
+  cache:
+    <<: *cargo-cache
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+    - rustup component add clippy
+  script:
+    - cargo test --locked
+    - cargo clippy --all-targets --locked
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+test:macos:
+  stage: test
+  tags:
+    - macos
+  script:
+    - rustup component add clippy
+    - cargo test --locked
+    - cargo clippy --all-targets --locked
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $ZENTRA_CI_MACOS == "true"'
+
+test:windows:
+  stage: test
+  tags:
+    - windows
+  script:
+    - rustup component add clippy
+    - cargo test --locked
+    - cargo clippy --all-targets --locked
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $ZENTRA_CI_WINDOWS == "true"'
+
+audit:
+  stage: audit
+  image: rust:1-slim-trixie
+  cache:
+    <<: *cargo-cache
+  script:
+    - cargo install cargo-audit --locked
+    - cargo audit
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: '$CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - "**/Cargo.toml"
+        - "**/Cargo.lock"
+
+docker:
+  stage: release
+  image: docker:27
+  services:
+    - docker:27-dind
+  script:
+    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    - docker build -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG" -t "$CI_REGISTRY_IMAGE:latest" .
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
+    - docker push "$CI_REGISTRY_IMAGE:latest"
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v?[0-9]+\.[0-9]+\.[0-9]+.*$/'
+
+release:build-linux:
+  stage: release
+  image: rust:1-slim-trixie
+  script:
+    - apt-get update && apt-get install -y --no-install-recommends libdbus-1-dev pkg-config
+    - cargo build --release --locked
+    - mkdir -p dist
+    - tar czf "dist/zentra-${CI_COMMIT_TAG}-x86_64-unknown-linux-gnu.tar.gz" -C target/release zentra
+  artifacts:
+    paths:
+      - dist/*.tar.gz
+    expire_in: never
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v?[0-9]+\.[0-9]+\.[0-9]+.*$/'
+
+release:publish:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  needs:
+    - job: release:build-linux
+      artifacts: true
+  script:
+    - |
+      TARBALL="zentra-${CI_COMMIT_TAG}-x86_64-unknown-linux-gnu.tar.gz"
+      PKG_URL="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/zentra-cli/${CI_COMMIT_TAG}/${TARBALL}"
+      curl --fail --header "JOB-TOKEN: ${CI_JOB_TOKEN}" --upload-file "dist/${TARBALL}" "${PKG_URL}"
+      echo "PACKAGE_URL=${PKG_URL}" >> release.env
+  artifacts:
+    reports:
+      dotenv: release.env
+  release:
+    tag_name: "$CI_COMMIT_TAG"
+    name: "Release $CI_COMMIT_TAG"
+    description: >-
+      Linux x86_64 binary and container image published from GitLab CI.
+      macOS, Windows, and installer scripts are published via the cargo-dist
+      GitHub Release triggered by this same tag on origin/GitHub.
+    assets:
+      links:
+        - name: "zentra-${CI_COMMIT_TAG}-x86_64-unknown-linux-gnu.tar.gz"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/zentra-cli/${CI_COMMIT_TAG}/zentra-${CI_COMMIT_TAG}-x86_64-unknown-linux-gnu.tar.gz"
+        - name: "Container image"
+          url: "${CI_PROJECT_URL}/container_registry"
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v?[0-9]+\.[0-9]+\.[0-9]+.*$/'
