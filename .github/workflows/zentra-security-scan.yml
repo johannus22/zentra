@@ -20,6 +20,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Debug workspace
+        run: |
+          pwd
+          ls -la
+          git status || true
+          git config --global --add safe.directory "$(pwd)" || true
+          git status || true
+
       - name: Run Zentra CI scan
         env:
           ZENTRA_API_KEY: ${{ secrets.ZENTRA_API_KEY }}
