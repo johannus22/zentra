@@ -299,12 +299,25 @@ fn sticky_comment_body_includes_summary_critical_findings_and_artifacts() {
     );
 
     assert!(body.contains("<!-- zentra-ci-comment -->"));
-    assert!(body.contains("Critical: 1"));
-    assert!(body.contains("Low: 1"));
+    assert!(body.contains("❌ Failed"));
+    assert!(body.contains("🔴 Critical | 1"));
+    assert!(body.contains("🔵 Low | 1"));
     assert!(body.contains("SQL injection"));
     assert!(!body.contains("Verbose error"));
     assert!(body.contains(".zentra/ci-report.md"));
     assert!(body.contains(".zentra/ci-report.json"));
+}
+
+#[test]
+fn sticky_comment_body_shows_passed_status_when_no_critical_findings() {
+    let body = build_sticky_comment_body(
+        &sample_context(),
+        &[sample_finding(Severity::Low, "Verbose error")],
+    );
+
+    assert!(body.contains("✅ Passed"));
+    assert!(!body.contains("❌ Failed"));
+    assert!(!body.contains("### 🔴 Critical Findings"));
 }
 
 #[test]
