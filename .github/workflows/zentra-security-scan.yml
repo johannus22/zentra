@@ -20,13 +20,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Debug workspace
-        run: |
-          pwd
-          ls -la
-          git status || true
-          git config --global --add safe.directory "$(pwd)" || true
-          git status || true
+      - name: Trust workspace directory for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
 
       - name: Run Zentra CI scan
         env:

@@ -82,6 +82,20 @@ pub enum Commands {
         #[command(subcommand)]
         action: SecurityAction,
     },
+    /// Network diagnostics helpers
+    Diagnostics {
+        #[command(subcommand)]
+        action: DiagnosticsAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DiagnosticsAction {
+    /// Ping a host or IP and print the result
+    Ping {
+        /// Hostname or IP to ping
+        target: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
