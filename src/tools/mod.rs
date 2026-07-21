@@ -1,4 +1,5 @@
 pub mod audit;
+pub mod diagnostics;
 pub mod fs_tools;
 pub mod git_tools;
 
