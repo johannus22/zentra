@@ -118,17 +118,11 @@ pub fn build_sticky_comment_body(context: &CiContext, findings: &[Finding]) -> S
 | **Platform** | {platform} |\n\
 | **Scope** | PR/MR #{scope} |\n\
 | **Base → Head** | `{base}` → `{head}` |\n\n\
-### Findings Summary\n\n\
-| Severity | Count |\n\
-|:--|--:|\n\
-| 🔴 Critical | {critical} |\n\
-| 🟠 High | {high} |\n\
-| 🟡 Medium | {medium} |\n\
-| 🔵 Low | {low} |\n\
-| ⚪ Info | {info} |\n",
+### Findings ({total} total — 🔴 {critical} Critical · 🟠 {high} High · 🟡 {medium} Medium · 🔵 {low} Low · ⚪ {info} Info)\n\n",
         platform = context.platform.as_str(),
         base = context.base_ref,
         head = context.head_ref,
+        total = findings.len(),
         critical = counts.critical,
         high = counts.high,
         medium = counts.medium,
@@ -136,16 +130,17 @@ pub fn build_sticky_comment_body(context: &CiContext, findings: &[Finding]) -> S
         info = counts.info,
     );
 
-    let critical_findings = findings
-        .iter()
-        .filter(|finding| matches!(finding.severity, Severity::Critical))
-        .collect::<Vec<_>>();
-
-    if !critical_findings.is_empty() {
-        body.push_str("\n### 🔴 Critical Findings\n\n| Finding | Location | CWE |\n|---|---|---|\n");
-        for finding in critical_findings {
+    if findings.is_empty() {
+        body.push_str("No findings.\n");
+    } else {
+        body.push_str("| Severity | Finding | Location | CWE |\n|---|---|---|---|\n");
+        let mut sorted_findings = findings.iter().collect::<Vec<_>>();
+        sorted_findings.sort_by_key(|finding| finding.severity.order());
+        for finding in sorted_findings {
             body.push_str(&format!(
-                "| {} | `{}` | {} |\n",
+                "| {} {} | {} | `{}` | {} |\n",
+                severity_emoji(&finding.severity),
+                finding.severity,
                 finding.title,
                 finding.location.as_deref().unwrap_or("N/A"),
                 finding.cwe.as_deref().unwrap_or("—"),
@@ -162,6 +157,16 @@ pub fn build_sticky_comment_body(context: &CiContext, findings: &[Finding]) -> S
     ));
 
     body
+}
+
+fn severity_emoji(severity: &Severity) -> &'static str {
+    match severity {
+        Severity::Critical => "🔴",
+        Severity::High => "🟠",
+        Severity::Medium => "🟡",
+        Severity::Low => "🔵",
+        Severity::Info => "⚪",
+    }
 }
 
 pub fn redact_token(token: &str) -> String {
