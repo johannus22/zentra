@@ -289,7 +289,7 @@ fn comment_http_timeout_is_bounded_for_best_effort_requests() {
 }
 
 #[test]
-fn sticky_comment_body_includes_summary_critical_findings_and_artifacts() {
+fn sticky_comment_body_lists_every_finding_with_severity_location_and_artifacts() {
     let body = build_sticky_comment_body(
         &sample_context(),
         &[
@@ -299,12 +299,35 @@ fn sticky_comment_body_includes_summary_critical_findings_and_artifacts() {
     );
 
     assert!(body.contains("<!-- zentra-ci-comment -->"));
-    assert!(body.contains("Critical: 1"));
-    assert!(body.contains("Low: 1"));
-    assert!(body.contains("SQL injection"));
-    assert!(!body.contains("Verbose error"));
+    assert!(body.contains("❌ Failed"));
+    assert!(body.contains("2 total"));
+    assert!(body.contains("🔴 1 Critical"));
+    assert!(body.contains("🔵 1 Low"));
+    assert!(body.contains("| 🔴 CRITICAL | SQL injection | `src/auth.rs:42` |"));
+    assert!(body.contains("| 🔵 LOW | Verbose error | `src/auth.rs:42` |"));
     assert!(body.contains(".zentra/ci-report.md"));
     assert!(body.contains(".zentra/ci-report.json"));
+}
+
+#[test]
+fn sticky_comment_body_shows_passed_status_and_no_critical_rows_when_none_found() {
+    let body = build_sticky_comment_body(
+        &sample_context(),
+        &[sample_finding(Severity::Low, "Verbose error")],
+    );
+
+    assert!(body.contains("✅ Passed"));
+    assert!(!body.contains("❌ Failed"));
+    assert!(!body.contains("| 🔴 CRITICAL |"));
+}
+
+#[test]
+fn sticky_comment_body_reports_no_findings_when_scan_is_clean() {
+    let body = build_sticky_comment_body(&sample_context(), &[]);
+
+    assert!(body.contains("✅ Passed"));
+    assert!(body.contains("0 total"));
+    assert!(body.contains("No findings."));
 }
 
 #[test]
