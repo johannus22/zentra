@@ -661,3 +661,39 @@ fn keychain_get_returns_none_when_both_absent() {
     let result = keychain::get_key("zentra-test-absent-zzzzz").expect("get_key should not error");
     assert_eq!(result, None);
 }
+
+// F3: a project config that exists but fails to parse must be a hard error with
+// the file left untouched — never silently overwritten with defaults (which
+// discards the user's target_path and exclusions; dropped exclusions can pull
+// deliberately-excluded/secret files into a scan).
+#[test]
+fn load_or_init_for_run_errors_and_preserves_malformed_config() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("config.json");
+    let malformed = r#"{ "target_path": "./custom-src", "exclusions": [ "secrets/" BROKEN"#;
+    std::fs::write(&path, malformed).unwrap();
+
+    let result = ProjectConfig::load_or_init_for_run(&path, dir.path());
+    assert!(
+        result.is_err(),
+        "a malformed existing config must be a hard error, not a silent default"
+    );
+
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        after, malformed,
+        "the user's malformed config must be left untouched (no data loss)"
+    );
+}
+
+#[test]
+fn load_or_init_for_run_creates_default_when_missing() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join(".zentra").join("config.json");
+    std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+
+    let (cfg, created) = ProjectConfig::load_or_init_for_run(&path, dir.path()).unwrap();
+    assert!(created, "a missing config should be reported as newly created");
+    assert_eq!(cfg.stack, "rust");
+    assert!(path.exists(), "the default config should be written to disk");
+}

@@ -288,19 +288,11 @@ fn ensure_supported_ci_auth(profile_name: &str, profile: &ProviderProfile) -> Re
 }
 
 fn load_or_init_project_config(root: &Path) -> Result<ProjectConfig> {
-    if ProjectConfig::exists() {
-        return ProjectConfig::load_from(&ProjectConfig::default_path()).or_else(|_| {
-            let stack = ProjectConfig::detect_stack(root);
-            let cfg = ProjectConfig::new(&stack, vec![]);
-            cfg.save_to(&ProjectConfig::default_path())?;
-            Ok(cfg)
-        });
+    let (config, created) =
+        ProjectConfig::load_or_init_for_run(&ProjectConfig::default_path(), root)?;
+    if created {
+        crate::commands::init::update_gitignore_at(root)?;
     }
-
-    let stack = ProjectConfig::detect_stack(root);
-    let config = ProjectConfig::new(&stack, vec![]);
-    config.save_to(&ProjectConfig::default_path())?;
-    crate::commands::init::update_gitignore_at(root)?;
     Ok(config)
 }
 

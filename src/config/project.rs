@@ -42,6 +42,32 @@ impl ProjectConfig {
         Ok(())
     }
 
+    /// Load the project config for a scan/CI run, or create a default when none
+    /// exists yet. Returns `(config, created)` where `created` is true only when
+    /// a fresh default was written (the caller then updates .gitignore / prints).
+    ///
+    /// A file that EXISTS but fails to parse is a hard error and is left
+    /// untouched — we must never silently replace the user's `target_path` and
+    /// `exclusions` with defaults. Dropped exclusions would also pull
+    /// deliberately-excluded (possibly secret) files into the scan.
+    pub fn load_or_init_for_run(path: &Path, detect_root: &Path) -> Result<(Self, bool)> {
+        if path.exists() {
+            let cfg = Self::load_from(path).map_err(|e| {
+                anyhow::anyhow!(
+                    "{} exists but could not be parsed ({e}). \
+                     Fix the JSON or delete the file to regenerate it.",
+                    path.display()
+                )
+            })?;
+            Ok((cfg, false))
+        } else {
+            let stack = Self::detect_stack(detect_root);
+            let cfg = Self::new(&stack, vec![]);
+            cfg.save_to(path)?;
+            Ok((cfg, true))
+        }
+    }
+
     pub fn default_path() -> PathBuf {
         PathBuf::from(".zentra").join("config.json")
     }

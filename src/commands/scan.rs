@@ -141,27 +141,16 @@ async fn run_once(
         ),
     };
 
-    let project_config = if ProjectConfig::exists() {
-        match ProjectConfig::load_from(&ProjectConfig::default_path()) {
-            Ok(cfg) => cfg,
-            Err(_) => {
-                let cwd = std::env::current_dir()?;
-                let stack = ProjectConfig::detect_stack(&cwd);
-                let cfg = ProjectConfig::new(&stack, vec![]);
-                cfg.save_to(&ProjectConfig::default_path())?;
-                println!("⚠ Recreated .zentra/config.json (previous file was unreadable)");
-                cfg
-            }
-        }
-    } else {
-        let cwd = std::env::current_dir()?;
-        let stack = ProjectConfig::detect_stack(&cwd);
-        let config = ProjectConfig::new(&stack, vec![]);
-        config.save_to(&ProjectConfig::default_path())?;
+    let cwd = std::env::current_dir()?;
+    let (project_config, created) =
+        ProjectConfig::load_or_init_for_run(&ProjectConfig::default_path(), &cwd)?;
+    if created {
         crate::commands::init::update_gitignore_at(&cwd)?;
-        println!("✓ Auto-initialized .zentra/ (stack: {})", stack);
-        config
-    };
+        println!(
+            "✓ Auto-initialized .zentra/ (stack: {})",
+            project_config.stack
+        );
+    }
 
     let target_root = Path::new(&project_config.target_path).to_path_buf();
     let zentra_dir = target_root.join(".zentra");
