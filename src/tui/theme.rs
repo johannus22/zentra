@@ -663,6 +663,17 @@ mod tests {
         assert_eq!(parse_color("#gggggg"), None);
     }
 
+    // F2: `hex.len() == 6` is a byte count, but the subsequent `&hex[0..2]`
+    // slices are byte ranges. A 6-byte value made of multibyte chars must be
+    // rejected, not panic on a non-char-boundary slice (crashes the TUI at
+    // startup from a hand-edited theme file).
+    #[test]
+    fn rejects_multibyte_hex_without_panicking() {
+        assert_eq!(parse_color("#\u{20ac}\u{20ac}"), None); // "€€" = 6 bytes
+        assert_eq!(parse_color("#\u{20ac}aaa"), None); // boundary at byte 2
+        assert_eq!(parse_color("#aa\u{20ac}a"), None); // boundary at byte 4
+    }
+
     #[test]
     fn builtins_present() {
         let ids: Vec<_> = builtin_themes().into_iter().map(|t| t.id).collect();
