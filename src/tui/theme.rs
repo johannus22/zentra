@@ -59,7 +59,10 @@ pub fn parse_color(s: &str) -> Option<Color> {
         return Some(Color::Reset);
     }
     let hex = s.strip_prefix('#')?;
-    if hex.len() != 6 {
+    // `hex.len()` is a byte count; the slices below are byte ranges. Require
+    // ASCII so every index lands on a char boundary (a multibyte value like
+    // "#€€" is 6 bytes but would slice mid-codepoint and panic).
+    if hex.len() != 6 || !hex.is_ascii() {
         return None;
     }
     let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
