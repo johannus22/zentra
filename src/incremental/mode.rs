@@ -72,13 +72,28 @@ pub fn decide_mode(inputs: ModeInputs) -> ModeDecision {
 }
 
 fn short(commit: &str) -> &str {
-    &commit[..commit.len().min(8)]
+    // Char-safe truncation: a hand-edited manifest could hold a multibyte
+    // string, and a byte slice would panic on a non-char-boundary.
+    let end = commit
+        .char_indices()
+        .nth(8)
+        .map(|(i, _)| i)
+        .unwrap_or(commit.len());
+    &commit[..end]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::incremental::manifest::ScanManifest;
+
+    // F19: `short` byte-sliced &commit[..8]; a hand-edited manifest with a
+    // multibyte commit string would panic on a non-char-boundary slice.
+    #[test]
+    fn short_handles_multibyte_commit_without_panicking() {
+        assert_eq!(short("\u{20ac}\u{20ac}\u{20ac}\u{20ac}\u{20ac}").chars().count(), 5);
+        assert!(short("abcdef1234567890").len() <= 8);
+    }
 
     fn prior(commit: &str, version: &str, model: &str) -> ScanManifest {
         ScanManifest {

@@ -48,6 +48,7 @@ pub fn changed_files_from_git(root: &Path, base_ref: &str, head_ref: &str) -> Re
 
     for range in candidate_git_diff_ranges(base_ref, head_ref) {
         let output = Command::new("git")
+            .args(["-c", "core.quotePath=false"])
             .arg("diff")
             .arg("--name-only")
             .arg(&range)
