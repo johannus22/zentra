@@ -239,9 +239,10 @@ fn redaction_rules() -> &'static [(Regex, &'static str)] {
             // Anthropic-style keys, then generic long `sk-` keys. The generic rule
             // allows `_`/`-` inside the body so modern hyphenated OpenAI keys
             // (`sk-proj-…`, `sk-svcacct-…`, `sk-admin-…`) are redacted, not just
-            // the legacy flat `sk-<40 alnum>` form.
-            (Regex::new(r"sk-ant-[A-Za-z0-9_\-]+").unwrap(), "***"),
-            (Regex::new(r"sk-[A-Za-z0-9][A-Za-z0-9_\-]{19,}").unwrap(), "***"),
+            // the legacy flat `sk-<40 alnum>` form. The leading `\b` keeps it from
+            // matching mid-word (e.g. the `sk-` inside `disk-io-latency-…`).
+            (Regex::new(r"\bsk-ant-[A-Za-z0-9_\-]+").unwrap(), "***"),
+            (Regex::new(r"\bsk-[A-Za-z0-9][A-Za-z0-9_\-]{19,}").unwrap(), "***"),
             // Bearer / Authorization tokens.
             (Regex::new(r"(?i)bearer\s+[A-Za-z0-9._\-]+").unwrap(), "Bearer ***"),
             // key=value / key: value for sensitive keys (keep the key name).
@@ -285,6 +286,19 @@ mod tests {
             let out = redact(&format!("panic: request failed with {key} at line 3"));
             assert!(!out.contains(key), "leaked key {key}: {out}");
             assert!(out.contains("***"), "no redaction marker: {out}");
+        }
+    }
+
+    // R2 (chaos re-test iter 2): the hyphenated-key rule must not fire mid-word —
+    // `disk-io-…`, `task-…`, `risk-…` contain "sk-" but are not keys.
+    #[test]
+    fn redact_does_not_mangle_hyphenated_words() {
+        for benign in [
+            "disk-io-latency-threshold-exceeded-alert-fired",
+            "task-runner-shutdown-timeout-waiting-for-workers",
+            "risk-assessment-module-returned-nonzero-exit-code",
+        ] {
+            assert_eq!(redact(benign), benign, "over-redacted benign text");
         }
     }
 
