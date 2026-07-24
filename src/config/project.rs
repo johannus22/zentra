@@ -35,10 +35,9 @@ impl ProjectConfig {
     }
 
     pub fn save_to(&self, path: &Path) -> Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, serde_json::to_string_pretty(self)?)?;
+        // Atomic write so an interrupted save can't corrupt the config (F15) —
+        // a corrupt project config is now a hard error (see load_or_init_for_run).
+        crate::config::write_atomic(path, serde_json::to_string_pretty(self)?.as_bytes())?;
         Ok(())
     }
 

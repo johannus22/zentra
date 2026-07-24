@@ -721,3 +721,21 @@ fn set_key_rejects_traversal_profile_name() {
     let result = keychain::set_key("../../../../tmp/zentra-pwned", "secret");
     assert!(result.is_err(), "traversal profile name must be rejected");
 }
+
+// F15: config saves are atomic (temp + rename). Verify overwrite works (Windows
+// rename-replace) and no stray temp file is left behind.
+#[test]
+fn project_config_save_overwrites_atomically_without_temp_leftover() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("config.json");
+    ProjectConfig::new("rust", vec!["dist/".into()])
+        .save_to(&path)
+        .unwrap();
+    ProjectConfig::new("node", vec![]).save_to(&path).unwrap();
+    let loaded = ProjectConfig::load_from(&path).unwrap();
+    assert_eq!(loaded.stack, "node");
+    assert!(
+        !dir.path().join("config.json.tmp").exists(),
+        "atomic write must not leave a temp file"
+    );
+}

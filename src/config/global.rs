@@ -120,7 +120,7 @@ impl GlobalConfig {
             let _ = std::fs::write(parent.join("config.schema.json"), CONFIG_SCHEMA);
         }
         let body = toml::to_string_pretty(self)?;
-        std::fs::write(path, format!("#:schema config.schema.json\n\n{body}"))?;
+        crate::config::write_atomic(path, format!("#:schema config.schema.json\n\n{body}").as_bytes())?;
         Ok(())
     }
 
