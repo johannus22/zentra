@@ -93,7 +93,7 @@ impl OpenAICompatProvider {
         }
 
         let bytes = super::read_body_capped(resp, super::MAX_RESPONSE_BYTES).await?;
-        Ok(serde_json::from_slice(&bytes).context("parsing provider response")?)
+        serde_json::from_slice(&bytes).context("parsing provider response")
     }
 }
 

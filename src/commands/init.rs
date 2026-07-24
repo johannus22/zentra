@@ -27,8 +27,8 @@ pub async fn run(ci: Option<CiPlatformKind>) -> Result<()> {
         InitOutcome::Created { stack } => {
             println!("✓ Initialized .zentra/config.json (stack: {})", stack);
             println!("✓ Added .zentra/ to .gitignore");
-            if ci.is_some() {
-                println!("✓ Added {} CI workflow", ci.unwrap().as_str());
+            if let Some(platform) = ci {
+                println!("✓ Added {} CI workflow", platform.as_str());
             }
             println!("  Run zentra scan to start.");
         }
@@ -37,8 +37,8 @@ pub async fn run(ci: Option<CiPlatformKind>) -> Result<()> {
                 "• .zentra/config.json already exists — left unchanged \
                  (edit it, or delete it and re-run `zentra init` to reset)."
             );
-            if ci.is_some() {
-                println!("✓ Added {} CI workflow", ci.unwrap().as_str());
+            if let Some(platform) = ci {
+                println!("✓ Added {} CI workflow", platform.as_str());
             }
         }
     }
@@ -65,6 +65,21 @@ pub fn init_project_at(root: &Path, ci: Option<CiPlatformKind>) -> Result<InitOu
         crate::ci::generate_ci_workflow_at(root, platform)?;
     }
     Ok(outcome)
+}
+
+pub fn update_gitignore_at(root: &Path) -> Result<()> {
+    let path = root.join(".gitignore");
+    let entry = ".zentra/\n";
+    if path.exists() {
+        let content = std::fs::read_to_string(&path)?;
+        if content.contains(".zentra/") {
+            return Ok(());
+        }
+        std::fs::write(&path, format!("{}\n{}", content.trim_end(), entry))?;
+    } else {
+        std::fs::write(&path, entry)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -101,19 +116,4 @@ mod tests {
         assert!(matches!(outcome, InitOutcome::Created { .. }));
         assert!(dir.path().join(".zentra").join("config.json").exists());
     }
-}
-
-pub fn update_gitignore_at(root: &Path) -> Result<()> {
-    let path = root.join(".gitignore");
-    let entry = ".zentra/\n";
-    if path.exists() {
-        let content = std::fs::read_to_string(&path)?;
-        if content.contains(".zentra/") {
-            return Ok(());
-        }
-        std::fs::write(&path, format!("{}\n{}", content.trim_end(), entry))?;
-    } else {
-        std::fs::write(&path, entry)?;
-    }
-    Ok(())
 }

@@ -72,7 +72,7 @@ impl AnthropicProvider {
         }
 
         let bytes = super::read_body_capped(resp, super::MAX_RESPONSE_BYTES).await?;
-        Ok(serde_json::from_slice(&bytes).context("parsing Anthropic response")?)
+        serde_json::from_slice(&bytes).context("parsing Anthropic response")
     }
 }
 
