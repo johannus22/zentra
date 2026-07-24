@@ -88,11 +88,12 @@ impl OpenAICompatProvider {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+            let text = super::read_text_preview(resp, 64 * 1024).await;
             return Err(anyhow::anyhow!("Provider returned {}: {}", status, text));
         }
 
-        Ok(resp.json().await?)
+        let bytes = super::read_body_capped(resp, super::MAX_RESPONSE_BYTES).await?;
+        Ok(serde_json::from_slice(&bytes).context("parsing provider response")?)
     }
 }
 

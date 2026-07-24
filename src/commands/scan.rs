@@ -31,7 +31,7 @@ pub async fn run(
     only: Option<String>,
     full: bool,
 ) -> Result<()> {
-    let scanners = resolve_scanners(only.as_deref());
+    let scanners = resolve_scanners(only.as_deref())?;
     let mut provider_override = provider_override;
     loop {
         match run_once(provider_override.clone(), scanners.clone(), full).await? {
@@ -396,15 +396,22 @@ fn ensure_supported_scan_auth(
     Ok(())
 }
 
-fn resolve_scanners(only: Option<&str>) -> Vec<ScannerType> {
-    match only {
+fn resolve_scanners(only: Option<&str>) -> Result<Vec<ScannerType>> {
+    Ok(match only {
         Some("threat-model") => vec![ScannerType::ThreatModel, ScannerType::Report],
         Some("sast") => vec![ScannerType::Sast, ScannerType::Report],
         Some("supply-chain") => vec![ScannerType::SupplyChain, ScannerType::Report],
         Some("api") => vec![ScannerType::ApiScan, ScannerType::Report],
         Some("iac") => vec![ScannerType::IacScan, ScannerType::Report],
         Some("report") => vec![ScannerType::Report],
-        _ => vec![
+        Some(unknown) => {
+            // Reject typos instead of silently running a full scan (F9).
+            anyhow::bail!(
+                "unknown scanner '{unknown}' for --only. \
+                 Valid values: threat-model, sast, supply-chain, api, iac, report"
+            );
+        }
+        None => vec![
             ScannerType::ThreatModel,
             ScannerType::Sast,
             ScannerType::SupplyChain,
@@ -412,7 +419,7 @@ fn resolve_scanners(only: Option<&str>) -> Vec<ScannerType> {
             ScannerType::IacScan,
             ScannerType::Report,
         ],
-    }
+    })
 }
 
 fn git_head_commit(root: &Path) -> Option<String> {
@@ -472,6 +479,19 @@ fn current_project_name() -> String {
 mod tests {
     use super::*;
     use crate::config::{AuthMethod, ProviderProfile};
+
+    // F9: an unknown --only value silently ran a FULL scan (the `_` arm),
+    // so a typo like `--only sats` burned quota on every scanner. It must be
+    // rejected instead.
+    #[test]
+    fn resolve_scanners_rejects_unknown_only_value() {
+        assert!(
+            resolve_scanners(Some("sats")).is_err(),
+            "a typo'd scanner name must be an error, not a full scan"
+        );
+        assert!(resolve_scanners(Some("sast")).is_ok());
+        assert!(resolve_scanners(None).is_ok(), "no --only means full scan");
+    }
 
     #[test]
     fn rejects_saved_oauth_profiles_at_scan_startup() {
