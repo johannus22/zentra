@@ -26,6 +26,10 @@ pub fn candidate_git_diff_ranges(base_ref: &str, head_ref: &str) -> Vec<String> 
     push_unique(&mut ranges, format!("{base_ref}...HEAD"));
     push_unique(&mut ranges, format!("{base_ref}...{head_ref}"));
 
+    // Defense-in-depth: never emit a range git would treat as an option (a ref
+    // starting with '-'). head_ref only appears after `...` so it can't lead a
+    // range, but base_ref does — guard it, mirroring git_tools::git_diff.
+    ranges.retain(|r| !r.starts_with('-'));
     ranges
 }
 
