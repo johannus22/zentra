@@ -6,6 +6,29 @@ pub fn service_name(profile: &str) -> String {
     format!("zentra.{}", profile)
 }
 
+/// A profile name is interpolated into `~/.zentra/keys/<name>.key`, so it must
+/// be a safe single filename component. Allow only `[A-Za-z0-9_-]` (mirroring
+/// the TUI form) — this rejects path separators and `..`, closing the
+/// traversal-write path for non-TUI callers such as the wizard (F13).
+pub fn is_valid_profile_name(profile: &str) -> bool {
+    !profile.is_empty()
+        && profile.len() <= 64
+        && profile
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn ensure_valid_profile_name(profile: &str) -> Result<()> {
+    if is_valid_profile_name(profile) {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "invalid profile name {profile:?}: use only letters, digits, '-' and '_' \
+             (max 64 chars)"
+        )
+    }
+}
+
 pub fn masked_display() -> &'static str {
     "••••••••••••"
 }
@@ -33,6 +56,7 @@ pub enum KeyStorage {
 }
 
 pub fn set_key(profile: &str, api_key: &str) -> Result<KeyStorage> {
+    ensure_valid_profile_name(profile)?;
     // Store the key in a file under ~/.zentra/keys/ by default, encrypted at
     // rest via secret_store (DPAPI on Windows, 0o600 plaintext on Unix).
     // The OS keychain proved unreliable — Windows Credential Manager could return Ok

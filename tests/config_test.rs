@@ -697,3 +697,27 @@ fn load_or_init_for_run_creates_default_when_missing() {
     assert_eq!(cfg.stack, "rust");
     assert!(path.exists(), "the default config should be written to disk");
 }
+
+// F13: profile names are interpolated into ~/.zentra/keys/<name>.key. The TUI
+// validated the charset but the wizard did not, so `config setup` with a name
+// like `../../../tmp/pwned` wrote the secret outside the keys dir. Enforce the
+// check at the keychain boundary so all callers are covered.
+#[test]
+fn profile_name_validator_rejects_traversal_and_separators() {
+    use zentra_cli::config::keychain::is_valid_profile_name;
+    assert!(is_valid_profile_name("agents-gtwy"));
+    assert!(is_valid_profile_name("claude_cli-2"));
+    assert!(!is_valid_profile_name("../../../tmp/pwned"));
+    assert!(!is_valid_profile_name("a/b"));
+    assert!(!is_valid_profile_name(r"a\b"));
+    assert!(!is_valid_profile_name(".."));
+    assert!(!is_valid_profile_name(""));
+}
+
+// F13: set_key must reject a traversal name before writing anything (now safe
+// to exercise — it errors before touching the filesystem).
+#[test]
+fn set_key_rejects_traversal_profile_name() {
+    let result = keychain::set_key("../../../../tmp/zentra-pwned", "secret");
+    assert!(result.is_err(), "traversal profile name must be rejected");
+}
