@@ -79,14 +79,28 @@ pub fn set_key(profile: &str, api_key: &str) -> Result<KeyStorage> {
     Ok(KeyStorage::File)
 }
 
+/// Interpret raw key-file bytes as a usable API key. Errors if the file is not
+/// valid UTF-8 or is empty/whitespace-only — a truncated or cleared key file
+/// should fail clearly here, not surface downstream as an empty/invalid key that
+/// the provider rejects with a confusing error (F20).
+fn parse_key_bytes(bytes: Vec<u8>) -> Result<String> {
+    let s = String::from_utf8(bytes)
+        .context("API key file contains invalid UTF-8 — the file may be corrupt")?;
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!(
+            "API key file is empty or corrupt — re-run `zentra config setup` to reconfigure this profile"
+        );
+    }
+    Ok(trimmed.to_string())
+}
+
 pub fn get_key(profile: &str) -> Result<Option<String>> {
     // Prefer the key file — the default storage location.
     if let Some(path) = key_file_path(profile) {
         if path.exists() {
             let bytes = secret_store::read_secret(&path)?;
-            let key = String::from_utf8(bytes)
-                .context("API key file contains invalid UTF-8 — the file may be corrupt")?;
-            return Ok(Some(key.trim().to_string()));
+            return Ok(Some(parse_key_bytes(bytes)?));
         }
     }
     // Backward compatibility: best-effort read of a key left in the OS keychain by an
@@ -186,6 +200,19 @@ mod tests {
     use super::*;
     use crate::auth::OAuthTokens;
     use tempfile::TempDir;
+
+    // F20: an empty/whitespace key file must fail with a clear error, not be
+    // returned as an empty key that the provider later rejects opaquely.
+    #[test]
+    fn parse_key_bytes_rejects_empty_and_whitespace() {
+        assert!(parse_key_bytes(Vec::new()).is_err());
+        assert!(parse_key_bytes(b"   \n\t".to_vec()).is_err());
+    }
+
+    #[test]
+    fn parse_key_bytes_trims_and_returns_valid_key() {
+        assert_eq!(parse_key_bytes(b"  sk-abc123\n".to_vec()).unwrap(), "sk-abc123");
+    }
 
     #[test]
     fn oauth_tokens_file_roundtrip() {
