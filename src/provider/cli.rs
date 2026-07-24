@@ -523,6 +523,11 @@ async fn codex_session(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        // app-server is a long-lived server process. The cancel path kills it
+        // explicitly, but every `?` error return (parse error, stream-bound trip,
+        // stdin write failure) would otherwise drop `child` without killing it,
+        // orphaning a server per failed iteration. kill_on_drop closes that gap.
+        .kill_on_drop(true)
         .spawn()
         .with_context(|| format!("Failed to spawn '{} app-server'. Is Codex CLI installed?", binary))?;
 

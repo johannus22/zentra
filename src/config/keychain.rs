@@ -84,15 +84,25 @@ pub fn set_key(profile: &str, api_key: &str) -> Result<KeyStorage> {
 /// should fail clearly here, not surface downstream as an empty/invalid key that
 /// the provider rejects with a confusing error (F20).
 fn parse_key_bytes(bytes: Vec<u8>) -> Result<String> {
-    let s = String::from_utf8(bytes)
-        .context("API key file contains invalid UTF-8 — the file may be corrupt")?;
+    use zeroize::Zeroize;
+    // Zeroize the intermediate plaintext buffers once we've extracted the key, so
+    // decrypted key material doesn't linger in freed heap between the keychain
+    // read and the provider wrapping it in `Zeroizing` (L2 defense-in-depth).
+    let mut s = String::from_utf8(bytes).map_err(|e| {
+        let mut raw = e.into_bytes();
+        raw.zeroize();
+        anyhow::anyhow!("API key file contains invalid UTF-8 — the file may be corrupt")
+    })?;
     let trimmed = s.trim();
     if trimmed.is_empty() {
+        s.zeroize();
         anyhow::bail!(
             "API key file is empty or corrupt — re-run `zentra config setup` to reconfigure this profile"
         );
     }
-    Ok(trimmed.to_string())
+    let key = trimmed.to_string();
+    s.zeroize();
+    Ok(key)
 }
 
 pub fn get_key(profile: &str) -> Result<Option<String>> {

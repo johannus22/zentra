@@ -113,6 +113,11 @@ async fn run_once(
         }
     }
 
+    // Re-validate the endpoint on the use path (config may predate the write-time
+    // gate or have been hand-edited); CLI providers keep a binary path here, not a
+    // URL, so validate_profile_endpoint exempts them.
+    crate::config::validation::validate_profile_endpoint(&profile.kind, &profile.base_url)?;
+
     let (tx, rx) = mpsc::channel(128);
 
     let provider: Arc<dyn LLMProvider> = match profile.kind.as_str() {

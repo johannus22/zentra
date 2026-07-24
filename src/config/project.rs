@@ -67,6 +67,33 @@ impl ProjectConfig {
         }
     }
 
+    /// Resolve `target_path` against `repo_root`, rejecting anything that escapes
+    /// the repo. In CI the `.zentra/config.json` is supplied by an untrusted PR
+    /// and `target_path` selects both the scan root and the `.zentra/` output
+    /// directory; an absolute path or a `..` component would let the PR redirect
+    /// where `zentra ci` writes findings and the audit log. Only plain relative
+    /// subpaths (optionally `.`-prefixed) are allowed.
+    pub fn resolve_target_within(&self, repo_root: &Path) -> Result<PathBuf> {
+        use std::path::Component;
+        let rel = Path::new(&self.target_path);
+        // Note: on Windows a unix-style "/etc" reports is_absolute()==false, so we
+        // reject via the component scan below rather than relying on is_absolute.
+        for comp in rel.components() {
+            match comp {
+                Component::ParentDir => anyhow::bail!(
+                    "target_path must not contain '..' (would escape the repo): {}",
+                    self.target_path
+                ),
+                Component::RootDir | Component::Prefix(_) => anyhow::bail!(
+                    "target_path must be relative to the repo, got: {}",
+                    self.target_path
+                ),
+                Component::CurDir | Component::Normal(_) => {}
+            }
+        }
+        Ok(repo_root.join(rel))
+    }
+
     pub fn default_path() -> PathBuf {
         PathBuf::from(".zentra").join("config.json")
     }

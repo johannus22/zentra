@@ -106,7 +106,7 @@ pub fn build_sticky_comment_body(context: &CiContext, findings: &[Finding]) -> S
     let commit_suffix = context
         .commit_sha
         .as_deref()
-        .map(|sha| format!(" · `{}`", &sha[..sha.len().min(7)]))
+        .map(|sha| format!(" · `{}`", short_sha(sha)))
         .unwrap_or_default();
 
     let mut body = format!(
@@ -157,6 +157,19 @@ pub fn build_sticky_comment_body(context: &CiContext, findings: &[Finding]) -> S
     ));
 
     body
+}
+
+/// First 7 characters of a commit SHA, truncated on a char boundary. `commit_sha`
+/// comes verbatim from `GITHUB_SHA` / `CI_COMMIT_SHA`; a byte slice `&sha[..7]`
+/// panics when a multibyte value puts byte 7 mid-character (same bug class as the
+/// F19 sibling truncations in mode.rs / scan_ui.rs).
+fn short_sha(sha: &str) -> &str {
+    let end = sha
+        .char_indices()
+        .nth(7)
+        .map(|(i, _)| i)
+        .unwrap_or(sha.len());
+    &sha[..end]
 }
 
 fn severity_emoji(severity: &Severity) -> &'static str {
@@ -213,6 +226,28 @@ pub async fn publish_comment_best_effort(context: &CiContext, findings: &[Findin
     }
 }
 
+/// GET and parse the existing-comments list under a hard memory bound. The API
+/// host comes from `GITHUB_API_URL` / `CI_API_V4_URL` (env), so a misconfigured
+/// or MITM'd endpoint must not be able to OOM the runner via an unbounded body —
+/// reqwest's `.json()` buffers the whole body first. 8 MiB is far above any real
+/// comment list; an over-cap body is truncated and fails to parse (comment
+/// publishing is best-effort, so that degrades cleanly).
+async fn fetch_existing_comments(req: reqwest::RequestBuilder) -> Result<Vec<ExistingComment>> {
+    const MAX_LIST_BYTES: usize = 8 * 1024 * 1024;
+    let mut resp = req.send().await?.error_for_status()?;
+    let mut buf: Vec<u8> = Vec::new();
+    while buf.len() < MAX_LIST_BYTES {
+        match resp.chunk().await? {
+            Some(chunk) => {
+                let take = (MAX_LIST_BYTES - buf.len()).min(chunk.len());
+                buf.extend_from_slice(&chunk[..take]);
+            }
+            None => break,
+        }
+    }
+    Ok(serde_json::from_slice(&buf)?)
+}
+
 async fn publish_comment(
     env: &HashMap<String, String>,
     context: &CiContext,
@@ -244,18 +279,16 @@ async fn publish_github_comment(
     let url = format!("{api_url}/repos/{repo}/issues/{pr}/comments");
 
     let client = comment_http_client()?;
-    let existing = client
-        .get(&url)
-        .bearer_auth(token)
-        .header("User-Agent", "zentra-cli")
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<Vec<ExistingComment>>()
-        .await?
-        .into_iter()
-        .map(|comment| (comment.id, comment.body))
-        .collect::<Vec<_>>();
+    let existing = fetch_existing_comments(
+        client
+            .get(&url)
+            .bearer_auth(token)
+            .header("User-Agent", "zentra-cli"),
+    )
+    .await?
+    .into_iter()
+    .map(|comment| (comment.id, comment.body))
+    .collect::<Vec<_>>();
 
     match select_sticky_comment_action(&existing, body.to_string()) {
         StickyCommentAction::Create { body } => {
@@ -303,17 +336,15 @@ async fn publish_gitlab_comment(
     let url = format!("{api_url}/projects/{project_id}/merge_requests/{mr}/notes");
 
     let client = comment_http_client()?;
-    let existing = client
-        .get(&url)
-        .header(auth_header.name, auth_header.value.clone())
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<Vec<ExistingComment>>()
-        .await?
-        .into_iter()
-        .map(|comment| (comment.id, comment.body))
-        .collect::<Vec<_>>();
+    let existing = fetch_existing_comments(
+        client
+            .get(&url)
+            .header(auth_header.name, auth_header.value.clone()),
+    )
+    .await?
+    .into_iter()
+    .map(|comment| (comment.id, comment.body))
+    .collect::<Vec<_>>();
 
     match select_sticky_comment_action(&existing, body.to_string()) {
         StickyCommentAction::Create { body } => {
@@ -351,4 +382,48 @@ fn comment_token(env: &HashMap<String, String>, platform: CiPlatformKind) -> Opt
             .filter(|value| !value.is_empty())
             .map(String::as_str)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // L6 (chaos re-test): commit_sha is verbatim from GITHUB_SHA / CI_COMMIT_SHA.
+    // A byte slice `&sha[..7]` panics on a multibyte value; short_sha truncates on
+    // a char boundary instead.
+    #[test]
+    fn short_sha_handles_multibyte_without_panicking() {
+        // 7 Cyrillic chars = 14 bytes; byte 7 is mid-character.
+        let s = "ааааааа";
+        let got = short_sha(s);
+        assert!(s.starts_with(got));
+        assert!(got.chars().count() <= 7);
+        // ASCII SHA truncates to 7 chars as before.
+        assert_eq!(short_sha("0123456789abcdef"), "0123456");
+        // Shorter-than-7 returns the whole string.
+        assert_eq!(short_sha("abc"), "abc");
+    }
+
+    // L3 (chaos re-test): the existing-comments GET buffered the whole response
+    // with `.json()`. fetch_existing_comments caps the read; an over-cap body is
+    // truncated and fails to parse rather than exhausting memory.
+    #[tokio::test]
+    async fn fetch_existing_comments_parses_small_list() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/comments"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_string(r#"[{"id":1,"body":"hello"},{"id":2,"body":"world"}]"#),
+            )
+            .mount(&server)
+            .await;
+        let client = comment_http_client().unwrap();
+        let got = fetch_existing_comments(client.get(format!("{}/comments", server.uri())))
+            .await
+            .unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].id, 1);
+        assert_eq!(got[1].body, "world");
+    }
 }

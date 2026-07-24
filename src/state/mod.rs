@@ -11,6 +11,13 @@ use std::path::{Path, PathBuf};
 pub struct StateWriter {
     zentra_dir: PathBuf,
     cwe_template: String,
+    /// Serializes the findings-file read-modify-write. Phase 2 runs the SAST,
+    /// SupplyChain, ApiScan and IaCScan scanners on separate runtime threads,
+    /// all sharing one `Arc<StateWriter>`; `write_finding` (append + read-whole
+    /// + sort + rewrite) and `rewrite_findings` are non-atomic, so without this
+    /// lock concurrent calls lose updates — silently dropping findings, up to
+    /// and including a Critical, while the scan still reports success.
+    findings_lock: std::sync::Mutex<()>,
 }
 
 impl StateWriter {
@@ -39,10 +46,19 @@ impl StateWriter {
         Ok(Self {
             zentra_dir,
             cwe_template,
+            findings_lock: std::sync::Mutex::new(()),
         })
     }
 
     pub fn write_finding(&self, finding: &Finding) -> Result<()> {
+        // Hold the lock across append + sort so a concurrent scanner can't read a
+        // half-written file and rewrite over our block (lost update). Poison-
+        // tolerant: the critical section leaves no broken in-memory invariant, so
+        // recover the guard rather than cascading a panic to every other scanner.
+        let _guard = self
+            .findings_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let path = self.zentra_dir.join("detailed-findings.md");
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
 
@@ -68,6 +84,10 @@ impl StateWriter {
     /// Replace the entire findings file with the given set, then re-sort by
     /// severity. Used by the correlation pass to write back the deduped findings.
     pub fn rewrite_findings(&self, findings: &[Finding]) -> Result<()> {
+        let _guard = self
+            .findings_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let path = self.zentra_dir.join("detailed-findings.md");
         let body: String = findings
             .iter()

@@ -49,7 +49,9 @@ pub async fn run() -> Result<()> {
 
     let provider = load_provider().await?;
     let project_config = load_or_init_project_config(&root)?;
-    let target_path = root.join(&project_config.target_path);
+    // The config may be attacker-supplied (untrusted PR in CI); a malicious
+    // target_path must not redirect scan output outside the checkout.
+    let target_path = project_config.resolve_target_within(&root)?;
     let scanners = select_ci_scanners(&context.changed_files);
     let focus_context = build_ci_focus_context(&context);
 
@@ -209,7 +211,7 @@ fn print_startup_summary(context: &CiContext) {
 
 async fn load_provider() -> Result<Arc<dyn LLMProvider>> {
     if let Some((profile, api_key)) = provider_config_from_env() {
-        return Ok(build_provider(&profile, api_key));
+        return build_provider(&profile, api_key);
     }
 
     let global = GlobalConfig::load()?;
@@ -236,7 +238,7 @@ async fn load_provider() -> Result<Arc<dyn LLMProvider>> {
         })?
     };
 
-    Ok(build_provider(&profile, api_key))
+    build_provider(&profile, api_key)
 }
 
 /// Build a provider profile straight from env vars, for headless CI runners that
@@ -263,8 +265,11 @@ fn provider_config_from_env() -> Option<(ProviderProfile, String)> {
     Some((profile, api_key))
 }
 
-fn build_provider(profile: &ProviderProfile, api_key: String) -> Arc<dyn LLMProvider> {
-    match profile.kind.as_str() {
+fn build_provider(profile: &ProviderProfile, api_key: String) -> Result<Arc<dyn LLMProvider>> {
+    // Re-validate the endpoint on the use path: this profile may have come from a
+    // hand-edited config or CI env vars that never passed the write-time gate.
+    crate::config::validation::validate_profile_endpoint(&profile.kind, &profile.base_url)?;
+    Ok(match profile.kind.as_str() {
         "anthropic" => Arc::new(AnthropicProvider::new(
             profile.base_url.clone(),
             profile.model.clone(),
@@ -274,7 +279,7 @@ fn build_provider(profile: &ProviderProfile, api_key: String) -> Arc<dyn LLMProv
             OpenAICompatProvider::new(profile.base_url.clone(), profile.model.clone(), api_key)
                 .with_reasoning(profile.reasoning_effort.clone()),
         ),
-    }
+    })
 }
 
 fn ensure_supported_ci_auth(profile_name: &str, profile: &ProviderProfile) -> Result<()> {

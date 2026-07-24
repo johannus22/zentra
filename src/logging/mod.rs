@@ -236,9 +236,12 @@ fn redaction_rules() -> &'static [(Regex, &'static str)] {
     static RULES: OnceLock<Vec<(Regex, &'static str)>> = OnceLock::new();
     RULES.get_or_init(|| {
         vec![
-            // Anthropic-style keys, then generic long `sk-` keys.
+            // Anthropic-style keys, then generic long `sk-` keys. The generic rule
+            // allows `_`/`-` inside the body so modern hyphenated OpenAI keys
+            // (`sk-proj-…`, `sk-svcacct-…`, `sk-admin-…`) are redacted, not just
+            // the legacy flat `sk-<40 alnum>` form.
             (Regex::new(r"sk-ant-[A-Za-z0-9_\-]+").unwrap(), "***"),
-            (Regex::new(r"sk-[A-Za-z0-9]{20,}").unwrap(), "***"),
+            (Regex::new(r"sk-[A-Za-z0-9][A-Za-z0-9_\-]{19,}").unwrap(), "***"),
             // Bearer / Authorization tokens.
             (Regex::new(r"(?i)bearer\s+[A-Za-z0-9._\-]+").unwrap(), "Bearer ***"),
             // key=value / key: value for sensitive keys (keep the key name).
@@ -268,6 +271,21 @@ mod tests {
         let out = redact("auth failed for sk-ant-SUPERSECRET123 retrying");
         assert!(!out.contains("SUPERSECRET123"), "leaked: {out}");
         assert!(out.contains("***"));
+    }
+
+    // L1 (chaos re-test): the generic sk- rule missed modern hyphenated OpenAI
+    // key formats (sk-proj-/sk-svcacct-/sk-admin-) in free-form crash-log text.
+    #[test]
+    fn redact_strips_hyphenated_openai_keys() {
+        for key in [
+            "sk-proj-abcDEF1234567890ghijKLMN",
+            "sk-svcacct-ABCdef1234567890XYZ0",
+            "sk-admin-0123456789abcdefABCDEF",
+        ] {
+            let out = redact(&format!("panic: request failed with {key} at line 3"));
+            assert!(!out.contains(key), "leaked key {key}: {out}");
+            assert!(out.contains("***"), "no redaction marker: {out}");
+        }
     }
 
     #[test]

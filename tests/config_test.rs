@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use tempfile::TempDir;
-use zentra_cli::config::validation::validate_provider_base_url;
+use zentra_cli::config::validation::{validate_profile_endpoint, validate_provider_base_url};
 use zentra_cli::config::{GlobalConfig, ProjectConfig, ProviderProfile};
 use zentra_cli::wizard::provider_defaults;
 
@@ -133,6 +133,74 @@ fn project_config_roundtrip() {
     let loaded = ProjectConfig::load_from(&path).unwrap();
     assert_eq!(loaded.stack, "rust");
     assert_eq!(loaded.exclusions, vec!["dist/"]);
+}
+
+// M3 (chaos re-test): base_url was validated only at config-write time, never on
+// the load/env use path — so a hand-edited/migrated ~/.zentra/config.toml or a
+// ZENTRA_PROVIDER_BASE_URL env var could attach the API key to an arbitrary or
+// cleartext-http endpoint. validate_profile_endpoint runs the same gate where the
+// provider is actually built, exempting CLI providers (base_url is a binary path).
+#[test]
+fn validate_profile_endpoint_rejects_remote_http_and_bad_schemes() {
+    assert!(validate_profile_endpoint("openai_compat", "http://attacker.tld/v1").is_err());
+    assert!(validate_profile_endpoint("anthropic", "http://attacker.tld").is_err());
+    assert!(validate_profile_endpoint("openai_compat", "ftp://x/y").is_err());
+}
+
+#[test]
+fn validate_profile_endpoint_allows_https_loopback_and_cli() {
+    assert!(validate_profile_endpoint("anthropic", "https://api.anthropic.com").is_ok());
+    // Ollama-style local, keyless.
+    assert!(validate_profile_endpoint("openai_compat", "http://localhost:11434/v1").is_ok());
+    // CLI providers store a binary name/path in base_url, not a URL — exempt.
+    assert!(validate_profile_endpoint("claude_cli", "claude").is_ok());
+    assert!(validate_profile_endpoint("codex_cli", "/usr/local/bin/codex").is_ok());
+}
+
+// M4 (chaos re-test): in CI the .zentra/config.json comes from an untrusted PR.
+// Its target_path is joined onto the repo root to pick the scan root AND the
+// StateWriter output dir; an absolute path or one with `..` lets a PR redirect
+// where `zentra ci` creates `.zentra/` and writes findings/audit logs — outside
+// the checkout. resolve_target_within must reject any escaping path.
+#[test]
+fn resolve_target_within_accepts_normal_relative_subpaths() {
+    let root = std::path::Path::new("/repo");
+    for ok in [".", "./src", "src", "app/server"] {
+        let cfg = ProjectConfig {
+            target_path: ok.to_string(),
+            stack: "rust".into(),
+            exclusions: vec![],
+        };
+        assert!(
+            cfg.resolve_target_within(root).is_ok(),
+            "expected {ok:?} to be accepted"
+        );
+    }
+}
+
+#[test]
+fn resolve_target_within_rejects_escaping_paths() {
+    let root = std::path::Path::new("/repo");
+    // Absolute (unix + windows drive), parent-dir traversal, and a unix-rooted
+    // path that Path::is_absolute() returns false for on Windows.
+    for bad in [
+        "../../../../tmp/pwn",
+        "src/../../etc",
+        "/etc/cron.d",
+        "/home/runner/.config",
+        "C:\\Users\\runneradmin\\evil",
+        "C:evil",
+    ] {
+        let cfg = ProjectConfig {
+            target_path: bad.to_string(),
+            stack: "rust".into(),
+            exclusions: vec![],
+        };
+        assert!(
+            cfg.resolve_target_within(root).is_err(),
+            "expected {bad:?} to be rejected"
+        );
+    }
 }
 
 #[test]

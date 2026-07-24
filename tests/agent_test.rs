@@ -88,6 +88,67 @@ fn state_writer_appends_multiple_findings() {
     assert!(content.contains("Finding 2"));
 }
 
+// H1 (chaos re-test): the 4 Phase-2 scanners run on separate runtime threads and
+// share one `Arc<StateWriter>`. `write_finding` is append + read-whole + sort +
+// write-whole with no lock, so concurrent calls lose updates — a dropped finding
+// can be a Critical, and the scan still reports success. Hammer it from many
+// threads and assert every finding survives.
+#[test]
+fn concurrent_write_finding_never_drops_a_finding() {
+    use std::sync::{Arc, Barrier};
+
+    let dir = TempDir::new().unwrap();
+    let writer = Arc::new(StateWriter::new(dir.path()).unwrap());
+
+    const N: usize = 32;
+    // Release every thread into write_finding at the same instant to maximize the
+    // append/read-sort-write overlap that the missing lock exposes.
+    let barrier = Arc::new(Barrier::new(N));
+    let handles: Vec<_> = (0..N)
+        .map(|i| {
+            let w = Arc::clone(&writer);
+            let b = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                b.wait();
+                // A few writes each further widens the racing window.
+                for r in 0..4 {
+                    w.write_finding(&Finding {
+                        scanner: "sast".to_string(),
+                        severity: Severity::High,
+                        title: format!("RaceFinding-{i}-{r}"),
+                        description: "desc".to_string(),
+                        location: None,
+                        recommendation: "fix it".to_string(),
+                        corroborated_by: vec![],
+                        cwe: None,
+                        secondary_cwe: vec![],
+                        cvss_vector: None,
+                        cvss_score: None,
+                        owasp: None,
+                    })
+                    .unwrap();
+                }
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    const N_TOTAL: usize = N * 4;
+
+    let content = writer.read_findings_raw().unwrap();
+    let present = (0..N)
+        .flat_map(|i| (0..4).map(move |r| format!("RaceFinding-{i}-{r}")))
+        .filter(|t| content.contains(t))
+        .count();
+    assert_eq!(
+        present, N_TOTAL,
+        "concurrent write_finding dropped {} of {N_TOTAL} findings",
+        N_TOTAL - present
+    );
+}
+
 #[test]
 fn state_writer_sorts_findings_by_severity_in_markdown() {
     let dir = TempDir::new().unwrap();
