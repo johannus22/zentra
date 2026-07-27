@@ -22,4 +22,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /build/target/release/zentra /usr/local/bin/zentra
 
+# Run as a non-root user (CWE-250 defense-in-depth: a process compromised inside
+# the container no longer has root). UID 1001 matches the GitHub Actions runner
+# user, so the mounted $GITHUB_WORKSPACE stays writable in `container:` CI jobs
+# (where `zentra ci` writes .zentra/ci-report.*). --create-home gives ~/.zentra a
+# home to live in.
+RUN useradd --uid 1001 --create-home zentra
+USER zentra
+
 ENTRYPOINT ["zentra"]
