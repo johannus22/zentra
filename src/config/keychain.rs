@@ -6,6 +6,29 @@ pub fn service_name(profile: &str) -> String {
     format!("zentra.{}", profile)
 }
 
+/// A profile name is interpolated into `~/.zentra/keys/<name>.key`, so it must
+/// be a safe single filename component. Allow only `[A-Za-z0-9_-]` (mirroring
+/// the TUI form) — this rejects path separators and `..`, closing the
+/// traversal-write path for non-TUI callers such as the wizard (F13).
+pub fn is_valid_profile_name(profile: &str) -> bool {
+    !profile.is_empty()
+        && profile.len() <= 64
+        && profile
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn ensure_valid_profile_name(profile: &str) -> Result<()> {
+    if is_valid_profile_name(profile) {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "invalid profile name {profile:?}: use only letters, digits, '-' and '_' \
+             (max 64 chars)"
+        )
+    }
+}
+
 pub fn masked_display() -> &'static str {
     "••••••••••••"
 }
@@ -33,6 +56,7 @@ pub enum KeyStorage {
 }
 
 pub fn set_key(profile: &str, api_key: &str) -> Result<KeyStorage> {
+    ensure_valid_profile_name(profile)?;
     // Store the key in a file under ~/.zentra/keys/ by default, encrypted at
     // rest via secret_store (DPAPI on Windows, 0o600 plaintext on Unix).
     // The OS keychain proved unreliable — Windows Credential Manager could return Ok
@@ -55,14 +79,38 @@ pub fn set_key(profile: &str, api_key: &str) -> Result<KeyStorage> {
     Ok(KeyStorage::File)
 }
 
+/// Interpret raw key-file bytes as a usable API key. Errors if the file is not
+/// valid UTF-8 or is empty/whitespace-only — a truncated or cleared key file
+/// should fail clearly here, not surface downstream as an empty/invalid key that
+/// the provider rejects with a confusing error (F20).
+fn parse_key_bytes(bytes: Vec<u8>) -> Result<String> {
+    use zeroize::Zeroize;
+    // Zeroize the intermediate plaintext buffers once we've extracted the key, so
+    // decrypted key material doesn't linger in freed heap between the keychain
+    // read and the provider wrapping it in `Zeroizing` (L2 defense-in-depth).
+    let mut s = String::from_utf8(bytes).map_err(|e| {
+        let mut raw = e.into_bytes();
+        raw.zeroize();
+        anyhow::anyhow!("API key file contains invalid UTF-8 — the file may be corrupt")
+    })?;
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        s.zeroize();
+        anyhow::bail!(
+            "API key file is empty or corrupt — re-run `zentra config setup` to reconfigure this profile"
+        );
+    }
+    let key = trimmed.to_string();
+    s.zeroize();
+    Ok(key)
+}
+
 pub fn get_key(profile: &str) -> Result<Option<String>> {
     // Prefer the key file — the default storage location.
     if let Some(path) = key_file_path(profile) {
         if path.exists() {
             let bytes = secret_store::read_secret(&path)?;
-            let key = String::from_utf8(bytes)
-                .context("API key file contains invalid UTF-8 — the file may be corrupt")?;
-            return Ok(Some(key.trim().to_string()));
+            return Ok(Some(parse_key_bytes(bytes)?));
         }
     }
     // Backward compatibility: best-effort read of a key left in the OS keychain by an
@@ -162,6 +210,19 @@ mod tests {
     use super::*;
     use crate::auth::OAuthTokens;
     use tempfile::TempDir;
+
+    // F20: an empty/whitespace key file must fail with a clear error, not be
+    // returned as an empty key that the provider later rejects opaquely.
+    #[test]
+    fn parse_key_bytes_rejects_empty_and_whitespace() {
+        assert!(parse_key_bytes(Vec::new()).is_err());
+        assert!(parse_key_bytes(b"   \n\t".to_vec()).is_err());
+    }
+
+    #[test]
+    fn parse_key_bytes_trims_and_returns_valid_key() {
+        assert_eq!(parse_key_bytes(b"  sk-abc123\n".to_vec()).unwrap(), "sk-abc123");
+    }
 
     #[test]
     fn oauth_tokens_file_roundtrip() {

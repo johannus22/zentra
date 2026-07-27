@@ -27,7 +27,15 @@ fn normalize(path: &str) -> String {
 /// files (excludes deletions; deleted files can't be scanned).
 pub fn working_tree_changes(root: &Path) -> Result<Vec<String>> {
     let output = Command::new("git")
-        .args(["status", "--porcelain", "--untracked-files=all"])
+        // core.quotePath=false so non-ASCII paths come back literally (UTF-8)
+        // instead of octal-escaped+quoted, which never matched downstream.
+        .args([
+            "-c",
+            "core.quotePath=false",
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+        ])
         .current_dir(root)
         .output()?;
     if !output.status.success() {
@@ -80,18 +88,41 @@ fn hash_dir(root: &Path, dir: &Path, out: &mut BTreeMap<String, String>) -> Resu
         if name == ".git" || name == ".zentra" || name == "target" || name == "node_modules" {
             continue;
         }
-        if path.is_dir() {
+        // Skip symlinks (does not follow): a directory symlink to an ancestor
+        // would recurse forever (F6); a file symlink could escape root.
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             hash_dir(root, &path, out)?;
-        } else if let Ok(bytes) = std::fs::read(&path) {
-            let mut hasher = Sha256::new();
-            hasher.update(&bytes);
-            let digest = format!("{:x}", hasher.finalize());
-            if let Ok(rel) = path.strip_prefix(root) {
-                out.insert(normalize(&rel.to_string_lossy()), digest);
+        } else if file_type.is_file() {
+            // Stream the hash so a multi-GB file isn't buffered whole (F7 OOM).
+            if let Some(digest) = hash_file_streaming(&path) {
+                if let Ok(rel) = path.strip_prefix(root) {
+                    out.insert(normalize(&rel.to_string_lossy()), digest);
+                }
             }
         }
     }
     Ok(())
+}
+
+fn hash_file_streaming(path: &Path) -> Option<String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => hasher.update(&buf[..n]),
+            Err(_) => return None,
+        }
+    }
+    Some(format!("{:x}", hasher.finalize()))
 }
 
 pub fn compute_change_set(
@@ -231,6 +262,22 @@ mod tests {
             cs.changed.contains(&"gone.rs".to_string()),
             "deleted file must appear in changed: {:?}",
             cs.changed
+        );
+    }
+
+    // F17: with git's default core.quotePath=true, non-ASCII paths come back
+    // octal-escaped and quoted, so a modified file with a non-ASCII name was
+    // never matched downstream (silently excluded from incremental scans).
+    #[test]
+    fn working_tree_changes_includes_non_ascii_filename() {
+        let dir = TempDir::new().unwrap();
+        init_repo(dir.path());
+        std::fs::write(dir.path().join("caf\u{e9}.rs"), "fn c() {}").unwrap();
+        let changed = working_tree_changes(dir.path()).unwrap();
+        assert!(
+            changed.iter().any(|f| f == "caf\u{e9}.rs"),
+            "non-ASCII filename should be listed literally, got {:?}",
+            changed
         );
     }
 

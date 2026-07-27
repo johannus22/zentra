@@ -95,6 +95,18 @@ fn rejects_empty_and_unknown_schemes() {
     assert!(validate_repo_url("not a url").is_err());
 }
 
+// Iter-3 LOW: a `-`-leading authority (ssh option-injection on older git) must be
+// rejected; a well-formed host with an ssh user must still pass.
+#[test]
+fn rejects_option_injection_authority() {
+    assert!(validate_repo_url("ssh://-oProxyCommand=calc/x.git").is_err());
+    assert!(validate_repo_url("ssh://user@-evil/x.git").is_err());
+    assert!(validate_repo_url("https://-oEvil/x.git").is_err());
+    // Legitimate URLs still accepted.
+    assert!(validate_repo_url("ssh://git@example.com/x.git").is_ok());
+    assert!(validate_repo_url("https://github.com/foo/bar.git").is_ok());
+}
+
 #[test]
 fn derives_repo_name_from_url() {
     assert_eq!(derive_repo_name("https://github.com/foo/bar.git"), "bar");

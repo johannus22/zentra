@@ -776,7 +776,12 @@ pub fn incremental_banner(
     carried: usize,
     baseline: &str,
 ) -> String {
-    let short = &baseline[..baseline.len().min(8)];
+    let short_end = baseline
+        .char_indices()
+        .nth(8)
+        .map(|(i, _)| i)
+        .unwrap_or(baseline.len());
+    let short = &baseline[..short_end];
     format!(
         "Incremental rescan · baseline {short} · {changed} changed · {impacted} impacted · {carried} carried"
     )

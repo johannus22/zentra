@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use tempfile::TempDir;
-use zentra_cli::config::validation::validate_provider_base_url;
+use zentra_cli::config::validation::{validate_profile_endpoint, validate_provider_base_url};
 use zentra_cli::config::{GlobalConfig, ProjectConfig, ProviderProfile};
 use zentra_cli::wizard::provider_defaults;
 
@@ -133,6 +133,74 @@ fn project_config_roundtrip() {
     let loaded = ProjectConfig::load_from(&path).unwrap();
     assert_eq!(loaded.stack, "rust");
     assert_eq!(loaded.exclusions, vec!["dist/"]);
+}
+
+// M3 (chaos re-test): base_url was validated only at config-write time, never on
+// the load/env use path — so a hand-edited/migrated ~/.zentra/config.toml or a
+// ZENTRA_PROVIDER_BASE_URL env var could attach the API key to an arbitrary or
+// cleartext-http endpoint. validate_profile_endpoint runs the same gate where the
+// provider is actually built, exempting CLI providers (base_url is a binary path).
+#[test]
+fn validate_profile_endpoint_rejects_remote_http_and_bad_schemes() {
+    assert!(validate_profile_endpoint("openai_compat", "http://attacker.tld/v1").is_err());
+    assert!(validate_profile_endpoint("anthropic", "http://attacker.tld").is_err());
+    assert!(validate_profile_endpoint("openai_compat", "ftp://x/y").is_err());
+}
+
+#[test]
+fn validate_profile_endpoint_allows_https_loopback_and_cli() {
+    assert!(validate_profile_endpoint("anthropic", "https://api.anthropic.com").is_ok());
+    // Ollama-style local, keyless.
+    assert!(validate_profile_endpoint("openai_compat", "http://localhost:11434/v1").is_ok());
+    // CLI providers store a binary name/path in base_url, not a URL — exempt.
+    assert!(validate_profile_endpoint("claude_cli", "claude").is_ok());
+    assert!(validate_profile_endpoint("codex_cli", "/usr/local/bin/codex").is_ok());
+}
+
+// M4 (chaos re-test): in CI the .zentra/config.json comes from an untrusted PR.
+// Its target_path is joined onto the repo root to pick the scan root AND the
+// StateWriter output dir; an absolute path or one with `..` lets a PR redirect
+// where `zentra ci` creates `.zentra/` and writes findings/audit logs — outside
+// the checkout. resolve_target_within must reject any escaping path.
+#[test]
+fn resolve_target_within_accepts_normal_relative_subpaths() {
+    let root = std::path::Path::new("/repo");
+    for ok in [".", "./src", "src", "app/server"] {
+        let cfg = ProjectConfig {
+            target_path: ok.to_string(),
+            stack: "rust".into(),
+            exclusions: vec![],
+        };
+        assert!(
+            cfg.resolve_target_within(root).is_ok(),
+            "expected {ok:?} to be accepted"
+        );
+    }
+}
+
+#[test]
+fn resolve_target_within_rejects_escaping_paths() {
+    let root = std::path::Path::new("/repo");
+    // Absolute (unix + windows drive), parent-dir traversal, and a unix-rooted
+    // path that Path::is_absolute() returns false for on Windows.
+    for bad in [
+        "../../../../tmp/pwn",
+        "src/../../etc",
+        "/etc/cron.d",
+        "/home/runner/.config",
+        "C:\\Users\\runneradmin\\evil",
+        "C:evil",
+    ] {
+        let cfg = ProjectConfig {
+            target_path: bad.to_string(),
+            stack: "rust".into(),
+            exclusions: vec![],
+        };
+        assert!(
+            cfg.resolve_target_within(root).is_err(),
+            "expected {bad:?} to be rejected"
+        );
+    }
 }
 
 #[test]
@@ -660,4 +728,82 @@ fn keychain_get_returns_none_when_both_absent() {
     // Profile name unlikely to exist in any real keychain or file
     let result = keychain::get_key("zentra-test-absent-zzzzz").expect("get_key should not error");
     assert_eq!(result, None);
+}
+
+// F3: a project config that exists but fails to parse must be a hard error with
+// the file left untouched — never silently overwritten with defaults (which
+// discards the user's target_path and exclusions; dropped exclusions can pull
+// deliberately-excluded/secret files into a scan).
+#[test]
+fn load_or_init_for_run_errors_and_preserves_malformed_config() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("config.json");
+    let malformed = r#"{ "target_path": "./custom-src", "exclusions": [ "secrets/" BROKEN"#;
+    std::fs::write(&path, malformed).unwrap();
+
+    let result = ProjectConfig::load_or_init_for_run(&path, dir.path());
+    assert!(
+        result.is_err(),
+        "a malformed existing config must be a hard error, not a silent default"
+    );
+
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        after, malformed,
+        "the user's malformed config must be left untouched (no data loss)"
+    );
+}
+
+#[test]
+fn load_or_init_for_run_creates_default_when_missing() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join(".zentra").join("config.json");
+    std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+
+    let (cfg, created) = ProjectConfig::load_or_init_for_run(&path, dir.path()).unwrap();
+    assert!(created, "a missing config should be reported as newly created");
+    assert_eq!(cfg.stack, "rust");
+    assert!(path.exists(), "the default config should be written to disk");
+}
+
+// F13: profile names are interpolated into ~/.zentra/keys/<name>.key. The TUI
+// validated the charset but the wizard did not, so `config setup` with a name
+// like `../../../tmp/pwned` wrote the secret outside the keys dir. Enforce the
+// check at the keychain boundary so all callers are covered.
+#[test]
+fn profile_name_validator_rejects_traversal_and_separators() {
+    use zentra_cli::config::keychain::is_valid_profile_name;
+    assert!(is_valid_profile_name("agents-gtwy"));
+    assert!(is_valid_profile_name("claude_cli-2"));
+    assert!(!is_valid_profile_name("../../../tmp/pwned"));
+    assert!(!is_valid_profile_name("a/b"));
+    assert!(!is_valid_profile_name(r"a\b"));
+    assert!(!is_valid_profile_name(".."));
+    assert!(!is_valid_profile_name(""));
+}
+
+// F13: set_key must reject a traversal name before writing anything (now safe
+// to exercise — it errors before touching the filesystem).
+#[test]
+fn set_key_rejects_traversal_profile_name() {
+    let result = keychain::set_key("../../../../tmp/zentra-pwned", "secret");
+    assert!(result.is_err(), "traversal profile name must be rejected");
+}
+
+// F15: config saves are atomic (temp + rename). Verify overwrite works (Windows
+// rename-replace) and no stray temp file is left behind.
+#[test]
+fn project_config_save_overwrites_atomically_without_temp_leftover() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("config.json");
+    ProjectConfig::new("rust", vec!["dist/".into()])
+        .save_to(&path)
+        .unwrap();
+    ProjectConfig::new("node", vec![]).save_to(&path).unwrap();
+    let loaded = ProjectConfig::load_from(&path).unwrap();
+    assert_eq!(loaded.stack, "node");
+    assert!(
+        !dir.path().join("config.json.tmp").exists(),
+        "atomic write must not leave a temp file"
+    );
 }
