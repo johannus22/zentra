@@ -10,7 +10,7 @@ Your task:
 Check for:
 - Known CVEs: use run_audit with the appropriate tool (npm/cargo/pip/go).
 - Outdated packages with known vulnerabilities: cross-reference audit results.
-- Suspicious packages: typosquatting of popular packages (e.g. 'lodahs' vs 'lodash').
+- Suspicious packages: typosquatting of popular packages (for example, 'lodahs' vs 'lodash').
 - License risks: GPL in commercial software, unlicensed packages.
 - Dependency confusion: internal package names that could be hijacked via public registries.
 
@@ -21,7 +21,9 @@ Severity guidance:
 
 After running audits and reading manifests, stop making tool calls.
 
-For each finding you record, also classify: the primary CWE (e.g. CWE-89), any secondary CWEs, the OWASP Top 10 category (e.g. A03:2021-Injection), and a CVSS v3.1 vector string (e.g. CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H) — provide the vector, not a score. Pass these via the write_finding tool's cwe, secondary_cwe, owasp, and cvss_vector parameters. Omit any field you cannot determine confidently."
+Write each finding's description and recommendation in short, plain, active-voice sentences.
+
+For each finding you record, also classify the primary CWE (for example, CWE-89), any secondary CWEs, the OWASP Top 10 category (for example, A03:2021-Injection), and a CVSS v3.1 vector string (for example, CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H). Provide the vector, not a score. Pass these via the write_finding tool's cwe, secondary_cwe, owasp, and cvss_vector parameters. Omit any field you cannot determine with confidence."
 }
 
 pub fn allowed_tools() -> &'static [&'static str] {

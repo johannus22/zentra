@@ -69,13 +69,13 @@ impl ToolRegistry {
                             "description": "Finding severity"
                         },
                         "title": {"type": "string", "description": "Short finding title (under 80 chars)"},
-                        "description": {"type": "string", "description": "Detailed description of the vulnerability"},
-                        "location": {"type": "string", "description": "File and line, e.g. src/auth.rs:42"},
-                        "recommendation": {"type": "string", "description": "Concrete fix recommendation"},
-                        "cwe": {"type": "string", "description": "Primary CWE id, e.g. CWE-89"},
-                        "secondary_cwe": {"type": "array", "items": {"type": "string"}, "description": "Additional related CWE ids, e.g. [\"CWE-20\"]"},
-                        "cvss_vector": {"type": "string", "description": "CVSS v3.1 base vector, e.g. CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H (provide the vector, not a score)"},
-                        "owasp": {"type": "string", "description": "OWASP Top 10 category, e.g. A03:2021-Injection"}
+                        "description": {"type": "string", "description": "What the vulnerability is and where it occurs. Use short, plain, active-voice sentences."},
+                        "location": {"type": "string", "description": "File and line, for example src/auth.rs:42"},
+                        "recommendation": {"type": "string", "description": "The concrete fix, written as a short, direct instruction."},
+                        "cwe": {"type": "string", "description": "Primary CWE id, for example CWE-89"},
+                        "secondary_cwe": {"type": "array", "items": {"type": "string"}, "description": "Additional related CWE ids, for example [\"CWE-20\"]"},
+                        "cvss_vector": {"type": "string", "description": "CVSS v3.1 base vector, for example CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H (provide the vector, not a score)"},
+                        "owasp": {"type": "string", "description": "OWASP Top 10 category, for example A03:2021-Injection"}
                     },
                     "required": ["severity", "title", "description", "recommendation"]
                 }),

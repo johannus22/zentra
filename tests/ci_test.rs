@@ -399,7 +399,7 @@ fn rejects_branch_push_without_pr_or_mr_metadata() {
 
     assert_eq!(
         err.to_string(),
-        "Zentra CI currently supports pull request / merge request pipelines only."
+        "Zentra CI supports pull request and merge request pipelines only."
     );
 }
 

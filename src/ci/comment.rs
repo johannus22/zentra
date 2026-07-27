@@ -90,7 +90,7 @@ pub fn build_sticky_comment_body(context: &CiContext, findings: &[Finding]) -> S
         (
             "❌ Failed",
             format!(
-                "**{} Critical finding{} must be resolved before this can be merged.**",
+                "**Fix {} Critical finding{} before you merge this.**",
                 counts.critical,
                 if counts.critical == 1 { "" } else { "s" }
             ),
@@ -98,7 +98,7 @@ pub fn build_sticky_comment_body(context: &CiContext, findings: &[Finding]) -> S
     } else {
         (
             "✅ Passed",
-            "No Critical findings detected in the scanned changes.".to_string(),
+            "No Critical findings in the scanned changes.".to_string(),
         )
     };
 

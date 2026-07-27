@@ -5,7 +5,7 @@ use anyhow::{anyhow, bail, Result};
 use super::CiPlatformKind;
 
 pub const PR_MR_ONLY_MESSAGE: &str =
-    "Zentra CI currently supports pull request / merge request pipelines only.";
+    "Zentra CI supports pull request and merge request pipelines only.";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CiContext {

@@ -172,8 +172,8 @@ impl ScannerAgent {
         let mut effective_system: String = match &self.context {
             Some(ctx) => format!(
                 "{}\n\n## Project Framework Context\n\n\
-This context was produced by a prior framework analysis pass. Use it to avoid false positives — \
-for example, do not flag SQL injection if the ORM listed here auto-parameterises all queries.\n\n{}",
+This context was produced by a prior framework analysis pass. Use it to avoid false positives. \
+For example, do not flag SQL injection if the ORM listed here auto-parameterises all queries.\n\n{}",
                 base_system, ctx
             ),
             None => base_system.to_string(),
