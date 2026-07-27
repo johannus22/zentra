@@ -2,6 +2,8 @@ name: Zentra Security Scan
 
 on:
   pull_request:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -11,15 +13,16 @@ permissions:
 jobs:
   zentra-ci:
     name: Zentra CI (dogfood)
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     container:
       # Pin to a specific published version instead of the mutable :latest tag
       # (CWE-1104: this job holds ZENTRA_API_KEY + GITHUB_TOKEN and has
       # pull-requests: write, so a swapped :latest image could exfiltrate them).
       # Ideal is an immutable @sha256 digest; the GHCR package is private so
-      # resolve it with `docker buildx imagetools inspect ghcr.io/kestrel-sec/zentra:0.12.13`
+      # resolve it with `docker buildx imagetools inspect ghcr.io/kestrel-sec/zentra:0.13.0`
       # (authenticated) and replace the tag with @<digest> when convenient.
-      image: ghcr.io/kestrel-sec/zentra:0.12.13
+      image: ghcr.io/kestrel-sec/zentra:0.13.0
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -28,6 +31,19 @@ jobs:
 
       - name: Trust workspace directory for git
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      # Phase 0 (FrameworkAnalysis) re-derives .zentra/architecture.md from the
+      # whole checkout and doesn't change between commits that don't touch the
+      # project's structure. Restore the copy the refresh-architecture-cache job
+      # saved from main instead of redoing it on every PR run. A cache miss is a
+      # safe fallback: `zentra ci` regenerates the file when it isn't present.
+      - name: Restore cached architecture analysis
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .zentra/architecture.md
+          key: zentra-architecture-${{ github.sha }}
+          restore-keys: |
+            zentra-architecture-
 
       - name: Run Zentra CI scan
         env:
@@ -46,3 +62,34 @@ jobs:
             .zentra/ci-report.md
             .zentra/ci-report.json
           if-no-files-found: ignore
+
+  refresh-architecture-cache:
+    name: Refresh architecture cache (main)
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/kestrel-sec/zentra:0.13.0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Trust workspace directory for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      # Runs only Phase 0 (FrameworkAnalysis) — no PR diff, report, or comment —
+      # and writes .zentra/architecture.md for the PR job's cache to restore.
+      - name: Regenerate architecture analysis
+        env:
+          ZENTRA_API_KEY: ${{ secrets.ZENTRA_API_KEY }}
+          ZENTRA_PROVIDER_BASE_URL: ${{ secrets.ZENTRA_PROVIDER_BASE_URL }}
+          ZENTRA_PROVIDER_MODEL: ${{ secrets.ZENTRA_PROVIDER_MODEL }}
+        run: zentra ci --refresh-architecture
+
+      - name: Save architecture cache
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .zentra/architecture.md
+          key: zentra-architecture-${{ github.sha }}
