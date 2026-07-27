@@ -21,7 +21,9 @@ OWASP API Top 10 to check:
 Search for route definitions, middleware chains, input validation, and response serialization.
 When done, stop making tool calls.
 
-For each finding you record, also classify: the primary CWE (e.g. CWE-89), any secondary CWEs, the OWASP Top 10 category (e.g. A03:2021-Injection), and a CVSS v3.1 vector string (e.g. CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H) — provide the vector, not a score. Pass these via the write_finding tool's cwe, secondary_cwe, owasp, and cvss_vector parameters. Omit any field you cannot determine confidently."
+Write each finding's description and recommendation in short, plain, active-voice sentences.
+
+For each finding you record, also classify the primary CWE (for example, CWE-89), any secondary CWEs, the OWASP Top 10 category (for example, A03:2021-Injection), and a CVSS v3.1 vector string (for example, CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H). Provide the vector, not a score. Pass these via the write_finding tool's cwe, secondary_cwe, owasp, and cvss_vector parameters. Omit any field you cannot determine with confidence."
 }
 
 pub fn allowed_tools() -> &'static [&'static str] {

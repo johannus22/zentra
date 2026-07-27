@@ -88,13 +88,13 @@ pub fn git_diff_error_with_guidance(platform: CiPlatformKind, git_error: &str) -
 pub fn missing_history_guidance(platform: CiPlatformKind) -> String {
     match platform {
         CiPlatformKind::Github => concat!(
-            "Unable to determine changed files. Ensure GitHub Actions checkout fetches full ",
-            "history with actions/checkout fetch-depth: 0."
+            "Zentra could not find the changed files. Make sure the GitHub Actions checkout ",
+            "step fetches full history: set fetch-depth: 0."
         )
         .to_string(),
         CiPlatformKind::Gitlab => concat!(
-            "Unable to determine changed files. Ensure GitLab CI fetches full history with ",
-            "GIT_DEPTH: \"0\"."
+            "Zentra could not find the changed files. Make sure GitLab CI fetches full history: ",
+            "set GIT_DEPTH: \"0\"."
         )
         .to_string(),
     }

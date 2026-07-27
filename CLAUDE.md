@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file gives guidance to Claude Code (claude.ai/code), for work on code in this repository.
 
 > This file is the Claude Code entry point. See the project vault notes (`projects/zentra-cli/architecture/`) for the extended architecture reference and vault links.
 
@@ -19,7 +19,7 @@ cargo run -- config setup                                  # interactive provide
 
 ## Architecture
 
-**zentra-cli** is a Rust CLI (`zentra`) that orchestrates LLM-powered security scans. It dispatches multiple `ScannerAgent` instances against a codebase, writes findings to `.zentra/`, and renders a live ratatui TUI during the scan.
+**zentra-cli** is a Rust CLI (`zentra`) that orchestrates LLM-powered security scans. It dispatches multiple `ScannerAgent` instances against a codebase. It writes findings to `.zentra/`, and renders a live `ratatui` TUI during the scan.
 
 **Stack:** Rust 2021 · tokio · ratatui 0.29 · crossterm 0.28 · clap 4 (derive) · reqwest 0.12 · keyring 3
 
@@ -53,17 +53,17 @@ Phase 3: Report             (sequential)
 
 ### ReAct Loop (`agent/scanner.rs`)
 
-1. Build system prompt + tool definitions for the `ScannerType`
-2. POST to provider with tools; max 30 iterations
-3. Tool calls → `ToolRegistry::dispatch()` → append results to conversation
-4. No tool calls → agent done
-5. All events emitted via `mpsc::channel(128)` → `UiState::apply_event()` (pure, no side effects)
+1. Build the system prompt and tool definitions for the `ScannerType`.
+2. Post to the provider with tools, for a maximum of 30 iterations.
+3. On a tool call, route it through `ToolRegistry::dispatch()`, then append the results to the conversation.
+4. With no tool calls, the agent is done.
+5. Every event is emitted via `mpsc::channel(128)`, to `UiState::apply_event()`. This function is pure, with no side effects.
 
 ### Provider Abstraction
 
-`LLMProvider` trait with `complete_with_tools()`. Two impls behind `Arc<dyn LLMProvider>`:
-- `AnthropicProvider` — native `tool_use` / `tool_result` content blocks
-- `OpenAICompatProvider` — OpenAI `function`-typed tool_calls
+The `LLMProvider` trait exposes `complete_with_tools()`. It has two implementations, behind `Arc<dyn LLMProvider>`:
+- `AnthropicProvider` — uses native `tool_use` / `tool_result` content blocks.
+- `OpenAICompatProvider` — uses OpenAI `function`-typed tool calls.
 
 ### Config Locations
 
@@ -77,7 +77,7 @@ Phase 3: Report             (sequential)
 
 ## Tests
 
-Integration tests in `tests/` use `tempfile::TempDir` + `wiremock::MockServer`:
+Integration tests in `tests/` use `tempfile::TempDir` and `wiremock::MockServer`:
 
 - `agent_test.rs` — StateWriter, ToolRegistry dispatch, ScannerAgent ReAct loop, orchestrator ordering
 - `auth_test.rs` — OAuth PKCE, token refresh
@@ -88,12 +88,12 @@ Integration tests in `tests/` use `tempfile::TempDir` + `wiremock::MockServer`:
 
 ## Gotchas
 
-**Exhaustive `ScanEvent` match** — After adding a new variant, grep all `match` blocks on `ScanEvent`. In `scan.rs`, add `ScanEvent::NewVariant { .. } => {}` as a no-op if that site doesn't need it.
+**Exhaustive `ScanEvent` match** — After you add a new variant, grep every `match` block on `ScanEvent`. In `scan.rs`, add `ScanEvent::NewVariant { .. } => {}` as a no-op, if that site does not need it.
 
-**CWD-dependent tests must be serialized** — Tests that call `std::env::set_current_dir()` must acquire the static `CWD_LOCK: Mutex<()>` defined in `agent_test.rs`.
+**CWD-dependent tests must be serialized** — Tests that call `std::env::set_current_dir()` must acquire the static `CWD_LOCK: Mutex<()>`, defined in `agent_test.rs`.
 
-**Regex patterns use `OnceLock`** — the `pentest/` fingerprinting, secret-pattern, and report modules compile regexes once via a `static RE: OnceLock<Regex>` per call site. Don't use bare `Regex::new()` in a hot path — follow the existing `OnceLock` pattern.
+**Regex patterns use `OnceLock`** — The `pentest/` fingerprinting, secret-pattern, and report modules each compile their regex once, via a `static RE: OnceLock<Regex>` per call site. Do not use bare `Regex::new()` in a hot path. Follow the existing `OnceLock` pattern instead.
 
-**`context_window()` falls through on unknown models** — `LLMProvider::context_window()` matches on model name substring; unknown models hit a default. Override via `ProviderProfile::context_window: Option<u32>`.
+**`context_window()` falls through on unknown models** — `LLMProvider::context_window()` matches on a model name substring. Unknown models hit a default. Override this via `ProviderProfile::context_window: Option<u32>`.
 
-**Secrets are file-based, not OS-keychain** — `config/secret_store.rs` is the single source of at-rest protection for `~/.zentra/keys/`. Windows uses DPAPI; Unix uses AES-256-GCM envelope encryption with the data key in the OS secret store (Secret Service / Keychain), falling back to `0o600` plaintext when that store is unavailable. `keyring` is only a backward-compat read fallback in `keychain.rs`. **`keyring` 3.x is a no-op mock unless a backend feature is enabled** — backends are wired per-target in `Cargo.toml` (`sync-secret-service`+`crypto-rust` on Linux, `apple-native` on macOS); Windows stays featureless on purpose.
+**Secrets are file-based, not OS-keychain** — `config/secret_store.rs` is the single source of at-rest protection for `~/.zentra/keys/`. Windows uses DPAPI. Unix uses AES-256-GCM envelope encryption, with the data key in the OS secret store (Secret Service or Keychain), falling back to `0o600` plaintext when that store is unavailable. `keyring` serves only as a backward-compatible read fallback in `keychain.rs`. **`keyring` 3.x is a no-op mock, unless a backend feature is enabled.** Backends are wired per-target in `Cargo.toml` (`sync-secret-service` and `crypto-rust` on Linux, `apple-native` on macOS). Windows stays featureless on purpose.

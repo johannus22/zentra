@@ -17,10 +17,10 @@ You will NOT get another chance if the session ends early. A partial analysis is
 
 The document must cover:
 - **Language & runtime** — primary language; version if visible in manifests
-- **Web framework** — e.g. Actix-web, Express, Django, Rails, Spring, FastAPI, Gin; \
-any default security features (CSRF protection, XSS escaping, etc.)
+- **Web framework** — for example Actix-web, Express, Django, Rails, Spring, FastAPI, or Gin; \
+any default security features (CSRF protection, XSS escaping, and similar)
 - **ORM / database layer** — library name; whether it auto-parameterizes SQL \
-(e.g. SQLx prepared statements → SQL injection via ORM unlikely)
+(for example, SQLx prepared statements make SQL injection via the ORM unlikely)
 - **Authentication & authorization** — auth libraries, middleware names, session/JWT handling
 - **Input validation** — what validates untrusted input (middleware, schema validators, custom)
 - **API style** — REST / GraphQL / gRPC; routing library; whether routes require auth by default
@@ -28,8 +28,8 @@ any default security features (CSRF protection, XSS escaping, etc.)
 handlers, file uploads, job queues, CLI argument parsers
 - **Security middleware already present** — CORS config, rate limiting, CSP headers, \
 sanitization libraries, secrets management
-- **Known security guarantees** — facts preventing whole vulnerability classes, e.g. \
-\"Diesel ORM always uses parameterised queries\", \"helmet.js sets secure HTTP headers\"
+- **Known security guarantees** — facts preventing whole vulnerability classes, for example \
+\"Diesel ORM always uses parameterised queries\" or \"helmet.js sets secure HTTP headers\"
 
 ### Step 4 — Deepen the analysis (optional, time permitting)
 Read the main entry point, router/handler setup files, and auth middleware. \
@@ -39,9 +39,10 @@ If you learn new information, call `write_architecture` again with the updated a
 Call `write_finding` with:
 - severity: \"info\"
 - title: \"Framework Architecture Analysis\" (or a more specific name if a clear stack is detected)
-- description: 2–3 concise lines summarising what was detected — language, framework, key safety \
-guarantees that apply (e.g. \"Rust / Actix-web / SQLx. SQLx uses prepared statements — SQL \
-injection via ORM is unlikely.\")
+- description: 2-3 short, plain, active-voice sentences that state what was detected — language, \
+framework, and key safety guarantees that apply (for example, \"This project uses Rust, \
+Actix-web, and SQLx. SQLx uses prepared statements, so SQL injection through the ORM is \
+unlikely.\")
 - recommendation: \"See .zentra/architecture.md for the full analysis used to calibrate this scan.\"
 
 Be precise — if you cannot determine something, write \"Not identified\" rather than guessing."
