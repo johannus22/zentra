@@ -13,10 +13,16 @@ jobs:
     name: Zentra CI (dogfood)
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/kestrel-sec/zentra:latest
+      # Pin to a specific published version instead of the mutable :latest tag
+      # (CWE-1104: this job holds ZENTRA_API_KEY + GITHUB_TOKEN and has
+      # pull-requests: write, so a swapped :latest image could exfiltrate them).
+      # Ideal is an immutable @sha256 digest; the GHCR package is private so
+      # resolve it with `docker buildx imagetools inspect ghcr.io/kestrel-sec/zentra:0.12.13`
+      # (authenticated) and replace the tag with @<digest> when convenient.
+      image: ghcr.io/kestrel-sec/zentra:0.12.13
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -33,7 +39,7 @@ jobs:
 
       - name: Upload Zentra CI report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: zentra-ci-report
           path: |

@@ -2,7 +2,6 @@ use clap::Parser;
 use zentra_cli::{
     cli, commands,
     config::{GlobalConfig, ProjectConfig},
-    tools,
     tui::menu::{run_menu, MenuAction},
     wizard,
 };
@@ -179,12 +178,6 @@ async fn run() -> anyhow::Result<()> {
         Some(cli::Commands::Security { action }) => match action {
             cli::SecurityAction::VerifyAudit { session } => {
                 commands::security::verify_audit(session).await?
-            }
-        },
-        Some(cli::Commands::Diagnostics { action }) => match action {
-            cli::DiagnosticsAction::Ping { target } => {
-                let output = tools::diagnostics::run_ping_diagnostic(&target)?;
-                println!("{output}");
             }
         },
         Some(cli::Commands::Update) => {
