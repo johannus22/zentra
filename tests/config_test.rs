@@ -190,6 +190,7 @@ fn resolve_target_within_rejects_escaping_paths() {
         "/home/runner/.config",
         "C:\\Users\\runneradmin\\evil",
         "C:evil",
+        "src\\..\\etc",
     ] {
         let cfg = ProjectConfig {
             target_path: bad.to_string(),
