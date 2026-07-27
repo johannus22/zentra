@@ -450,14 +450,15 @@ impl ProviderFormState {
     }
 
     pub fn masked_key(&self) -> String {
-        if self.api_key.len() <= 6 {
-            "*".repeat(self.api_key.len())
+        // Count/slice by chars, not bytes: the API-key field is free user input,
+        // so a multibyte char straddling byte 6 would make `&self.api_key[..6]`
+        // panic and tear down the whole TUI on the next render.
+        let char_count = self.api_key.chars().count();
+        if char_count <= 6 {
+            "*".repeat(char_count)
         } else {
-            format!(
-                "{}{}",
-                &self.api_key[..6],
-                "*".repeat(self.api_key.len() - 6)
-            )
+            let prefix: String = self.api_key.chars().take(6).collect();
+            format!("{}{}", prefix, "*".repeat(char_count - 6))
         }
     }
 
@@ -2478,5 +2479,25 @@ mod cwe_settings_tests {
     fn settings_categories_include_cwe_reference() {
         assert!(SettingsCategory::ALL.contains(&SettingsCategory::CweReference));
         assert_eq!(SettingsCategory::CweReference.label(), "CWE reference");
+    }
+
+    // T1 (chaos re-test iter 2): masked_key byte-sliced the API-key field; a
+    // multibyte char crossing byte 6 panicked the whole TUI on the next render.
+    #[test]
+    fn masked_key_handles_multibyte_without_panicking() {
+        // 5 ASCII + a 3-byte '€' (bytes 5..8): byte 6 is mid-character.
+        let form = ProviderFormState {
+            api_key: "aaaaa€bbbb".to_string(),
+            ..Default::default()
+        };
+        let masked = form.masked_key();
+        assert!(masked.starts_with("aaaaa€"), "prefix wrong: {masked}");
+        assert!(masked.contains('*'));
+        // Short multibyte key (≤6 chars) → fully masked, still no panic.
+        let short = ProviderFormState {
+            api_key: "€€".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(short.masked_key(), "**");
     }
 }

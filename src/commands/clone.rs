@@ -21,6 +21,21 @@ pub fn validate_repo_url(url: &str) -> Result<()> {
     if !ok {
         bail!("Repo URL must start with https://, http://, git://, ssh://, or git@host:path");
     }
+    // Reject an authority that begins with '-'. On older git, an ssh URL like
+    // `ssh://-oProxyCommand=…/repo` is split and `-oProxyCommand=…` is handed to
+    // `ssh` as an option (command execution). A real host never starts with '-'.
+    let authority = u
+        .strip_prefix("https://")
+        .or_else(|| u.strip_prefix("http://"))
+        .or_else(|| u.strip_prefix("git://"))
+        .or_else(|| u.strip_prefix("ssh://"))
+        .or_else(|| u.strip_prefix("git@"))
+        .unwrap_or(u);
+    // Drop any userinfo so `ssh://user@-evil/…` is caught on the host, not the user.
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+    if host.starts_with('-') {
+        bail!("Repo URL host must not start with '-'");
+    }
     Ok(())
 }
 

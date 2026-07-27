@@ -5,7 +5,20 @@ const NEW_MARKER: &str = "🆕 ";
 
 fn file_of(location: &Option<String>) -> Option<String> {
     let loc = location.as_deref()?;
-    let path = loc.split(':').next().unwrap_or(loc).trim();
+    // Strip a trailing `:line` and optional `:col` without splitting on the
+    // first colon — a Windows drive-absolute path (`C:\...\db.rs:10`) keeps its
+    // own colon, so `split(':').next()` would collapse it to just "C".
+    let mut path = loc.trim();
+    for _ in 0..2 {
+        if let Some((head, tail)) = path.rsplit_once(':') {
+            if !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()) {
+                path = head;
+                continue;
+            }
+        }
+        break;
+    }
+    let path = path.trim();
     if path.is_empty() {
         None
     } else {
@@ -153,6 +166,28 @@ Impact files ({}):\n{}",
 mod tests {
     use super::*;
     use crate::state::Severity;
+
+    // F16: file_of used `location.split(':').next()`, collapsing every Windows
+    // drive-absolute location (`C:\...\db.rs:10`) to the pseudo-file "C" — so all
+    // such findings normalized to the same file (never matched to changed paths,
+    // cross-file mis-dedup).
+    #[test]
+    fn file_of_strips_line_from_windows_drive_path() {
+        let loc = Some("C:\\Users\\x\\db.rs:10".to_string());
+        assert_eq!(file_of(&loc).as_deref(), Some("C:/Users/x/db.rs"));
+    }
+
+    #[test]
+    fn file_of_strips_line_and_col() {
+        assert_eq!(
+            file_of(&Some("src/db.rs:10:5".to_string())).as_deref(),
+            Some("src/db.rs")
+        );
+        assert_eq!(
+            file_of(&Some("src/db.rs".to_string())).as_deref(),
+            Some("src/db.rs")
+        );
+    }
 
     fn finding(scanner: &str, title: &str, loc: Option<&str>) -> Finding {
         Finding {

@@ -59,7 +59,10 @@ pub fn parse_color(s: &str) -> Option<Color> {
         return Some(Color::Reset);
     }
     let hex = s.strip_prefix('#')?;
-    if hex.len() != 6 {
+    // `hex.len()` is a byte count; the slices below are byte ranges. Require
+    // ASCII so every index lands on a char boundary (a multibyte value like
+    // "#€€" is 6 bytes but would slice mid-codepoint and panic).
+    if hex.len() != 6 || !hex.is_ascii() {
         return None;
     }
     let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
@@ -661,6 +664,17 @@ mod tests {
         assert_eq!(parse_color("blue"), None);
         assert_eq!(parse_color("#12"), None);
         assert_eq!(parse_color("#gggggg"), None);
+    }
+
+    // F2: `hex.len() == 6` is a byte count, but the subsequent `&hex[0..2]`
+    // slices are byte ranges. A 6-byte value made of multibyte chars must be
+    // rejected, not panic on a non-char-boundary slice (crashes the TUI at
+    // startup from a hand-edited theme file).
+    #[test]
+    fn rejects_multibyte_hex_without_panicking() {
+        assert_eq!(parse_color("#\u{20ac}\u{20ac}"), None); // "€€" = 6 bytes
+        assert_eq!(parse_color("#\u{20ac}aaa"), None); // boundary at byte 2
+        assert_eq!(parse_color("#aa\u{20ac}a"), None); // boundary at byte 4
     }
 
     #[test]

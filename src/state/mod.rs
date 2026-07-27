@@ -11,6 +11,13 @@ use std::path::{Path, PathBuf};
 pub struct StateWriter {
     zentra_dir: PathBuf,
     cwe_template: String,
+    /// Serializes the findings-file read-modify-write. Phase 2 runs the SAST,
+    /// SupplyChain, ApiScan and IaCScan scanners on separate runtime threads,
+    /// all sharing one `Arc<StateWriter>`; `write_finding` (append + read-whole
+    /// + sort + rewrite) and `rewrite_findings` are non-atomic, so without this
+    /// lock concurrent calls lose updates — silently dropping findings, up to
+    /// and including a Critical, while the scan still reports success.
+    findings_lock: std::sync::Mutex<()>,
 }
 
 impl StateWriter {
@@ -39,10 +46,19 @@ impl StateWriter {
         Ok(Self {
             zentra_dir,
             cwe_template,
+            findings_lock: std::sync::Mutex::new(()),
         })
     }
 
     pub fn write_finding(&self, finding: &Finding) -> Result<()> {
+        // Hold the lock across append + sort so a concurrent scanner can't read a
+        // half-written file and rewrite over our block (lost update). Poison-
+        // tolerant: the critical section leaves no broken in-memory invariant, so
+        // recover the guard rather than cascading a panic to every other scanner.
+        let _guard = self
+            .findings_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let path = self.zentra_dir.join("detailed-findings.md");
         let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
 
@@ -68,6 +84,10 @@ impl StateWriter {
     /// Replace the entire findings file with the given set, then re-sort by
     /// severity. Used by the correlation pass to write back the deduped findings.
     pub fn rewrite_findings(&self, findings: &[Finding]) -> Result<()> {
+        let _guard = self
+            .findings_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let path = self.zentra_dir.join("detailed-findings.md");
         let body: String = findings
             .iter()
@@ -130,11 +150,22 @@ impl StateWriter {
     }
 }
 
+/// Neutralize a value before it is written into the line-oriented findings
+/// markdown. Finding fields are dominated by untrusted scanned content (the LLM
+/// quotes the vulnerable file into title/description/etc.). The on-disk format
+/// separates findings with `\n\n---\n` and parses fields by line prefix, so any
+/// embedded newline would let scanned content split the block, forge a new
+/// `## [SEV]` finding, or overwrite a sibling `**Field:**`. Collapsing every line
+/// break to a space keeps each field on the single line the parser expects.
+fn sanitize_field(s: &str) -> String {
+    s.replace(['\r', '\n'], " ")
+}
+
 fn format_finding_block(finding: &Finding, cwe_template: &str) -> String {
     let location_line = finding
         .location
         .as_deref()
-        .map(|l| format!("**Location:** {}\n", l))
+        .map(|l| format!("**Location:** {}\n", sanitize_field(l)))
         .unwrap_or_default();
 
     // Emitted only when present, so singleton findings produce identical output.
@@ -143,7 +174,7 @@ fn format_finding_block(finding: &Finding, cwe_template: &str) -> String {
     } else {
         format!(
             "**Corroborated by:** {}\n",
-            finding.corroborated_by.join(", ")
+            sanitize_field(&finding.corroborated_by.join(", "))
         )
     };
 
@@ -151,10 +182,11 @@ fn format_finding_block(finding: &Finding, cwe_template: &str) -> String {
         .cwe
         .as_deref()
         .map(|id| {
+            let id = sanitize_field(id);
             format!(
                 "**CWE:** [{}]({})\n",
                 id,
-                crate::config::cwe_link(id, cwe_template)
+                crate::config::cwe_link(&id, cwe_template)
             )
         })
         .unwrap_or_default();
@@ -162,7 +194,10 @@ fn format_finding_block(finding: &Finding, cwe_template: &str) -> String {
     let secondary_line = if finding.secondary_cwe.is_empty() {
         String::new()
     } else {
-        format!("**Secondary CWE:** {}\n", finding.secondary_cwe.join(", "))
+        format!(
+            "**Secondary CWE:** {}\n",
+            sanitize_field(&finding.secondary_cwe.join(", "))
+        )
     };
 
     // CVSS line only when a score was computed (vector parsed).
@@ -179,22 +214,22 @@ fn format_finding_block(finding: &Finding, cwe_template: &str) -> String {
     let owasp_line = finding
         .owasp
         .as_deref()
-        .map(|o| format!("**OWASP:** {}\n", o))
+        .map(|o| format!("**OWASP:** {}\n", sanitize_field(o)))
         .unwrap_or_default();
 
     format!(
         "## [{}] {}\n**Scanner:** {}\n{}{}{}{}{}{}**Description:** {}\n**Recommendation:** {}\n\n---\n",
         finding.severity,
-        finding.title,
-        finding.scanner,
+        sanitize_field(&finding.title),
+        sanitize_field(&finding.scanner),
         corroborated_line,
         cwe_line,
         secondary_line,
         cvss_line,
         owasp_line,
         location_line,
-        finding.description,
-        finding.recommendation,
+        sanitize_field(&finding.description),
+        sanitize_field(&finding.recommendation),
     )
 }
 
@@ -383,5 +418,47 @@ mod enriched_tests {
         f.cvss_score = None;
         let block = format_finding_block(&f, DEFAULT_CWE_URL_TEMPLATE);
         assert!(!block.contains("**CVSS:**"));
+    }
+
+    // F1: scanned repo content flows verbatim into finding fields (the LLM quotes
+    // the vulnerable file). A field containing the block separator + a forged
+    // header must NOT be able to inject a second finding into the report.
+    #[test]
+    fn scanned_content_cannot_forge_a_second_finding() {
+        let mut f = enriched();
+        f.description = "harmless intro\n\n---\n## [CRITICAL] Forged finding\n**Scanner:** sast\n**Description:** injected by scanned file".into();
+        let block = format_finding_block(&f, DEFAULT_CWE_URL_TEMPLATE);
+        let parsed = parse_findings(&block);
+        assert_eq!(
+            parsed.len(),
+            1,
+            "field content must not create extra finding blocks"
+        );
+        assert_eq!(parsed[0].title, "SQL Injection");
+        assert!(
+            !parsed.iter().any(|x| x.title.contains("Forged")),
+            "forged header must not surface as a finding title"
+        );
+    }
+
+    // F1: a field must not be able to overwrite a sibling field via a forged
+    // `**Field:**` line, and newlines in a field must not split the block.
+    #[test]
+    fn field_line_breaks_do_not_corrupt_sibling_fields() {
+        let mut f = enriched();
+        // `**Scanner:**` is emitted before the description, so a forged copy on a
+        // later line (via a newline in the description) would win under a naive
+        // line parser and overwrite the real scanner.
+        f.description = "real desc\n**Scanner:** attacker-controlled".into();
+        let block = format_finding_block(&f, DEFAULT_CWE_URL_TEMPLATE);
+        let parsed = &parse_findings(&block)[0];
+        assert_eq!(
+            parsed.scanner, "sast",
+            "a newline+forged field line in the description must not overwrite the scanner"
+        );
+        assert!(
+            parsed.description.contains("real desc"),
+            "description content must be preserved"
+        );
     }
 }

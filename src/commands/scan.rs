@@ -31,7 +31,7 @@ pub async fn run(
     only: Option<String>,
     full: bool,
 ) -> Result<()> {
-    let scanners = resolve_scanners(only.as_deref());
+    let scanners = resolve_scanners(only.as_deref())?;
     let mut provider_override = provider_override;
     loop {
         match run_once(provider_override.clone(), scanners.clone(), full).await? {
@@ -102,7 +102,7 @@ async fn run_once(
     // For CLI providers, verify the binary is reachable before starting the TUI
     if profile.kind == "claude_cli" || profile.kind == "codex_cli" {
         let binary = resolve_cli_binary(&profile.kind, &profile.base_url);
-        validate_cli_binary(&binary)?;
+        validate_cli_binary(&profile.kind, &binary)?;
         if which::which(&binary).is_err() {
             anyhow::bail!(
                 "CLI provider '{}' requires '{}' on PATH.\n\
@@ -112,6 +112,11 @@ async fn run_once(
             );
         }
     }
+
+    // Re-validate the endpoint on the use path (config may predate the write-time
+    // gate or have been hand-edited); CLI providers keep a binary path here, not a
+    // URL, so validate_profile_endpoint exempts them.
+    crate::config::validation::validate_profile_endpoint(&profile.kind, &profile.base_url)?;
 
     let (tx, rx) = mpsc::channel(128);
 
@@ -141,27 +146,16 @@ async fn run_once(
         ),
     };
 
-    let project_config = if ProjectConfig::exists() {
-        match ProjectConfig::load_from(&ProjectConfig::default_path()) {
-            Ok(cfg) => cfg,
-            Err(_) => {
-                let cwd = std::env::current_dir()?;
-                let stack = ProjectConfig::detect_stack(&cwd);
-                let cfg = ProjectConfig::new(&stack, vec![]);
-                cfg.save_to(&ProjectConfig::default_path())?;
-                println!("⚠ Recreated .zentra/config.json (previous file was unreadable)");
-                cfg
-            }
-        }
-    } else {
-        let cwd = std::env::current_dir()?;
-        let stack = ProjectConfig::detect_stack(&cwd);
-        let config = ProjectConfig::new(&stack, vec![]);
-        config.save_to(&ProjectConfig::default_path())?;
+    let cwd = std::env::current_dir()?;
+    let (project_config, created) =
+        ProjectConfig::load_or_init_for_run(&ProjectConfig::default_path(), &cwd)?;
+    if created {
         crate::commands::init::update_gitignore_at(&cwd)?;
-        println!("✓ Auto-initialized .zentra/ (stack: {})", stack);
-        config
-    };
+        println!(
+            "✓ Auto-initialized .zentra/ (stack: {})",
+            project_config.stack
+        );
+    }
 
     let target_root = Path::new(&project_config.target_path).to_path_buf();
     let zentra_dir = target_root.join(".zentra");
@@ -367,27 +361,45 @@ fn resolve_cli_binary(kind: &str, base_url: &str) -> String {
     .to_string()
 }
 
-/// Reject a CLI provider binary that is a relative path with separators (a
-/// repo-supplied `base_url` could otherwise point at an in-tree executable).
-/// Bare names (resolved via PATH) and absolute paths are allowed.
-fn validate_cli_binary(binary: &str) -> Result<()> {
-    let p = Path::new(binary);
-    if p.is_absolute() {
-        return Ok(());
-    }
+/// Validate the executable for a CLI provider. `base_url` is run as a program,
+/// so on top of rejecting relative paths with separators (an in-tree executable)
+/// we require the binary's file stem to match the expected CLI — `claude` for
+/// claude_cli, `codex` for codex_cli. A custom install path is fine
+/// (`/opt/claude/bin/claude`), but a hand-edited config can't point `zentra scan`
+/// at an arbitrary program like `powershell` or `calc.exe` (F14).
+fn validate_cli_binary(kind: &str, binary: &str) -> Result<()> {
+    let expected = match kind {
+        "claude_cli" => "claude",
+        "codex_cli" => "codex",
+        // Not a CLI provider — nothing is executed from base_url.
+        _ => return Ok(()),
+    };
+
     // On Windows "C:evil" is drive-relative — not absolute per std::path and it
     // contains no separator, so it would otherwise slip past as a "bare name".
     #[cfg(windows)]
-    if binary.len() >= 2 && binary.as_bytes()[1] == b':' {
+    if binary.len() >= 2 && binary.as_bytes()[1] == b':' && !Path::new(binary).is_absolute() {
         anyhow::bail!(
             "CLI provider binary '{}' must be a bare name or an absolute path, not a relative path",
             binary
         );
     }
-    if binary.contains('/') || binary.contains('\\') {
+    if !Path::new(binary).is_absolute() && (binary.contains('/') || binary.contains('\\')) {
         anyhow::bail!(
             "CLI provider binary '{}' must be a bare name or an absolute path, not a relative path",
             binary
+        );
+    }
+
+    let stem = Path::new(binary)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if stem != expected {
+        anyhow::bail!(
+            "CLI provider '{kind}' must run the '{expected}' binary, but base_url resolves to '{binary}'. \
+             Point it at a '{expected}' executable (a custom path is fine)."
         );
     }
     Ok(())
@@ -407,15 +419,22 @@ fn ensure_supported_scan_auth(
     Ok(())
 }
 
-fn resolve_scanners(only: Option<&str>) -> Vec<ScannerType> {
-    match only {
+fn resolve_scanners(only: Option<&str>) -> Result<Vec<ScannerType>> {
+    Ok(match only {
         Some("threat-model") => vec![ScannerType::ThreatModel, ScannerType::Report],
         Some("sast") => vec![ScannerType::Sast, ScannerType::Report],
         Some("supply-chain") => vec![ScannerType::SupplyChain, ScannerType::Report],
         Some("api") => vec![ScannerType::ApiScan, ScannerType::Report],
         Some("iac") => vec![ScannerType::IacScan, ScannerType::Report],
         Some("report") => vec![ScannerType::Report],
-        _ => vec![
+        Some(unknown) => {
+            // Reject typos instead of silently running a full scan (F9).
+            anyhow::bail!(
+                "unknown scanner '{unknown}' for --only. \
+                 Valid values: threat-model, sast, supply-chain, api, iac, report"
+            );
+        }
+        None => vec![
             ScannerType::ThreatModel,
             ScannerType::Sast,
             ScannerType::SupplyChain,
@@ -423,7 +442,7 @@ fn resolve_scanners(only: Option<&str>) -> Vec<ScannerType> {
             ScannerType::IacScan,
             ScannerType::Report,
         ],
-    }
+    })
 }
 
 fn git_head_commit(root: &Path) -> Option<String> {
@@ -484,6 +503,19 @@ mod tests {
     use super::*;
     use crate::config::{AuthMethod, ProviderProfile};
 
+    // F9: an unknown --only value silently ran a FULL scan (the `_` arm),
+    // so a typo like `--only sats` burned quota on every scanner. It must be
+    // rejected instead.
+    #[test]
+    fn resolve_scanners_rejects_unknown_only_value() {
+        assert!(
+            resolve_scanners(Some("sats")).is_err(),
+            "a typo'd scanner name must be an error, not a full scan"
+        );
+        assert!(resolve_scanners(Some("sast")).is_ok());
+        assert!(resolve_scanners(None).is_ok(), "no --only means full scan");
+    }
+
     #[test]
     fn rejects_saved_oauth_profiles_at_scan_startup() {
         let profile = ProviderProfile {
@@ -507,14 +539,35 @@ mod tests {
 
     #[test]
     fn validate_cli_binary_rejects_relative_path() {
-        assert!(validate_cli_binary("./evil").is_err());
-        assert!(validate_cli_binary("sub/dir/evil").is_err());
-        assert!(validate_cli_binary("claude").is_ok());
+        assert!(validate_cli_binary("claude_cli", "./evil").is_err());
+        assert!(validate_cli_binary("claude_cli", "sub/dir/evil").is_err());
+        assert!(validate_cli_binary("claude_cli", "claude").is_ok());
     }
 
     #[cfg(windows)]
     #[test]
     fn validate_cli_binary_rejects_windows_drive_relative() {
-        assert!(validate_cli_binary("C:evil").is_err());
+        assert!(validate_cli_binary("claude_cli", "C:evil").is_err());
+    }
+
+    // F14: base_url is executed as a binary. Only allow an executable whose file
+    // stem matches the expected CLI (claude/codex) — a custom PATH is fine, but a
+    // hand-edited config can't point scan at an arbitrary program.
+    #[test]
+    fn validate_cli_binary_allowlists_expected_binary_stem() {
+        assert!(validate_cli_binary("claude_cli", "claude").is_ok());
+        assert!(validate_cli_binary("codex_cli", "codex").is_ok());
+        // A custom absolute install path to the right binary is allowed.
+        #[cfg(windows)]
+        assert!(validate_cli_binary("claude_cli", "C:\\tools\\claude.exe").is_ok());
+        #[cfg(unix)]
+        assert!(validate_cli_binary("claude_cli", "/opt/claude/bin/claude").is_ok());
+        // wrong / arbitrary programs are rejected
+        assert!(validate_cli_binary("claude_cli", "powershell").is_err());
+        assert!(validate_cli_binary("claude_cli", "codex").is_err());
+        #[cfg(windows)]
+        assert!(validate_cli_binary("codex_cli", "C:\\Windows\\System32\\calc.exe").is_err());
+        #[cfg(unix)]
+        assert!(validate_cli_binary("codex_cli", "/usr/bin/sh").is_err());
     }
 }

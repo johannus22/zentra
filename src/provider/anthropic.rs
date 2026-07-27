@@ -67,11 +67,12 @@ impl AnthropicProvider {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+            let text = super::read_text_preview(resp, 64 * 1024).await;
             return Err(anyhow::anyhow!("Anthropic returned {}: {}", status, text));
         }
 
-        Ok(resp.json().await?)
+        let bytes = super::read_body_capped(resp, super::MAX_RESPONSE_BYTES).await?;
+        serde_json::from_slice(&bytes).context("parsing Anthropic response")
     }
 }
 
@@ -110,7 +111,8 @@ fn parse_anthropic_response(json: &serde_json::Value) -> Result<CompletionRespon
         usage: TokenUsage {
             input_tokens: input,
             output_tokens: output,
-            total_tokens: input + output,
+            // saturating: a hostile/buggy endpoint can send huge counts (F10).
+            total_tokens: input.saturating_add(output),
         },
     })
 }
@@ -214,5 +216,22 @@ impl LLMProvider for AnthropicProvider {
     }
     fn model_name(&self) -> &str {
         &self.model
+    }
+}
+
+#[cfg(test)]
+mod overflow_tests {
+    use super::*;
+
+    // F10: a hostile/buggy endpoint can return huge token counts; `input + output`
+    // overflowed u32 — panics in debug/test/CI builds, silent wrong total in release.
+    #[test]
+    fn huge_token_counts_do_not_overflow() {
+        let json = serde_json::json!({
+            "content": [{"type": "text", "text": "hi"}],
+            "usage": {"input_tokens": 4_000_000_000u64, "output_tokens": 4_000_000_000u64}
+        });
+        let resp = parse_anthropic_response(&json).unwrap();
+        assert_eq!(resp.usage.total_tokens, u32::MAX);
     }
 }

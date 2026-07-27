@@ -437,6 +437,17 @@ fn candidate_git_diff_ranges_prefer_origin_base_to_head_for_branch_refs() {
     assert!(origin_head < raw_branch_pair, "{ranges:?}");
 }
 
+// Iter-3 defense-in-depth: no candidate range may start with '-' (git would treat
+// it as an option), even for a pathological dash-leading base ref.
+#[test]
+fn candidate_git_diff_ranges_never_start_with_dash() {
+    let ranges = candidate_git_diff_ranges("-oProxy", "-evil");
+    assert!(
+        ranges.iter().all(|r| !r.starts_with('-')),
+        "a range started with '-': {ranges:?}"
+    );
+}
+
 #[test]
 fn candidate_git_diff_ranges_normalize_full_base_branch_refs() {
     let ranges = candidate_git_diff_ranges("refs/heads/main", "refs/heads/feature/ci");

@@ -7,6 +7,54 @@ pub mod anthropic;
 pub mod openai_compat;
 pub mod cli;
 
+/// Max bytes to buffer from an LLM HTTP response. Bodies larger than this are
+/// rejected rather than buffered, so a hostile or misconfigured endpoint (a
+/// custom/self-hosted base_url) can't OOM the scanner with a giant/infinite
+/// body (F5). Generous headroom for large JSON tool-call responses.
+pub(crate) const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+
+/// True if appending `chunk_len` bytes to `current` would exceed `max`.
+/// Overflow-safe (saturating).
+fn body_cap_exceeded(current: usize, chunk_len: usize, max: usize) -> bool {
+    current.saturating_add(chunk_len) > max
+}
+
+/// Read a response body into memory, refusing bodies larger than `max_bytes`.
+/// Errors (rather than truncating) because callers parse the whole body as JSON.
+pub(crate) async fn read_body_capped(
+    mut resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>> {
+    use anyhow::Context;
+    let mut buf: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp.chunk().await.context("reading response body")? {
+        if body_cap_exceeded(buf.len(), chunk.len(), max_bytes) {
+            anyhow::bail!(
+                "response body exceeds {max_bytes} bytes — refusing to buffer \
+                 (possible malicious or misconfigured endpoint)"
+            );
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
+}
+
+/// Read up to `max_bytes` of a response body as lossy UTF-8 for an error
+/// message. Truncates instead of failing — used only on the non-2xx path.
+pub(crate) async fn read_text_preview(mut resp: reqwest::Response, max_bytes: usize) -> String {
+    let mut buf: Vec<u8> = Vec::new();
+    while buf.len() < max_bytes {
+        match resp.chunk().await {
+            Ok(Some(chunk)) => {
+                let take = (max_bytes - buf.len()).min(chunk.len());
+                buf.extend_from_slice(&chunk[..take]);
+            }
+            _ => break,
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: String,
@@ -85,4 +133,28 @@ pub trait LLMProvider: Send + Sync {
 
     fn context_window(&self) -> u32;
     fn model_name(&self) -> &str;
+}
+
+#[cfg(test)]
+mod body_cap_tests {
+    use super::body_cap_exceeded;
+
+    // F5: the accumulation guard that bounds how much of an LLM response body we
+    // buffer, so a hostile/buggy endpoint can't OOM the scanner.
+    #[test]
+    fn rejects_when_next_chunk_would_exceed_cap() {
+        assert!(body_cap_exceeded(0, 11, 10));
+        assert!(body_cap_exceeded(6, 5, 10));
+    }
+
+    #[test]
+    fn allows_up_to_cap() {
+        assert!(!body_cap_exceeded(0, 10, 10));
+        assert!(!body_cap_exceeded(5, 5, 10));
+    }
+
+    #[test]
+    fn is_overflow_safe() {
+        assert!(body_cap_exceeded(usize::MAX, 1, 100));
+    }
 }

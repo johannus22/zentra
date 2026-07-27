@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> See `AGENTS.md` for the full architecture reference, vault links, and extended gotchas. This file is the Claude Code entry point.
+> This file is the Claude Code entry point. See the project vault notes (`projects/zentra-cli/architecture/`) for the extended architecture reference and vault links.
 
 ## Commands
 
@@ -35,7 +35,7 @@ src/
 │   └── scanner.rs       # ScannerAgent — LLM ReAct tool-use loop (max 30 iters)
 ├── config/              # global.rs (TOML), project.rs (JSON), keychain.rs, custom_providers.rs
 ├── provider/            # LLMProvider trait + AnthropicProvider + OpenAICompatProvider
-├── scanners/            # system_prompt() + allowed_tools() dispatch; secrets/ is non-LLM
+├── scanners/            # system_prompt() + allowed_tools() dispatch per ScannerType
 ├── state/               # StateWriter (writes to .zentra/), Finding, Severity
 ├── tools/               # ToolRegistry (10 tools): fs_tools, git_tools, audit
 ├── pentest/             # PentestOrchestrator, PentestAgent, tools, preflight, report
@@ -47,11 +47,9 @@ src/
 ```
 Phase 0: FrameworkAnalysis  (sequential, writes .zentra/architecture.md for all phases)
 Phase 1: ThreatModel        (sequential)
-Phase 2: SAST + SupplyChain + ApiScan + IaCScan + SecretsScan  (parallel tokio::spawn)
+Phase 2: SAST + SupplyChain + ApiScan + IaCScan  (parallel tokio::spawn)
 Phase 3: Report             (sequential)
 ```
-
-Secrets scan is deterministic — `SecretScanner::run()`, no LLM.
 
 ### ReAct Loop (`agent/scanner.rs`)
 
@@ -75,7 +73,6 @@ Secrets scan is deterministic — `SecretScanner::run()`, no LLM.
 | Project config | `.zentra/config.json` | JSON |
 | Custom providers | `~/.zentra/providers.toml` | TOML |
 | API keys / OAuth tokens | `~/.zentra/keys/<profile>.key` / `.oauth` (encrypted at rest, see `secret_store.rs`) | — |
-| Secrets allowlist | `.zentra/secrets-allowlist.toml` | TOML |
 | Scan output | `.zentra/detailed-findings.md`, `.zentra/reports/` | MD/JSON |
 
 ## Tests
@@ -86,7 +83,6 @@ Integration tests in `tests/` use `tempfile::TempDir` + `wiremock::MockServer`:
 - `auth_test.rs` — OAuth PKCE, token refresh
 - `config_test.rs` — GlobalConfig/ProjectConfig roundtrip, custom providers validation
 - `provider_test.rs` — endpoint validation, tool call parsing
-- `secrets_test.rs` — git history scan, suppressions, report output
 - `tui_test.rs` — `UiState::apply_event`, MenuState navigation, `PentestUiState`
 - `pentest_test.rs` — `PentestConfig` validation, scope matching, report writer, orchestrator events
 
@@ -96,7 +92,7 @@ Integration tests in `tests/` use `tempfile::TempDir` + `wiremock::MockServer`:
 
 **CWD-dependent tests must be serialized** — Tests that call `std::env::set_current_dir()` must acquire the static `CWD_LOCK: Mutex<()>` defined in `agent_test.rs`.
 
-**Regex patterns use `OnceLock`** — Secrets scanning and entropy analysis compile regexes once via `OnceLock`/`OnceCell`. Don't use bare `Regex::new()` — follow existing pattern.
+**Regex patterns use `OnceLock`** — the `pentest/` fingerprinting, secret-pattern, and report modules compile regexes once via a `static RE: OnceLock<Regex>` per call site. Don't use bare `Regex::new()` in a hot path — follow the existing `OnceLock` pattern.
 
 **`context_window()` falls through on unknown models** — `LLMProvider::context_window()` matches on model name substring; unknown models hit a default. Override via `ProviderProfile::context_window: Option<u32>`.
 
