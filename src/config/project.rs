@@ -75,6 +75,26 @@ impl ProjectConfig {
     /// subpaths (optionally `.`-prefixed) are allowed.
     pub fn resolve_target_within(&self, repo_root: &Path) -> Result<PathBuf> {
         use std::path::Component;
+
+        // The config is untrusted PR content; an attacker doesn't know or care
+        // which OS the CI runner uses, so both escape syntaxes must be rejected
+        // regardless of host platform. `Path::components()` only recognizes the
+        // *native* separator/prefix syntax — e.g. a Windows drive prefix like
+        // "C:" is just an ordinary character on Unix's parser, and "\" isn't a
+        // separator there either — so scan the raw string for the other
+        // platform's escape syntax first.
+        let raw = self.target_path.as_str();
+        if raw.starts_with('/') || raw.starts_with('\\') {
+            anyhow::bail!("target_path must be relative to the repo, got: {raw}");
+        }
+        let bytes = raw.as_bytes();
+        if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+            anyhow::bail!("target_path must be relative to the repo, got: {raw}");
+        }
+        if raw.split(['/', '\\']).any(|segment| segment == "..") {
+            anyhow::bail!("target_path must not contain '..' (would escape the repo): {raw}");
+        }
+
         let rel = Path::new(&self.target_path);
         // Note: on Windows a unix-style "/etc" reports is_absolute()==false, so we
         // reject via the component scan below rather than relying on is_absolute.
