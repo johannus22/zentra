@@ -77,6 +77,29 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
+/// Regenerate `.zentra/architecture.md` only, with no PR/MR diff requirement.
+/// Intended for a base-branch (e.g. push-to-main) job that refreshes the cache
+/// PR runs restore, instead of every PR redoing Phase 0 from a fresh checkout.
+pub async fn refresh_architecture() -> Result<()> {
+    let root = std::env::current_dir()?;
+    println!("Zentra: refreshing architecture analysis");
+
+    let provider = load_provider().await?;
+    let project_config = load_or_init_project_config(&root)?;
+    let target_path = project_config.resolve_target_within(&root)?;
+
+    run_headless_scan_with_provider(
+        provider,
+        &target_path,
+        vec![ScannerType::FrameworkAnalysis],
+        None,
+    )
+    .await?;
+
+    println!("Wrote .zentra/architecture.md");
+    Ok(())
+}
+
 fn collect_findings(events: &[ScanEvent]) -> Vec<Finding> {
     events
         .iter()
