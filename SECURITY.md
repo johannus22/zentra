@@ -1,51 +1,41 @@
 # Agent Security Envelope
 
-zentra-cli executes real actions (file read/write, git, dependency audits, and
-in pentest mode `nmap` + a Playwright browser) driven by LLM responses. If an
-LLM response is compromised — tampered in transit (MITM), replayed, served by a
-rogue provider, or hijacked by prompt injection from a scanned file — the agent
-would otherwise execute attacker-controlled tool calls. The security envelope
-wraps the LLM → tool pipeline with layered, independent defenses.
+zentra-cli executes real actions, driven by LLM responses. These actions include file read/write, git commands, dependency audits, and, in pentest mode, `nmap` and a Playwright browser. An LLM response can become compromised: tampered in transit (a MITM, or machine-in-the-middle, attack), replayed, served by a rogue provider, or hijacked by prompt injection from a scanned file. In any of these cases, the agent would otherwise execute attacker-controlled tool calls. The security envelope wraps the LLM-to-tool pipeline with layered, independent defenses.
 
 ## Threats and Mitigations
 
 | Threat | Mitigation | Module |
 |--------|-----------|--------|
-| MITM response tampering | Per-request nonce the model must echo; hardened TLS (min 1.2, cert validation) | `response_binding`, `provider/anthropic` |
-| Replay of an old response | Nonce changes per request, single-use, max-age window | `response_binding` |
-| Prompt injection from scanned files | External tool output tagged as untrusted data + scanned for injection patterns | `prompt_guard` |
-| Rogue / compromised provider | Optional dual-provider consensus — only tool calls both providers agree on execute | `dual_provider` |
-| Agent runaway / loops | Rate limits + identical-call-loop detection | `tool_gate` |
-| Sensitive-path exfiltration | Denylist (`.env`, `.ssh`, `.aws`, credentials files…) + depth limit | `tool_gate` |
-| Argument injection | Per-tool semantic validation (regex length, git ref charset, finding size) | `tool_gate` |
-| Forensics / non-repudiation | Tamper-evident SHA-256 hash-chain audit log (hashes only — never secrets) | `audit_log` |
+| MITM response tampering | A per-request nonce, which the model must echo; hardened TLS (minimum version 1.2, with certificate validation) | `response_binding`, `provider/anthropic` |
+| Replay of an old response | The nonce changes per request. It is single-use, with a max-age window. | `response_binding` |
+| Prompt injection from scanned files | External tool output is tagged as untrusted data, and scanned for injection patterns | `prompt_guard` |
+| Rogue or compromised provider | Optional dual-provider consensus. Only tool calls that both providers agree on will execute. | `dual_provider` |
+| Agent runaway or loops | Rate limits, plus identical-call-loop detection | `tool_gate` |
+| Sensitive-path exfiltration | A denylist (`.env`, `.ssh`, `.aws`, credential files, and similar paths), plus a depth limit | `tool_gate` |
+| Argument injection | Per-tool semantic validation (regex length, git ref character set, finding size) | `tool_gate` |
+| Forensics and non-repudiation | A tamper-evident SHA-256 hash-chain audit log (hashes only — never secrets) | `audit_log` |
 
-The tool gate also hard-enforces the **per-scanner allowlist**: a SAST scanner
-can never invoke pentest/browser tools, even if the LLM asks.
+The tool gate also hard-enforces the **per-scanner allowlist**. A SAST (static analysis) scanner can never invoke pentest or browser tools, even if the LLM asks it to.
 
 ## Configuration
 
-The envelope is controlled by the `ZENTRA_SECURITY` environment variable:
+The `ZENTRA_SECURITY` environment variable controls the envelope:
 
 | Value | Behavior |
 |-------|----------|
-| _(unset)_ | **Balanced default**: audit log, tool gate, and prompt-guard tagging on. Nonce binding and abort-on-injection off (opt-in, since they add friction). |
-| `hardened` | Everything on, strictest settings — for untrusted networks / high assurance. |
-| `off` | Everything off — minimal overhead for trusted local development. |
+| _(unset)_ | **Balanced default.** The audit log, tool gate, and prompt-guard tagging stay on. Nonce binding and abort-on-injection stay off; these are opt-in, since they add friction. |
+| `hardened` | Turns everything on, at the strictest settings. Use this for untrusted networks or high-assurance work. |
+| `off` | Turns everything off, for minimal overhead in trusted local development. |
 
 ```bash
 ZENTRA_SECURITY=hardened zentra scan
 ```
 
-Gate blocks are **non-fatal per call**: a blocked tool call returns an
-explanation to the LLM and the scan continues, so a false positive degrades a
-single step rather than killing the run.
+Gate blocks are **non-fatal per call**. A blocked tool call returns an explanation to the LLM, and the scan continues. So a false positive degrades a single step, rather than killing the run.
 
 ## Audit Log
 
-Each scan writes `.zentra/audit/<session-id>.jsonl`. Every entry chains the
-previous entry's SHA-256, so any retrospective edit breaks the chain. Prompts,
-arguments, and results are stored as hashes only — secrets never land in the log.
+Each scan writes `.zentra/audit/<session-id>.jsonl`. Every entry chains to the previous entry's SHA-256 hash. So any retrospective edit breaks the chain. The log stores prompts, arguments, and results as hashes only. Secrets never land in the log.
 
 Verify integrity after a run:
 
@@ -54,46 +44,29 @@ zentra security verify-audit                 # verify all sessions
 zentra security verify-audit <session-id>    # verify one session
 ```
 
-Output is `OK — N entries verified` or `TAMPERED at entry M`.
+The output reads `OK — N entries verified`, or `TAMPERED at entry M`.
 
 ## A Note on Nonce Binding
 
-Nonce binding is most effective against blind response substitution and replay.
-A full read-write MITM that can read the plaintext request could extract and
-echo the nonce; TLS hardening (and, in `hardened` mode, the requirement that
-even tool-call-only responses carry the nonce) is the primary defense there.
-Because Anthropic tool-use responses frequently contain no assistant text, nonce
-binding is opt-in by default to avoid rejecting legitimate responses.
+Nonce binding works best against blind response substitution and replay. A full read-write MITM attack could read the plaintext request, then extract and echo the nonce. Against that threat, TLS hardening is the primary defense. In `hardened` mode, Zentra also requires the nonce on tool-call-only responses. Anthropic tool-use responses often contain no assistant text. For this reason, nonce binding stays opt-in by default, to avoid rejecting legitimate responses.
 
 ## Accepted Risks and Future Work
 
-These items are tracked but intentionally **not** changed in code — each is
-either a deliberate trade-off, a public-by-design value, or a larger migration
-deferred for now.
+Zentra tracks the items below but does not change them in code, for now. Each is a deliberate trade-off, a public-by-design value, or a larger migration deferred until later.
 
 | Item | Why it's accepted | Future direction |
 |------|-------------------|------------------|
-| **`ring` unmaintained** (RUSTSEC-2025-0029) | Transitive via `rustls` → `reqwest`; maintenance-mode, not a known CVE. Monitored by the weekly `audit.yml` workflow and waived in `.cargo/audit.toml`. | Migrate to `aws-lc-rs` when the rustls stack supports it cleanly. Reviewed 2026-06-10. |
-| **System OpenSSL via `native-tls`** | Real TLS posture depends on the host OpenSSL, an opaque surface. | Switch `reqwest` to `rustls-tls` to drop the system-OpenSSL dependency. Deferred (broad-impact backend change). |
-| **`keyring` v3 (not v4)** | v3.6 has no known CVE; used only as a read fallback in `keychain` and to hold the Unix envelope data-key. | Evaluate the v4 migration (API-breaking); test on all three platforms. |
-| **SHA-1 TOTP** (`pentest/auth.rs`) | Required to interoperate with services that issue SHA-1 TOTP secrets — the dominant case. | Make the algorithm configurable (SHA-256/512) with SHA-1 as a compatibility fallback. |
-| **Hardcoded OAuth client ID** (`auth.rs`) | A client ID in an OAuth 2.0 PKCE flow is public by design — not a secret. | Make it configurable for enterprise registrations / graceful rotation. |
-| **Pentest credentials via env vars** | `ZENTRA_USER`/`ZENTRA_PASS` are passed to the Node Playwright child via the environment, readable only by same-user processes (`/proc/<pid>/environ`). Acceptable under the local-tool trust model; never written to disk or logged. | Pass via stdin / an unlinked `0600` temp file if the threat model tightens. |
+| **`ring` unmaintained** (RUSTSEC-2025-0029) | This is a transitive dependency, via `rustls` then `reqwest`. It is in maintenance mode, with no known CVE. The weekly `audit.yml` workflow monitors it, and `.cargo/audit.toml` waives it. | Migrate to `aws-lc-rs`, once the rustls stack supports it cleanly. Reviewed 2026-06-10. |
+| **System OpenSSL via `native-tls`** | The real TLS posture depends on the host OpenSSL, which is an opaque surface. | Switch `reqwest` to `rustls-tls`, to drop the system-OpenSSL dependency. Deferred, since this is a broad-impact backend change. |
+| **`keyring` v3 (not v4)** | Version 3.6 has no known CVE. Zentra uses it only as a read fallback in `keychain`, and to hold the Unix envelope data key. | Evaluate the v4 migration, which breaks the API. Test it on all three platforms. |
+| **SHA-1 TOTP** (`pentest/auth.rs`) | Some services issue SHA-1 TOTP (time-based one-time password) secrets. This is the dominant case, so Zentra must interoperate with it. | Make the algorithm configurable (SHA-256 or SHA-512), with SHA-1 as a compatibility fallback. |
+| **Hardcoded OAuth client ID** (`auth.rs`) | A client ID in an OAuth 2.0 PKCE (Proof Key for Code Exchange) flow is public by design. It is not a secret. | Make it configurable, for enterprise registrations and graceful rotation. |
+| **Pentest credentials via environment variables** | Zentra passes `ZENTRA_USER` and `ZENTRA_PASS` to the Node Playwright child process through the environment. Only same-user processes can read them (through `/proc/<pid>/environ`). This fits the local-tool trust model. Zentra never writes these values to disk or logs. | Pass them via stdin, or an unlinked `0600` temp file, if the threat model tightens. |
 
 ### Credential storage at rest
 
-API keys and OAuth tokens live under `~/.zentra/keys/`. On **Windows** they are
-DPAPI-encrypted (user scope). On **Unix** they are AES-256-GCM envelope-encrypted
-under a data key held in the OS secret store (Secret Service / Keychain), falling
-back to `0600` plaintext only when that store is unavailable (headless/SSH/CI).
-Files are created atomically at mode `0600` (no world-readable creation window).
-In memory, provider API keys and the pentest password are wrapped in
-`zeroize::Zeroizing` so the process's own copies are wiped on drop — note this is
-defense-in-depth, not a guarantee that transient copies (e.g. inside the HTTP
-client) never linger.
+API keys and OAuth tokens live under `~/.zentra/keys/`. On **Windows**, Zentra encrypts them with DPAPI (Data Protection API), at user scope. On **Unix**, it uses AES-256-GCM envelope encryption. The data key for this lives in the OS secret store (Secret Service or Keychain). If that store is unavailable, for example on headless systems, over SSH, or in CI, Zentra falls back to `0600` plaintext files.
 
-Set `ZENTRA_NO_OS_KEYCHAIN=1` to skip the OS secret store entirely and use the
-`0600`-plaintext fallback. This is for headless/CI environments where the keychain
-is unusable — macOS shows an interactive "allow access" prompt (which blocks with
-no GUI to answer) and headless Linux has no secret-service daemon. CI sets it so
-the `secret_store` tests are deterministic.
+Zentra creates these files atomically, at mode `0600`. There is no world-readable window during creation. In memory, Zentra wraps provider API keys and the pentest password in `zeroize::Zeroizing`. This wipes the process's own copies on drop. This is defense-in-depth, not a guarantee: transient copies, for example inside the HTTP client, may still linger.
+
+Set `ZENTRA_NO_OS_KEYCHAIN=1` to skip the OS secret store entirely, and use the `0600`-plaintext fallback instead. Use this in headless or CI environments, where the keychain is unusable. macOS shows an interactive "allow access" prompt, which blocks with no GUI to answer it. Headless Linux has no secret-service daemon at all. CI sets this variable so the `secret_store` tests stay deterministic.

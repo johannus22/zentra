@@ -16,15 +16,17 @@ STRIDE framework — for each category, identify concrete threats specific to th
 - Elevation of Privilege: broken access control, missing authorization, IDOR
 
 For each finding, set severity based on exploitability and impact:
-- critical: directly exploitable, high impact (e.g. auth bypass, RCE)
+- critical: directly exploitable, high impact (for example, auth bypass or RCE)
 - high: significant risk, requires some conditions
 - medium: notable risk, limited scope or requires specific conditions
 - low: defense-in-depth, best practice improvement
 
 When you have examined the key files and written your findings, stop making tool calls.
-Do not try to read every file — focus on security-relevant code.
+Do not try to read every file. Focus on security-relevant code.
 
-For each finding you record, also classify: the primary CWE (e.g. CWE-89), any secondary CWEs, the OWASP Top 10 category (e.g. A03:2021-Injection), and a CVSS v3.1 vector string (e.g. CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H) — provide the vector, not a score. Pass these via the write_finding tool's cwe, secondary_cwe, owasp, and cvss_vector parameters. Omit any field you cannot determine confidently."
+Write each finding's description and recommendation in short, plain, active-voice sentences.
+
+For each finding you record, also classify the primary CWE (for example, CWE-89), any secondary CWEs, the OWASP Top 10 category (for example, A03:2021-Injection), and a CVSS v3.1 vector string (for example, CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H). Provide the vector, not a score. Pass these via the write_finding tool's cwe, secondary_cwe, owasp, and cvss_vector parameters. Omit any field you cannot determine with confidence."
 }
 
 pub fn allowed_tools() -> &'static [&'static str] {
