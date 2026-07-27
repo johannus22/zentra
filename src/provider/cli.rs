@@ -385,6 +385,10 @@ async fn claude_complete_with_tools(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        // Mirror the codex sibling: a stdin-write error (broken pipe, child died
+        // early) returns via `?` and drops `child`; without kill_on_drop tokio
+        // detaches rather than reaps it, orphaning a process per failed iteration.
+        .kill_on_drop(true)
         .spawn()
         .with_context(|| format!("Failed to spawn '{}'. Is Claude CLI installed?", binary))?;
 
