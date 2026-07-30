@@ -328,7 +328,7 @@ fn union(parent: &mut [usize], a: usize, b: usize) {
     }
 }
 
-fn clusters_from_parent(parent: &mut Vec<usize>) -> Vec<Vec<usize>> {
+fn clusters_from_parent(parent: &mut [usize]) -> Vec<Vec<usize>> {
     let n = parent.len();
     use std::collections::BTreeMap;
     let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
@@ -533,7 +533,7 @@ mod tests {
             confidence: None,
             screening: None,
         };
-        let merged = merge_group(&vec![primary, other], &[0, 1]);
+        let merged = merge_group(&[primary, other], &[0, 1]);
         assert_eq!(merged.cwe.as_deref(), Some("CWE-89")); // primary wins
     }
 }

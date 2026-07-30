@@ -255,7 +255,7 @@ fn pentest_ui_state_handles_error_and_completed_events() {
     });
     state.apply_event(PentestEvent::Completed);
 
-    assert_eq!(state.completed, true);
+    assert!(state.completed);
     assert!(state.error_stages.contains(&7));
     assert!(state.activity[0].contains("Authorization: Bearer <redacted>"));
     assert!(!state.activity[0].contains("secret-token"));
@@ -2343,12 +2343,10 @@ fn file_read_event_for_an_unknown_scanner_is_ignored() {
 // findings, and a green tick.
 
 fn banner_state(count: usize) -> UiState {
-    let scanners = vec![
-        ScannerType::Sast,
+    let scanners = [ScannerType::Sast,
         ScannerType::SupplyChain,
         ScannerType::ApiScan,
-        ScannerType::IacScan,
-    ];
+        ScannerType::IacScan];
     UiState::new(
         scanners[..count].to_vec(),
         "gpt-4o".to_string(),

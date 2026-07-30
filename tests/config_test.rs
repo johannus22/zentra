@@ -670,8 +670,10 @@ fn global_config_theme_roundtrips() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("config.toml");
 
-    let mut cfg = GlobalConfig::default();
-    cfg.theme = Some("matrix".to_string());
+    let cfg = GlobalConfig {
+        theme: Some("matrix".to_string()),
+        ..Default::default()
+    };
     cfg.save_to(&path).unwrap();
 
     let loaded = GlobalConfig::load_from(&path).unwrap();

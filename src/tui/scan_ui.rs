@@ -402,7 +402,7 @@ fn normalize_failed_error_preview(message: &str) -> String {
         if ch == '\u{1b}' {
             if matches!(chars.peek(), Some('[')) {
                 chars.next();
-                while let Some(ansi) = chars.next() {
+                for ansi in chars.by_ref() {
                     if ('@'..='~').contains(&ansi) {
                         break;
                     }
@@ -795,23 +795,6 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     Rect::new(x, y, width.min(area.width), height.min(area.height))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::fmt_tokens;
-
-    #[test]
-    fn fmt_tokens_abbreviates_as_expected() {
-        assert_eq!(fmt_tokens(0), "0");
-        assert_eq!(fmt_tokens(999), "999");
-        assert_eq!(fmt_tokens(1_000), "1k");
-        assert_eq!(fmt_tokens(12_900), "12.9k");
-        assert_eq!(fmt_tokens(13_000), "13k");
-        assert_eq!(fmt_tokens(200_000), "200k");
-        assert_eq!(fmt_tokens(12_500_000), "12.5M");
-        assert_eq!(fmt_tokens(13_000_000), "13M");
-    }
-}
-
 /// One-line banner shown for an incremental rescan so it's never mistaken for a
 /// fresh full scan. `baseline` is the full commit SHA (truncated to 8 chars).
 pub fn incremental_banner(
@@ -829,4 +812,21 @@ pub fn incremental_banner(
     format!(
         "Incremental rescan · baseline {short} · {changed} changed · {impacted} impacted · {carried} carried"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fmt_tokens;
+
+    #[test]
+    fn fmt_tokens_abbreviates_as_expected() {
+        assert_eq!(fmt_tokens(0), "0");
+        assert_eq!(fmt_tokens(999), "999");
+        assert_eq!(fmt_tokens(1_000), "1k");
+        assert_eq!(fmt_tokens(12_900), "12.9k");
+        assert_eq!(fmt_tokens(13_000), "13k");
+        assert_eq!(fmt_tokens(200_000), "200k");
+        assert_eq!(fmt_tokens(12_500_000), "12.5M");
+        assert_eq!(fmt_tokens(13_000_000), "13M");
+    }
 }
