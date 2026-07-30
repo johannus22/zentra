@@ -1703,3 +1703,156 @@ fn severity_still_dominates_the_order() {
         "critical must sort before low:\n{raw}"
     );
 }
+
+// --- Coverage ledger wiring ---
+//
+// The ledger lives in ToolRegistry so `dispatch` can record without a signature
+// change, and so all four parallel Phase 2 scanners share one tally.
+
+#[tokio::test]
+async fn dispatch_records_read_coverage() {
+    let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("a.rs"), "fn a() {}").unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let registry = zentra_cli::tools::ToolRegistry::new();
+    let writer = StateWriter::new(dir.path()).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+
+    registry
+        .dispatch(
+            "read_file",
+            &serde_json::json!({"path": "a.rs"}),
+            &writer,
+            &tx,
+            ScannerType::Sast,
+        )
+        .await;
+
+    std::env::set_current_dir(original).unwrap();
+
+    let summary = registry.coverage_snapshot(1);
+    assert_eq!(summary.distinct_read, 1);
+    assert_eq!(summary.candidate_count, 1);
+    assert_eq!(summary.percent(), 100);
+    assert_eq!(summary.per_scanner.len(), 1);
+    assert_eq!(summary.per_scanner[0].scanner, "sast");
+    assert_eq!(summary.per_scanner[0].files_read, 1);
+}
+
+#[tokio::test]
+async fn dispatch_records_a_rejected_read_as_a_hole_not_coverage() {
+    let dir = TempDir::new().unwrap();
+    let registry = zentra_cli::tools::ToolRegistry::new();
+    let writer = StateWriter::new(dir.path()).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+
+    registry
+        .dispatch(
+            "read_file",
+            &serde_json::json!({"path": "missing.rs"}),
+            &writer,
+            &tx,
+            ScannerType::Sast,
+        )
+        .await;
+
+    let summary = registry.coverage_snapshot(1);
+    assert_eq!(summary.distinct_read, 0, "a failed read is not coverage");
+    assert_eq!(summary.per_scanner[0].failed, 1);
+    assert_eq!(summary.percent(), 0);
+}
+
+#[tokio::test]
+async fn dispatch_records_listings_and_searches() {
+    let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("a.rs"), "fn a() {}").unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let registry = zentra_cli::tools::ToolRegistry::new();
+    let writer = StateWriter::new(dir.path()).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+
+    registry
+        .dispatch(
+            "list_files",
+            &serde_json::json!({"dir": "."}),
+            &writer,
+            &tx,
+            ScannerType::Sast,
+        )
+        .await;
+    registry
+        .dispatch(
+            "grep_code",
+            &serde_json::json!({"pattern": "fn"}),
+            &writer,
+            &tx,
+            ScannerType::Sast,
+        )
+        .await;
+
+    std::env::set_current_dir(original).unwrap();
+
+    let summary = registry.coverage_snapshot(1);
+    assert_eq!(summary.per_scanner[0].listings, 1);
+    assert_eq!(summary.per_scanner[0].searches, 1);
+    assert_eq!(
+        summary.distinct_read, 0,
+        "navigation is not reading — this is the monorepo failure mode"
+    );
+}
+
+#[tokio::test]
+async fn last_outcome_for_is_visible_through_the_registry() {
+    let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("a.rs"), "fn a() {}").unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let registry = zentra_cli::tools::ToolRegistry::new();
+    let writer = StateWriter::new(dir.path()).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+
+    registry
+        .dispatch(
+            "read_file",
+            &serde_json::json!({"path": "a.rs"}),
+            &writer,
+            &tx,
+            ScannerType::Sast,
+        )
+        .await;
+
+    std::env::set_current_dir(original).unwrap();
+
+    assert_eq!(
+        registry.last_outcome_for(ScannerType::Sast, "a.rs"),
+        Some(zentra_cli::tools::fs_tools::ReadOutcome::Read { bytes: 9 })
+    );
+    assert_eq!(registry.last_outcome_for(ScannerType::ApiScan, "a.rs"), None);
+}
+
+#[tokio::test]
+async fn never_read_snapshot_names_untouched_candidates() {
+    let dir = TempDir::new().unwrap();
+    let registry = zentra_cli::tools::ToolRegistry::new();
+    let candidates = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
+    let _ = &dir;
+
+    assert_eq!(registry.never_read_snapshot(&candidates), candidates);
+}
+
+#[test]
+fn state_writer_writes_the_coverage_artifact() {
+    let dir = TempDir::new().unwrap();
+    let w = StateWriter::new(dir.path()).unwrap();
+    w.write_coverage("# Scan Coverage\n").unwrap();
+    let body = std::fs::read_to_string(dir.path().join(".zentra").join("coverage.md")).unwrap();
+    assert!(body.contains("# Scan Coverage"));
+}

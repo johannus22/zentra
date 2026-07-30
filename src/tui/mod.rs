@@ -188,6 +188,8 @@ impl UiState {
                 self.findings.sort_by_key(|f| f.severity.order());
                 self.selected_idx = self.selected_idx.min(self.findings.len().saturating_sub(1));
             }
+            // Counted in the scanner panel — see the FileRead arm below.
+            ScanEvent::FileRead { .. } => {}
             ScanEvent::ToolCall { tool, arg, .. } => {
                 let prefix = if self.provider_kind == "codex_cli" { "↔" } else { "→" };
                 self.activity = if arg.is_empty() {

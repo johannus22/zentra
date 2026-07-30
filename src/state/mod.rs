@@ -129,6 +129,14 @@ impl StateWriter {
         Ok(())
     }
 
+    /// Write the coverage ledger for this run. Overwrites any prior file: a
+    /// stale ledger is worse than none, because it would name files as unread
+    /// that this run did read.
+    pub fn write_coverage(&self, content: &str) -> Result<()> {
+        fs::write(self.zentra_dir.join("coverage.md"), content)?;
+        Ok(())
+    }
+
     pub fn write_architecture(&self, content: &str) -> Result<()> {
         fs::write(self.zentra_dir.join("architecture.md"), content)?;
         Ok(())

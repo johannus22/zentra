@@ -58,6 +58,14 @@ pub enum ScanEvent {
         scanner: ScannerType,
         message: String,
     },
+    /// One file read attempt and its outcome. The TUI counts these, so the live
+    /// panel and `.zentra/coverage.md` are driven by the same signal and cannot
+    /// disagree.
+    FileRead {
+        scanner: ScannerType,
+        path: String,
+        outcome: crate::tools::fs_tools::ReadOutcome,
+    },
     TokensUsed {
         input: u32,
         output: u32,

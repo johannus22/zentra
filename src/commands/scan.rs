@@ -336,6 +336,14 @@ async fn run_once(
                     delta.new, delta.resolved, delta.carried
                 );
             }
+
+            let coverage = &summary.coverage;
+            println!(
+                "  Coverage: {} of {} source files read ({}%) — see .zentra/coverage.md",
+                coverage.distinct_read,
+                coverage.candidate_count,
+                coverage.percent()
+            );
         }
         _ => {
             cancel_token.cancel();

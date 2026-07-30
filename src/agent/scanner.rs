@@ -353,6 +353,26 @@ For example, do not flag SQL injection if the ORM listed here auto-parameterises
                     result_hash: sha256_str(&result),
                 });
 
+                // Coverage: report what this read actually produced. The outcome
+                // comes from the registry's ledger, not from the result string,
+                // so the TUI counter and .zentra/coverage.md always agree.
+                if tc.name == "read_file" {
+                    if let Some(path) = tc.arguments.get("path").and_then(|v| v.as_str()) {
+                        if let Some(outcome) =
+                            self.tool_registry.last_outcome_for(self.scanner_type, path)
+                        {
+                            self.tx
+                                .send(ScanEvent::FileRead {
+                                    scanner: self.scanner_type,
+                                    path: path.to_string(),
+                                    outcome,
+                                })
+                                .await
+                                .ok();
+                        }
+                    }
+                }
+
                 // Tag external output and scan it for prompt-injection attempts.
                 let (wrapped, injected) = prompt_guard.scan_and_wrap(&tc.name, &result);
                 if injected {

@@ -19,6 +19,9 @@ struct IncrementalCtx {
 pub struct RunSummary {
     pub failed: Vec<ScannerType>,
     pub delta: Option<ScanDelta>,
+    /// What the agents actually read. A scan that read almost nothing must not
+    /// be indistinguishable from a scan that found nothing.
+    pub coverage: crate::agent::coverage::CoverageSummary,
 }
 
 const PARALLEL_SCANNERS: &[ScannerType] = &[
@@ -244,7 +247,28 @@ Delete this file and re-run the scan to retry.",
             }
         }
 
-        Ok(RunSummary { failed, delta })
+        // Coverage ledger, written last so it reflects every scanner. Reports
+        // only — a thin scan never fails the run here, it just stops looking
+        // like a clean one.
+        let candidates =
+            crate::tools::fs_tools::source_file_paths(self.state_writer.project_root());
+        let coverage = self.tool_registry.coverage_snapshot(candidates.len());
+        let never_read = self.tool_registry.never_read_snapshot(&candidates);
+        if let Err(e) = self
+            .state_writer
+            .write_coverage(&crate::agent::coverage::render_markdown(
+                &coverage,
+                &never_read,
+            ))
+        {
+            crate::logging::warn("orchestrator", format!("failed to write coverage.md: {e}"));
+        }
+
+        Ok(RunSummary {
+            failed,
+            delta,
+            coverage,
+        })
     }
 
     async fn run_llm_scanner(

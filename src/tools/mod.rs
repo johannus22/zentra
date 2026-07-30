@@ -7,7 +7,13 @@ use crate::provider::ToolDefinition;
 use crate::state::{Finding, Severity, StateWriter};
 use tokio::sync::mpsc;
 
-pub struct ToolRegistry;
+pub struct ToolRegistry {
+    /// What the agents actually read. Phase 2 shares one registry across four
+    /// runtime threads, so the ledger carries its own lock. `dispatch` records
+    /// here rather than in the scanner loop, which keeps the outcome and the
+    /// agent-visible string from ever diverging.
+    coverage: std::sync::Mutex<crate::agent::coverage::CoverageLedger>,
+}
 
 impl Default for ToolRegistry {
     fn default() -> Self {
@@ -17,7 +23,72 @@ impl Default for ToolRegistry {
 
 impl ToolRegistry {
     pub fn new() -> Self {
-        Self
+        Self {
+            coverage: std::sync::Mutex::new(crate::agent::coverage::CoverageLedger::default()),
+        }
+    }
+
+    /// A snapshot of what the agents read this run.
+    ///
+    /// Poison-tolerant, like `StateWriter::findings_lock`: the guarded value is a
+    /// set of counters with no cross-field invariant, so recovering the guard is
+    /// safer than turning one panicked scanner into a failed run.
+    pub fn coverage_snapshot(
+        &self,
+        candidate_count: usize,
+    ) -> crate::agent::coverage::CoverageSummary {
+        match self.coverage.lock() {
+            Ok(guard) => guard.summary(candidate_count),
+            Err(poisoned) => poisoned.into_inner().summary(candidate_count),
+        }
+    }
+
+    /// Candidate files that no scanner read this run.
+    pub fn never_read_snapshot(&self, candidates: &[String]) -> Vec<String> {
+        match self.coverage.lock() {
+            Ok(guard) => guard.never_read(candidates),
+            Err(poisoned) => poisoned.into_inner().never_read(candidates),
+        }
+    }
+
+    /// The outcome of the most recent read of `path` by `scanner`. The scanner
+    /// loop uses this to emit `ScanEvent::FileRead` without parsing the result
+    /// string it just handed to the model.
+    pub fn last_outcome_for(
+        &self,
+        scanner: ScannerType,
+        path: &str,
+    ) -> Option<crate::tools::fs_tools::ReadOutcome> {
+        match self.coverage.lock() {
+            Ok(guard) => guard.last_outcome_for(scanner, path),
+            Err(poisoned) => poisoned.into_inner().last_outcome_for(scanner, path),
+        }
+    }
+
+    fn record_read(
+        &self,
+        scanner: ScannerType,
+        path: &str,
+        outcome: crate::tools::fs_tools::ReadOutcome,
+    ) {
+        match self.coverage.lock() {
+            Ok(mut guard) => guard.record_read(scanner, path, outcome),
+            Err(poisoned) => poisoned.into_inner().record_read(scanner, path, outcome),
+        }
+    }
+
+    fn record_listing(&self, scanner: ScannerType) {
+        match self.coverage.lock() {
+            Ok(mut guard) => guard.record_listing(scanner),
+            Err(poisoned) => poisoned.into_inner().record_listing(scanner),
+        }
+    }
+
+    fn record_search(&self, scanner: ScannerType) {
+        match self.coverage.lock() {
+            Ok(mut guard) => guard.record_search(scanner),
+            Err(poisoned) => poisoned.into_inner().record_search(scanner),
+        }
     }
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {
@@ -183,16 +254,20 @@ data entry points, security middleware already present, and known safety guarant
         match name {
             "read_file" => {
                 let path = args["path"].as_str().unwrap_or("");
-                fs_tools::read_file(path)
+                let (body, outcome) = fs_tools::read_file_with_outcome(path);
+                self.record_read(scanner, path, outcome);
+                body
             }
             "list_files" => {
                 let dir = args["dir"].as_str().unwrap_or(".");
                 let pattern = args["pattern"].as_str();
+                self.record_listing(scanner);
                 fs_tools::list_files(dir, pattern)
             }
             "grep_code" => {
                 let pattern = args["pattern"].as_str().unwrap_or("");
                 let path = args["path"].as_str();
+                self.record_search(scanner);
                 fs_tools::grep_code(pattern, path)
             }
             "write_finding" => {

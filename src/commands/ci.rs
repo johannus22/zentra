@@ -204,6 +204,17 @@ pub async fn run_headless_scan_with_provider(
     cancel_token.cancel(); // clean up on normal completion too
 
     let summary = scan_task.await??;
+
+    // Report coverage before the failure check below can bail: a thin scan is
+    // exactly the case where the operator needs the number.
+    let coverage = &summary.coverage;
+    println!(
+        "Coverage: {} of {} source files read ({}%) — see .zentra/coverage.md",
+        coverage.distinct_read,
+        coverage.candidate_count,
+        coverage.percent()
+    );
+
     let failed = summary.failed;
     if !failed.is_empty() {
         let names: Vec<&str> = failed.iter().map(|s| s.name()).collect();
