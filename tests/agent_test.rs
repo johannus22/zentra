@@ -1856,3 +1856,50 @@ fn state_writer_writes_the_coverage_artifact() {
     let body = std::fs::read_to_string(dir.path().join(".zentra").join("coverage.md")).unwrap();
     assert!(body.contains("# Scan Coverage"));
 }
+
+// End-to-end: a real orchestrator run against a mock provider must leave a
+// coverage artifact on disk. This is the closest check to the operator's
+// experience that does not need a live API key.
+#[tokio::test]
+async fn orchestrator_writes_the_coverage_artifact_end_to_end() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    // Two candidate source files the agent never opens: the mock provider makes
+    // no tool calls, so this is exactly the "read nothing, report success" case.
+    std::fs::write(dir.path().join("a.rs"), "fn a() {}").unwrap();
+    std::fs::write(dir.path().join("b.rs"), "fn b() {}").unwrap();
+
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
+        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
+    );
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let writer = Arc::new(zentra_cli::state::StateWriter::new(dir.path()).unwrap());
+    let (tx, mut rx) = mpsc::channel(64);
+
+    let summary = OrchestratorAgent::new(provider, registry, writer, tx, CancellationToken::new())
+        .run(&[ScannerType::Sast])
+        .await
+        .unwrap();
+
+    while rx.try_recv().is_ok() {}
+
+    assert_eq!(summary.coverage.candidate_count, 2);
+    assert_eq!(summary.coverage.distinct_read, 0);
+    assert_eq!(summary.coverage.percent(), 0);
+
+    let body = std::fs::read_to_string(dir.path().join(".zentra").join("coverage.md")).unwrap();
+    assert!(body.contains("# Scan Coverage"), "got:\n{body}");
+    assert!(body.contains("0 of 2 (0%)"), "got:\n{body}");
+    assert!(body.contains("Never opened (2 files)"), "got:\n{body}");
+    assert!(body.contains("- a.rs"), "got:\n{body}");
+    assert!(body.contains("- b.rs"), "got:\n{body}");
+}

@@ -11,6 +11,7 @@ use zentra_cli::tui::menu::{
 };
 use zentra_cli::tui::pentest_setup::build_pentest_config_from_setup_input;
 use zentra_cli::tui::pentest_ui::PentestUiState;
+use zentra_cli::tools::fs_tools::ReadOutcome;
 use zentra_cli::tui::{ScanStatus, UiState};
 
 #[test]
@@ -2217,4 +2218,115 @@ fn incremental_banner_formats_counts() {
     assert!(s.contains("3 changed"));
     assert!(s.contains("12 impacted"));
     assert!(s.contains("14 carried"));
+}
+
+// --- Live coverage counter ---
+//
+// The scanner panel shows how many distinct files each scanner has read. It
+// counts only successful reads, so it matches .zentra/coverage.md exactly.
+
+fn coverage_state() -> UiState {
+    UiState::new(
+        vec![ScannerType::Sast, ScannerType::ApiScan],
+        "gpt-4o".to_string(),
+        200_000,
+        vec![],
+        String::new(),
+        String::new(),
+        String::new(),
+    )
+}
+
+#[test]
+fn file_read_event_counts_distinct_successful_reads() {
+    let mut state = coverage_state();
+
+    for path in ["src/a.rs", "src/a.rs", "src/b.rs"] {
+        state.apply_event(ScanEvent::FileRead {
+            scanner: ScannerType::Sast,
+            path: path.to_string(),
+            outcome: ReadOutcome::Read { bytes: 10 },
+        });
+    }
+
+    assert_eq!(state.scanners[0].files_read(), 2);
+}
+
+#[test]
+fn file_read_event_ignores_holes() {
+    let mut state = coverage_state();
+
+    state.apply_event(ScanEvent::FileRead {
+        scanner: ScannerType::Sast,
+        path: "src/big.rs".to_string(),
+        outcome: ReadOutcome::TooLarge { bytes: 200_000 },
+    });
+    state.apply_event(ScanEvent::FileRead {
+        scanner: ScannerType::Sast,
+        path: "src/gone.rs".to_string(),
+        outcome: ReadOutcome::Failed,
+    });
+
+    assert_eq!(
+        state.scanners[0].files_read(),
+        0,
+        "a file the agent could not read is not coverage"
+    );
+}
+
+#[test]
+fn file_read_event_counts_per_scanner() {
+    let mut state = coverage_state();
+
+    state.apply_event(ScanEvent::FileRead {
+        scanner: ScannerType::Sast,
+        path: "src/a.rs".to_string(),
+        outcome: ReadOutcome::Read { bytes: 1 },
+    });
+    state.apply_event(ScanEvent::FileRead {
+        scanner: ScannerType::ApiScan,
+        path: "src/a.rs".to_string(),
+        outcome: ReadOutcome::Read { bytes: 1 },
+    });
+    state.apply_event(ScanEvent::FileRead {
+        scanner: ScannerType::ApiScan,
+        path: "src/b.rs".to_string(),
+        outcome: ReadOutcome::Read { bytes: 1 },
+    });
+
+    assert_eq!(state.scanners[0].files_read(), 1);
+    assert_eq!(state.scanners[1].files_read(), 2);
+}
+
+#[test]
+fn file_read_event_normalizes_separators() {
+    let mut state = coverage_state();
+
+    state.apply_event(ScanEvent::FileRead {
+        scanner: ScannerType::Sast,
+        path: r"src\a.rs".to_string(),
+        outcome: ReadOutcome::Read { bytes: 1 },
+    });
+    state.apply_event(ScanEvent::FileRead {
+        scanner: ScannerType::Sast,
+        path: "src/a.rs".to_string(),
+        outcome: ReadOutcome::Read { bytes: 1 },
+    });
+
+    assert_eq!(state.scanners[0].files_read(), 1);
+}
+
+#[test]
+fn file_read_event_for_an_unknown_scanner_is_ignored() {
+    let mut state = coverage_state();
+
+    // IacScan is not in this run's scanner list.
+    state.apply_event(ScanEvent::FileRead {
+        scanner: ScannerType::IacScan,
+        path: "src/a.rs".to_string(),
+        outcome: ReadOutcome::Read { bytes: 1 },
+    });
+
+    assert_eq!(state.scanners[0].files_read(), 0);
+    assert_eq!(state.scanners[1].files_read(), 0);
 }

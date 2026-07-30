@@ -448,7 +448,13 @@ fn render_scanners(frame: &mut Frame, area: Rect, state: &UiState) {
                 ScanStatus::Failed => state.theme.error,
                 _ => state.theme.text_dim,
             };
-            let label = format!("{} {:<14}", icon, s.scanner_type.label());
+            // The suffix reads as "37f" for 37 files. Hidden at zero so a queued
+            // scanner stays visually quiet. The panel is 34 columns and the
+            // label uses 16, so this needs no layout change.
+            let label = match s.files_read() {
+                0 => format!("{} {:<14}", icon, s.scanner_type.label()),
+                n => format!("{} {:<14}{:>4}f", icon, s.scanner_type.label(), n),
+            };
             let style = Style::default().fg(color);
 
             // Build item — two lines for failed scanners with an error message

@@ -64,6 +64,9 @@ pub struct UiScanner {
     pub low_count: u32,
     pub info_count: u32,
     pub error: Option<String>,
+    /// Distinct files this scanner read successfully. A set, so a re-read is not
+    /// double counted and the panel matches `.zentra/coverage.md`.
+    pub read_paths: std::collections::BTreeSet<String>,
 }
 
 impl UiScanner {
@@ -81,7 +84,13 @@ impl UiScanner {
             low_count: 0,
             info_count: 0,
             error: None,
+            read_paths: std::collections::BTreeSet::new(),
         }
+    }
+
+    /// How many distinct files this scanner has read so far.
+    pub fn files_read(&self) -> usize {
+        self.read_paths.len()
     }
 
     pub fn add_finding(&mut self, severity: &Severity) {
@@ -188,8 +197,19 @@ impl UiState {
                 self.findings.sort_by_key(|f| f.severity.order());
                 self.selected_idx = self.selected_idx.min(self.findings.len().saturating_sub(1));
             }
-            // Counted in the scanner panel — see the FileRead arm below.
-            ScanEvent::FileRead { .. } => {}
+            ScanEvent::FileRead {
+                scanner,
+                path,
+                outcome,
+            } => {
+                // Only a successful read is coverage. A too-large or failed read
+                // is a hole, and `.zentra/coverage.md` tallies it separately.
+                if matches!(outcome, crate::tools::fs_tools::ReadOutcome::Read { .. }) {
+                    if let Some(s) = self.scanners.iter_mut().find(|s| s.scanner_type == scanner) {
+                        s.read_paths.insert(path.replace('\\', "/"));
+                    }
+                }
+            }
             ScanEvent::ToolCall { tool, arg, .. } => {
                 let prefix = if self.provider_kind == "codex_cli" { "↔" } else { "→" };
                 self.activity = if arg.is_empty() {
