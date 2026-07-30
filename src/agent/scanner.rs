@@ -22,6 +22,9 @@ pub struct ScannerAgent {
     context: Option<String>,
     focus_context: Option<String>,
     incremental_scope: Option<Vec<String>>,
+    /// The whole filtered repository, when pack mode is on. Shared across every
+    /// scanner in the run, so it is behind an Arc rather than cloned per scanner.
+    pack: Option<Arc<String>>,
     cancel_token: CancellationToken,
     security: SecurityContext,
 }
@@ -54,7 +57,17 @@ fn path_in_scope(path: &str, scope: &[String]) -> bool {
 /// Build the initial user prompt for a scanner run. Incremental scope, when
 /// present, replaces the generic "list the project files" opener with the
 /// exact impact-set file list so the model never needs to crawl the tree.
-fn initial_prompt_for(scanner_type: ScannerType, incremental_scope: Option<&[String]>) -> String {
+fn initial_prompt_for(
+    scanner_type: ScannerType,
+    incremental_scope: Option<&[String]>,
+    pack: Option<&str>,
+) -> String {
+    // Pack mode wins over both other openers: the whole filtered repository is
+    // already in the message, so there is nothing to navigate to. It applies to
+    // FrameworkAnalysis too — the manifest is in the pack.
+    if let Some(pack) = pack {
+        return pack.to_string();
+    }
     if scanner_type == ScannerType::FrameworkAnalysis {
         return "Begin the framework analysis. Start by listing the project files and reading the package manifest.".to_string();
     }
@@ -125,6 +138,7 @@ impl ScannerAgent {
             context,
             focus_context: None,
             incremental_scope: None,
+            pack: None,
             cancel_token,
             security: SecurityContext::disabled(),
         }
@@ -149,6 +163,7 @@ impl ScannerAgent {
             context,
             focus_context,
             incremental_scope: None,
+            pack: None,
             cancel_token,
             security: SecurityContext::disabled(),
         }
@@ -164,6 +179,13 @@ impl ScannerAgent {
     /// `None` (the default) means no restriction — full-scan behavior.
     pub fn with_incremental_scope(mut self, scope: Option<Vec<String>>) -> Self {
         self.incremental_scope = scope;
+        self
+    }
+
+    /// Open with the whole filtered repository instead of a navigation prompt.
+    /// `Arc` because every scanner in the run shares one pack, and it is large.
+    pub fn with_pack(mut self, pack: Option<Arc<String>>) -> Self {
+        self.pack = pack;
         self
     }
 
@@ -189,8 +211,11 @@ For example, do not flag SQL injection if the ORM listed here auto-parameterises
             .into_iter()
             .filter(|t| allowed.contains(&t.name.as_str()))
             .collect();
-        let initial_prompt =
-            initial_prompt_for(self.scanner_type, self.incremental_scope.as_deref());
+        let initial_prompt = initial_prompt_for(
+            self.scanner_type,
+            self.incremental_scope.as_deref(),
+            self.pack.as_deref().map(String::as_str),
+        );
         let mut messages: Vec<AgentMessage> = vec![AgentMessage::User(initial_prompt)];
 
         // Per-scanner security state.
@@ -353,6 +378,26 @@ For example, do not flag SQL injection if the ORM listed here auto-parameterises
                     result_hash: sha256_str(&result),
                 });
 
+                // Coverage: report what this read actually produced. The outcome
+                // comes from the registry's ledger, not from the result string,
+                // so the TUI counter and .zentra/coverage.md always agree.
+                if tc.name == "read_file" {
+                    if let Some(path) = tc.arguments.get("path").and_then(|v| v.as_str()) {
+                        if let Some(outcome) =
+                            self.tool_registry.last_outcome_for(self.scanner_type, path)
+                        {
+                            self.tx
+                                .send(ScanEvent::FileRead {
+                                    scanner: self.scanner_type,
+                                    path: path.to_string(),
+                                    outcome,
+                                })
+                                .await
+                                .ok();
+                        }
+                    }
+                }
+
                 // Tag external output and scan it for prompt-injection attempts.
                 let (wrapped, injected) = prompt_guard.scan_and_wrap(&tc.name, &result);
                 if injected {
@@ -409,7 +454,7 @@ mod tests {
     #[test]
     fn initial_prompt_unchanged_for_full_scan() {
         assert_eq!(
-            initial_prompt_for(ScannerType::Sast, None),
+            initial_prompt_for(ScannerType::Sast, None, None),
             "Begin your security scan. Start by listing the project files."
         );
     }
@@ -418,17 +463,17 @@ mod tests {
     fn initial_prompt_unchanged_for_framework_analysis_regardless_of_scope() {
         let scope = vec!["src/a.rs".to_string()];
         assert_eq!(
-            initial_prompt_for(ScannerType::FrameworkAnalysis, None),
-            initial_prompt_for(ScannerType::FrameworkAnalysis, Some(&scope)),
+            initial_prompt_for(ScannerType::FrameworkAnalysis, None, None),
+            initial_prompt_for(ScannerType::FrameworkAnalysis, Some(&scope), None),
         );
-        assert!(initial_prompt_for(ScannerType::FrameworkAnalysis, Some(&scope))
+        assert!(initial_prompt_for(ScannerType::FrameworkAnalysis, Some(&scope), None)
             .contains("framework analysis"));
     }
 
     #[test]
     fn initial_prompt_lists_impact_files_for_incremental_scan() {
         let scope = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
-        let prompt = initial_prompt_for(ScannerType::Sast, Some(&scope));
+        let prompt = initial_prompt_for(ScannerType::Sast, Some(&scope), None);
         assert!(prompt.contains("Incremental rescan"));
         assert!(prompt.contains("src/a.rs"));
         assert!(prompt.contains("src/b.rs"));
@@ -437,7 +482,7 @@ mod tests {
 
     #[test]
     fn initial_prompt_handles_empty_scope() {
-        let prompt = initial_prompt_for(ScannerType::Sast, Some(&[]));
+        let prompt = initial_prompt_for(ScannerType::Sast, Some(&[]), None);
         assert!(prompt.contains("none — no impacted files"));
     }
 

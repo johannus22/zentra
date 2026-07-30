@@ -77,6 +77,29 @@ pub async fn run() -> Result<()> {
     Ok(())
 }
 
+/// Regenerate `.zentra/architecture.md` only, with no PR/MR diff requirement.
+/// Intended for a base-branch (e.g. push-to-main) job that refreshes the cache
+/// PR runs restore, instead of every PR redoing Phase 0 from a fresh checkout.
+pub async fn refresh_architecture() -> Result<()> {
+    let root = std::env::current_dir()?;
+    println!("Zentra: refreshing architecture analysis");
+
+    let provider = load_provider().await?;
+    let project_config = load_or_init_project_config(&root)?;
+    let target_path = project_config.resolve_target_within(&root)?;
+
+    run_headless_scan_with_provider(
+        provider,
+        &target_path,
+        vec![ScannerType::FrameworkAnalysis],
+        None,
+    )
+    .await?;
+
+    println!("Wrote .zentra/architecture.md");
+    Ok(())
+}
+
 fn collect_findings(events: &[ScanEvent]) -> Vec<Finding> {
     events
         .iter()
@@ -181,6 +204,17 @@ pub async fn run_headless_scan_with_provider(
     cancel_token.cancel(); // clean up on normal completion too
 
     let summary = scan_task.await??;
+
+    // Report coverage before the failure check below can bail: a thin scan is
+    // exactly the case where the operator needs the number.
+    let coverage = &summary.coverage;
+    println!(
+        "Coverage: {} of {} source files read ({}%) — see .zentra/coverage.md",
+        coverage.distinct_read,
+        coverage.candidate_count,
+        coverage.percent()
+    );
+
     let failed = summary.failed;
     if !failed.is_empty() {
         let names: Vec<&str> = failed.iter().map(|s| s.name()).collect();
@@ -260,6 +294,9 @@ fn provider_config_from_env() -> Option<(ProviderProfile, String)> {
         auth_method: AuthMethod::ApiKey,
         context_window: non_empty("ZENTRA_PROVIDER_CONTEXT_WINDOW").and_then(|v| v.parse().ok()),
         reasoning_effort: non_empty("ZENTRA_PROVIDER_REASONING_EFFORT"),
+        // A CI runner has no config.toml, so the env var is the only way to
+        // override the default. An unparseable value falls back to the default.
+        temperature: non_empty("ZENTRA_PROVIDER_TEMPERATURE").and_then(|v| v.trim().parse().ok()),
     };
 
     Some((profile, api_key))
@@ -270,14 +307,14 @@ fn build_provider(profile: &ProviderProfile, api_key: String) -> Result<Arc<dyn 
     // hand-edited config or CI env vars that never passed the write-time gate.
     crate::config::validation::validate_profile_endpoint(&profile.kind, &profile.base_url)?;
     Ok(match profile.kind.as_str() {
-        "anthropic" => Arc::new(AnthropicProvider::new(
-            profile.base_url.clone(),
-            profile.model.clone(),
-            api_key,
-        )),
+        "anthropic" => Arc::new(
+            AnthropicProvider::new(profile.base_url.clone(), profile.model.clone(), api_key)
+                .with_temperature(profile.temperature),
+        ),
         _ => Arc::new(
             OpenAICompatProvider::new(profile.base_url.clone(), profile.model.clone(), api_key)
-                .with_reasoning(profile.reasoning_effort.clone()),
+                .with_reasoning(profile.reasoning_effort.clone())
+                .with_temperature(profile.temperature),
         ),
     })
 }
@@ -474,6 +511,7 @@ mod tests {
             auth_method: AuthMethod::ApiKey,
             context_window: None,
             reasoning_effort: None,
+            temperature: None,
         };
         // build_provider returns a trait object; the concrete type can't be
         // downcast here without exposing internals, so we only assert it

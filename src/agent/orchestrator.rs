@@ -19,6 +19,9 @@ struct IncrementalCtx {
 pub struct RunSummary {
     pub failed: Vec<ScannerType>,
     pub delta: Option<ScanDelta>,
+    /// What the agents actually read. A scan that read almost nothing must not
+    /// be indistinguishable from a scan that found nothing.
+    pub coverage: crate::agent::coverage::CoverageSummary,
 }
 
 const PARALLEL_SCANNERS: &[ScannerType] = &[
@@ -50,6 +53,9 @@ pub struct OrchestratorAgent {
     focus_context: Option<String>,
     security: SecurityContext,
     incremental: Option<IncrementalCtx>,
+    /// The whole filtered repository, when pack mode is on. Every scanner opens
+    /// with it instead of navigating, so it is shared behind one Arc.
+    pack: Option<Arc<String>>,
 }
 
 impl OrchestratorAgent {
@@ -67,6 +73,7 @@ impl OrchestratorAgent {
             tx,
             cancel_token,
             focus_context: None,
+            pack: None,
             security: SecurityContext::disabled(),
             incremental: None,
         }
@@ -84,6 +91,14 @@ impl OrchestratorAgent {
 
     pub fn with_incremental(mut self, prior: Vec<Finding>, change_set: ChangeSet) -> Self {
         self.incremental = Some(IncrementalCtx { prior, change_set });
+        self
+    }
+
+    /// Open every scanner with the whole filtered repository instead of a
+    /// navigation prompt. The caller checks the budget first — by the time the
+    /// pack reaches here it has already been shown to fit.
+    pub fn with_pack(mut self, pack: Option<Arc<String>>) -> Self {
+        self.pack = pack;
         self
     }
 
@@ -154,6 +169,7 @@ Delete this file and re-run the scan to retry.",
                 let focus_ctx = self.focus_context.clone();
                 let token = cancel_token.clone();
                 let security = self.security.clone();
+                let pack = self.pack.clone();
                 let incremental_scope = self
                     .incremental
                     .as_ref()
@@ -173,6 +189,7 @@ Delete this file and re-run the scan to retry.",
                         )
                         .with_security(security)
                         .with_incremental_scope(incremental_scope)
+                        .with_pack(pack)
                         .run()
                         .await
                     }),
@@ -233,6 +250,24 @@ Delete this file and re-run the scan to retry.",
             }
         }
 
+        // Phase 2.6: screen the deduplicated set for reachability, so the report
+        // consumes findings that carry a verdict. After correlation on purpose:
+        // screening a duplicate twice would pay for the same issue twice.
+        // Best-effort and annotate-only, like 2.5.
+        if scanners.contains(&ScannerType::Report) {
+            let raw = self.state_writer.read_findings_raw().unwrap_or_default();
+            let parsed = crate::state::parse_findings(&raw);
+            if !parsed.is_empty() {
+                let screened = crate::agent::screening::screen(
+                    &self.provider,
+                    self.state_writer.project_root(),
+                    parsed,
+                )
+                .await;
+                let _ = self.state_writer.rewrite_findings(&screened);
+            }
+        }
+
         // Phase 3: Report — sequential, runs last
         if scanners.contains(&ScannerType::Report) {
             if self
@@ -244,7 +279,28 @@ Delete this file and re-run the scan to retry.",
             }
         }
 
-        Ok(RunSummary { failed, delta })
+        // Coverage ledger, written last so it reflects every scanner. Reports
+        // only — a thin scan never fails the run here, it just stops looking
+        // like a clean one.
+        let candidates =
+            crate::tools::fs_tools::source_file_paths(self.state_writer.project_root());
+        let coverage = self.tool_registry.coverage_snapshot(candidates.len());
+        let never_read = self.tool_registry.never_read_snapshot(&candidates);
+        if let Err(e) = self
+            .state_writer
+            .write_coverage(&crate::agent::coverage::render_markdown(
+                &coverage,
+                &never_read,
+            ))
+        {
+            crate::logging::warn("orchestrator", format!("failed to write coverage.md: {e}"));
+        }
+
+        Ok(RunSummary {
+            failed,
+            delta,
+            coverage,
+        })
     }
 
     async fn run_llm_scanner(
@@ -263,6 +319,7 @@ Delete this file and re-run the scan to retry.",
             self.cancel_token.clone(),
         )
         .with_security(self.security.clone())
+        .with_pack(self.pack.clone())
         .run()
         .await
     }

@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -26,15 +26,40 @@ use tokio_util::sync::CancellationToken;
 /// notice so the truncation is never silent.
 const INCREMENTAL_IMPACT_CAP: usize = 200;
 
+/// Output tokens the pack estimate reserves. Must match the `max_tokens` the
+/// ReAct loop passes to the provider (`agent::scanner`), or the budget check
+/// here would disagree with the one the scanner applies at send time.
+const PACK_MAX_OUTPUT: u32 = 4096;
+
+/// The longest system prompt among `scanners`, so the pack budget check assumes
+/// the worst case rather than an average one.
+fn scanners_widest_system_prompt(scanners: &[ScannerType]) -> String {
+    scanners
+        .iter()
+        .map(|s| crate::scanners::system_prompt(*s))
+        .max_by_key(|prompt| prompt.len())
+        .unwrap_or_default()
+        .to_string()
+}
+
 pub async fn run(
     provider_override: Option<String>,
     only: Option<String>,
     full: bool,
+    pack: bool,
+    dry_run: bool,
 ) -> Result<()> {
     let scanners = resolve_scanners(only.as_deref())?;
     let mut provider_override = provider_override;
     loop {
-        match run_once(provider_override.clone(), scanners.clone(), full).await? {
+        match run_once(
+            provider_override.clone(),
+            scanners.clone(),
+            full,
+            PackOptions { pack, dry_run },
+        )
+        .await?
+        {
             ScanOutcome::Completed | ScanOutcome::Aborted | ScanOutcome::BackToMenu => break,
             ScanOutcome::Reconfigure => {
                 wizard::run_setup(None).await?;
@@ -50,7 +75,14 @@ pub async fn run(
 pub async fn run_with_scanners(scanners: Vec<ScannerType>) -> Result<()> {
     let mut provider_override: Option<String> = None;
     loop {
-        match run_once(provider_override.clone(), scanners.clone(), false).await? {
+        match run_once(
+            provider_override.clone(),
+            scanners.clone(),
+            false,
+            PackOptions::default(),
+        )
+        .await?
+        {
             ScanOutcome::Completed | ScanOutcome::Aborted | ScanOutcome::BackToMenu => break,
             ScanOutcome::Reconfigure => {
                 wizard::run_setup(None).await?;
@@ -63,10 +95,19 @@ pub async fn run_with_scanners(scanners: Vec<ScannerType>) -> Result<()> {
     Ok(())
 }
 
+/// Pack-mode switches for one scan. Default is off, which is the historical
+/// agentic-exploration behavior.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PackOptions {
+    pub pack: bool,
+    pub dry_run: bool,
+}
+
 async fn run_once(
     provider_override: Option<String>,
     scanners: Vec<ScannerType>,
     full: bool,
+    pack_options: PackOptions,
 ) -> Result<ScanOutcome> {
     let global = GlobalConfig::load()?;
     let profile_name = provider_override
@@ -121,11 +162,10 @@ async fn run_once(
     let (tx, rx) = mpsc::channel(128);
 
     let provider: Arc<dyn LLMProvider> = match profile.kind.as_str() {
-        "anthropic" => Arc::new(AnthropicProvider::new(
-            profile.base_url.clone(),
-            profile.model.clone(),
-            api_key,
-        )),
+        "anthropic" => Arc::new(
+            AnthropicProvider::new(profile.base_url.clone(), profile.model.clone(), api_key)
+                .with_temperature(profile.temperature),
+        ),
         "claude_cli" => Arc::new(CliProvider::new(
             CliKind::Claude,
             resolve_cli_binary(&profile.kind, &profile.base_url),
@@ -142,7 +182,8 @@ async fn run_once(
         _ => Arc::new(
             OpenAICompatProvider::new(profile.base_url.clone(), profile.model.clone(), api_key)
                 .with_reasoning(profile.reasoning_effort.clone())
-                .with_context_window(profile.context_window),
+                .with_context_window(profile.context_window)
+                .with_temperature(profile.temperature),
         ),
     };
 
@@ -167,13 +208,56 @@ async fn run_once(
     let engine_version = env!("CARGO_PKG_VERSION");
     let model_id = format!("{} · {}", profile.model, profile_name);
     let decision = decide_mode(ModeInputs {
-        forced_full: full,
+        // Pack mode sends the whole repository, so an incremental baseline has
+        // nothing to narrow. The two modes are mutually exclusive by definition.
+        forced_full: full || pack_options.pack,
         is_git_repo: is_git,
         current_engine_version: engine_version,
         current_model_id: &model_id,
         prior: prior_manifest.as_ref(),
     });
-    println!("ℹ {}", decision.reason);
+    // Pack mode forces a full scan through `forced_full`, but reporting the
+    // `--full` reason would name a flag the operator did not pass.
+    if pack_options.pack {
+        println!("ℹ pack mode — sending the whole repository (implies a full scan)");
+    } else {
+        println!("ℹ {}", decision.reason);
+    }
+
+    // Pack mode: build the pack, check it against the input budget, and refuse
+    // rather than truncate. --dry-run stops here, before any provider call.
+    let pack: Option<Arc<String>> = if pack_options.pack {
+        let built = crate::agent::pack::build_pack(&target_root);
+        let system = scanners_widest_system_prompt(&scanners);
+        let tools = ToolRegistry::new().definitions();
+        let estimate = built.estimate_tokens(&system, &tools);
+        let context_window = profile
+            .context_window
+            .unwrap_or_else(|| provider.context_window());
+
+        println!(
+            "{}",
+            crate::agent::pack::render_summary(&built, estimate, context_window, PACK_MAX_OUTPUT)
+        );
+
+        if pack_options.dry_run {
+            println!("\nDry run — no provider call made.");
+            return Ok(ScanOutcome::Completed);
+        }
+        if !crate::agent::pack::fits_budget(estimate, context_window, PACK_MAX_OUTPUT) {
+            bail!(crate::agent::pack::refusal_message(
+                estimate,
+                context_window,
+                PACK_MAX_OUTPUT
+            ));
+        }
+        Some(Arc::new(built.render()))
+    } else {
+        if pack_options.dry_run {
+            bail!("--dry-run only applies to --pack. Re-run with: zentra scan --pack --dry-run");
+        }
+        None
+    };
 
     // For incremental: capture prior findings BEFORE StateWriter truncates the file,
     // then compute the change set and build focus context.
@@ -261,7 +345,8 @@ async fn run_once(
             token_for_orchestrator,
         )
         .with_security(security_ctx)
-        .with_focus_context(focus_context);
+        .with_focus_context(focus_context)
+        .with_pack(pack);
         if let Some((prior, cs)) = incremental {
             orch = orch.with_incremental(prior, cs);
         }
@@ -336,6 +421,14 @@ async fn run_once(
                     delta.new, delta.resolved, delta.carried
                 );
             }
+
+            let coverage = &summary.coverage;
+            println!(
+                "  Coverage: {} of {} source files read ({}%) — see .zentra/coverage.md",
+                coverage.distinct_read,
+                coverage.candidate_count,
+                coverage.percent()
+            );
         }
         _ => {
             cancel_token.cancel();
@@ -526,6 +619,7 @@ mod tests {
             auth_method: AuthMethod::OAuth,
             context_window: None,
             reasoning_effort: None,
+            temperature: None,
         };
 
         let err = ensure_supported_scan_auth("openai", &profile).unwrap_err();

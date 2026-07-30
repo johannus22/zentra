@@ -376,6 +376,7 @@ pub async fn run_setup(profile_name: Option<String>) -> Result<()> {
             auth_method: auth_method.clone(),
             context_window,
             reasoning_effort: reasoning_effort.clone(),
+            temperature: None,
         },
     );
     if global.default_profile.is_none() {

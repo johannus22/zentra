@@ -49,6 +49,12 @@ pub fn global_zentra_dir() -> Result<PathBuf> {
 /// Default CWE reference: links to the canonical MITRE definition page.
 pub const DEFAULT_CWE_URL_TEMPLATE: &str = "https://cwe.mitre.org/data/definitions/{id}.html";
 
+/// Sampling temperature applied when a profile does not set one. A low value
+/// keeps scan output stable between runs. Providers always send a value, so a
+/// profile that omits the key still gets near-deterministic sampling instead of
+/// the provider default (1.0 on Anthropic).
+pub const DEFAULT_TEMPERATURE: f64 = 0.2;
+
 /// Resolve a CWE id (e.g. "CWE-89" or "89") to a reference URL using `template`.
 /// `{id}` in the template is replaced by the numeric id; if the template has no
 /// `{id}` placeholder, the numeric id is appended.
@@ -92,6 +98,22 @@ pub struct ProviderProfile {
     pub context_window: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    /// Sampling temperature forwarded to the provider. `None` resolves to
+    /// [`DEFAULT_TEMPERATURE`]. Read it through [`ProviderProfile::resolved_temperature`],
+    /// which applies the default and clamps the range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+}
+
+impl ProviderProfile {
+    /// The temperature to send, with the default applied and the range clamped.
+    /// A hand-edited config must never abort a scan, so this clamps instead of
+    /// returning an error.
+    pub fn resolved_temperature(&self) -> f64 {
+        self.temperature
+            .unwrap_or(DEFAULT_TEMPERATURE)
+            .clamp(0.0, 2.0)
+    }
 }
 
 impl GlobalConfig {

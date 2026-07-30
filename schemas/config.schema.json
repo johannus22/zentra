@@ -19,7 +19,8 @@
           "keyless": { "type": "boolean", "description": "True for CLI subscription providers (no API key required)." },
           "auth_method": { "type": "string", "enum": ["api_key", "oauth"], "default": "api_key" },
           "context_window": { "type": "integer", "minimum": 1 },
-          "reasoning_effort": { "type": "string" }
+          "reasoning_effort": { "type": "string" },
+          "temperature": { "type": "number", "minimum": 0, "maximum": 2, "description": "Sampling temperature. Unset = 0.2, which keeps scan output stable between runs. Raise it to trade reproducibility for exploration." }
         }
       }
     }

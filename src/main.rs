@@ -131,7 +131,12 @@ async fn run() -> anyhow::Result<()> {
     match cli.command {
         None => unreachable!(),
         Some(cli::Commands::Init { ci }) => commands::init::run(ci).await?,
-        Some(cli::Commands::Ci) => commands::ci::run().await?,
+        Some(cli::Commands::Ci {
+            refresh_architecture: true,
+        }) => commands::ci::refresh_architecture().await?,
+        Some(cli::Commands::Ci {
+            refresh_architecture: false,
+        }) => commands::ci::run().await?,
         Some(cli::Commands::Config { action }) => match action {
             cli::ConfigAction::Setup => wizard::run_setup(None).await?,
             cli::ConfigAction::Add => wizard::run_setup(None).await?,
@@ -144,7 +149,9 @@ async fn run() -> anyhow::Result<()> {
             provider,
             only,
             full,
-        }) => commands::scan::run(provider, only, full).await?,
+            pack,
+            dry_run,
+        }) => commands::scan::run(provider, only, full, pack, dry_run).await?,
         Some(cli::Commands::Pentest {
             url,
             allow_hosts,

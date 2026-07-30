@@ -18,7 +18,12 @@ pub enum Commands {
         ci: Option<CiPlatformKind>,
     },
     /// Run CI security checks without launching the TUI
-    Ci,
+    Ci {
+        /// Regenerate .zentra/architecture.md only. Skips the PR/MR diff, report,
+        /// and comment — for refreshing the base-branch cache outside a pull request.
+        #[arg(long = "refresh-architecture")]
+        refresh_architecture: bool,
+    },
     /// Manage LLM provider configuration
     Config {
         #[command(subcommand)]
@@ -35,6 +40,14 @@ pub enum Commands {
         /// Force a full rescan instead of an incremental one
         #[arg(long)]
         full: bool,
+        /// Send the whole filtered repository in one prompt instead of letting the
+        /// agent navigate. Refuses when the repository does not fit the context.
+        #[arg(long)]
+        pack: bool,
+        /// With --pack: print the pack size and token estimate, then exit without
+        /// calling the provider
+        #[arg(long = "dry-run")]
+        dry_run: bool,
     },
     /// Run dynamic browser pentest against an authorized target
     Pentest {
@@ -134,7 +147,23 @@ mod tests {
     #[test]
     fn parses_ci_command() {
         let cli = Cli::try_parse_from(["zentra", "ci"]).unwrap();
-        assert!(matches!(cli.command, Some(Commands::Ci)));
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Ci {
+                refresh_architecture: false
+            })
+        ));
+    }
+
+    #[test]
+    fn parses_ci_refresh_architecture_flag() {
+        let cli = Cli::try_parse_from(["zentra", "ci", "--refresh-architecture"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Ci {
+                refresh_architecture: true
+            })
+        ));
     }
 
     #[test]
