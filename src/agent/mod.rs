@@ -1,5 +1,6 @@
 pub mod context_budget;
 pub mod correlation;
+pub mod coverage;
 pub mod orchestrator;
 pub mod scanner;
 

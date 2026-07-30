@@ -12,6 +12,17 @@ const KEY_MANIFESTS: &[&str] = &[
     "pyproject.toml", "build.gradle", "composer.json", "Gemfile",
 ];
 
+/// What happened when a scanner tried to read one file. `TooLarge` and `Failed`
+/// are coverage holes: the agent asked for the file and did not get the content.
+/// The coverage ledger counts the three cases separately, so a scan that read
+/// nothing does not look like a scan that found nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadOutcome {
+    Read { bytes: u64 },
+    TooLarge { bytes: u64 },
+    Failed,
+}
+
 /// Reject absolute paths, `..` components, and — for paths that exist — any
 /// path that resolves (via symlinks) outside the current working directory,
 /// which is the scan root. Keeps the file tools safe even when the security
@@ -40,23 +51,94 @@ fn reject_unsafe_path(p: &str) -> Option<String> {
     None
 }
 
-pub fn read_file(path: &str) -> String {
+/// Read one file and report the outcome beside the string the agent sees.
+/// [`read_file`] delegates here, so the agent-visible message and the ledger's
+/// view of the same call can never disagree.
+pub fn read_file_with_outcome(path: &str) -> (String, ReadOutcome) {
     if let Some(err) = reject_unsafe_path(path) {
-        return err;
+        return (err, ReadOutcome::Failed);
     }
     let p = Path::new(path);
     match p.metadata() {
-        Err(e) => format!("Error: {}", e),
-        Ok(m) if m.is_dir() => format!("Error: '{}' is a directory, not a file", path),
-        Ok(m) if m.len() > MAX_FILE_BYTES => format!(
-            "File too large ({} bytes). Use grep_code to search within it.",
-            m.len()
+        Err(e) => (format!("Error: {}", e), ReadOutcome::Failed),
+        Ok(m) if m.is_dir() => (
+            format!("Error: '{}' is a directory, not a file", path),
+            ReadOutcome::Failed,
         ),
-        Ok(_) => match fs::read_to_string(p) {
-            Ok(content) => content,
-            Err(e) => format!("Error reading '{}': {}", path, e),
+        Ok(m) if m.len() > MAX_FILE_BYTES => (
+            format!(
+                "File too large ({} bytes). Use grep_code to search within it.",
+                m.len()
+            ),
+            ReadOutcome::TooLarge { bytes: m.len() },
+        ),
+        Ok(m) => match fs::read_to_string(p) {
+            Ok(content) => (content, ReadOutcome::Read { bytes: m.len() }),
+            Err(e) => (
+                format!("Error reading '{}': {}", path, e),
+                ReadOutcome::Failed,
+            ),
         },
     }
+}
+
+pub fn read_file(path: &str) -> String {
+    read_file_with_outcome(path).0
+}
+
+/// True when `path` looks like source or configuration a scanner should read.
+/// This is the coverage denominator: "should an agent have opened this file?"
+///
+/// Deliberately separate from `ci::impact::is_text_like`, which answers a
+/// different question — "can I substring-search this file for a changed-file
+/// stem?". Widening one list must not silently widen CI impact selection, so the
+/// two stay independent even though they overlap.
+pub fn is_source_file(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension,
+                "rs" | "ts"
+                    | "tsx"
+                    | "js"
+                    | "jsx"
+                    | "py"
+                    | "go"
+                    | "java"
+                    | "kt"
+                    | "c"
+                    | "h"
+                    | "cpp"
+                    | "hpp"
+                    | "toml"
+                    | "json"
+                    | "yaml"
+                    | "yml"
+                    | "tf"
+            )
+        })
+}
+
+/// Every source file under `root`, relative and slash-normalized, sorted.
+/// Honors .gitignore and never follows symlinks, using the same walker settings
+/// as [`list_files`], so the count reflects what the agents can actually reach.
+pub fn source_file_paths(root: &Path) -> Vec<String> {
+    let mut out: Vec<String> = WalkBuilder::new(root)
+        .hidden(false)
+        .follow_links(false)
+        .build()
+        .flatten()
+        .filter(|entry| entry.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .filter_map(|entry| {
+            let relative = entry.path().strip_prefix(root).ok()?;
+            let normalized = relative.to_string_lossy().replace('\\', "/");
+            is_source_file(&normalized).then_some(normalized)
+        })
+        .collect();
+    out.sort();
+    out
 }
 
 pub fn list_files(dir: &str, pattern: Option<&str>) -> String {
@@ -352,5 +434,146 @@ mod tests {
             out.contains("Cargo.toml"),
             "expected Cargo.toml in manifests:\n{out}"
         );
+    }
+
+    // --- Read outcomes and the source-file walker (coverage ledger) ---
+
+    #[test]
+    fn read_outcome_reports_bytes_for_a_normal_file() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("a.rs"), "fn a() {}").unwrap();
+
+        let _guard = CWD_LOCK.lock().unwrap();
+        let _save_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let (body, outcome) = read_file_with_outcome("a.rs");
+
+        std::env::set_current_dir(&_save_cwd).unwrap();
+        drop(_guard);
+
+        assert!(body.contains("fn a()"), "got: {body}");
+        assert_eq!(outcome, ReadOutcome::Read { bytes: 9 });
+    }
+
+    #[test]
+    fn read_outcome_reports_too_large() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(
+            tmp.path().join("big.rs"),
+            "x".repeat(MAX_FILE_BYTES as usize + 1),
+        )
+        .unwrap();
+
+        let _guard = CWD_LOCK.lock().unwrap();
+        let _save_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let (body, outcome) = read_file_with_outcome("big.rs");
+
+        std::env::set_current_dir(&_save_cwd).unwrap();
+        drop(_guard);
+
+        assert!(body.starts_with("File too large"), "got: {body}");
+        assert!(
+            matches!(outcome, ReadOutcome::TooLarge { bytes } if bytes == MAX_FILE_BYTES + 1),
+            "got: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn read_outcome_reports_failed_for_a_missing_file() {
+        let (_, outcome) = read_file_with_outcome("does/not/exist.rs");
+        assert_eq!(outcome, ReadOutcome::Failed);
+    }
+
+    #[test]
+    fn read_outcome_reports_failed_for_a_rejected_path() {
+        let (body, outcome) = read_file_with_outcome("../escape.rs");
+        assert!(body.starts_with("Error: path must be relative"), "got: {body}");
+        assert_eq!(outcome, ReadOutcome::Failed);
+    }
+
+    #[test]
+    fn read_outcome_reports_failed_for_a_directory() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir(tmp.path().join("sub")).unwrap();
+
+        let _guard = CWD_LOCK.lock().unwrap();
+        let _save_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let (_, outcome) = read_file_with_outcome("sub");
+
+        std::env::set_current_dir(&_save_cwd).unwrap();
+        drop(_guard);
+
+        assert_eq!(outcome, ReadOutcome::Failed);
+    }
+
+    #[test]
+    fn read_file_still_returns_only_the_body() {
+        // read_file delegates to read_file_with_outcome; the string must not change.
+        let (body, _) = read_file_with_outcome("does/not/exist.rs");
+        assert_eq!(read_file("does/not/exist.rs"), body);
+    }
+
+    #[test]
+    fn is_source_file_accepts_code_and_rejects_assets() {
+        assert!(is_source_file("src/main.rs"));
+        assert!(is_source_file("web/app.tsx"));
+        assert!(is_source_file("infra/main.tf"));
+        assert!(!is_source_file("assets/logo.png"));
+        assert!(!is_source_file("README"));
+    }
+
+    #[test]
+    fn source_file_paths_finds_source_and_skips_the_rest() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("a.rs"), "fn a() {}").unwrap();
+        fs::write(tmp.path().join("logo.png"), [0u8, 1, 2]).unwrap();
+        fs::create_dir(tmp.path().join("src")).unwrap();
+        fs::write(tmp.path().join("src").join("b.rs"), "fn b() {}").unwrap();
+
+        // No CWD change: source_file_paths takes an explicit root.
+        let files = source_file_paths(tmp.path());
+
+        assert!(files.contains(&"a.rs".to_string()), "got: {files:?}");
+        assert!(files.contains(&"src/b.rs".to_string()), "got: {files:?}");
+        assert!(!files.iter().any(|f| f.ends_with("logo.png")), "got: {files:?}");
+    }
+
+    #[test]
+    fn source_file_paths_honors_gitignore() {
+        let tmp = TempDir::new().unwrap();
+        // The `ignore` crate applies .gitignore only inside a git repo, and
+        // `list_files` keeps that default. The denominator must match what the
+        // agents can reach, so mark the temp dir as a repo rather than relaxing
+        // `require_git` on one walker but not the other.
+        fs::create_dir(tmp.path().join(".git")).unwrap();
+        fs::write(tmp.path().join(".gitignore"), "ignored.rs\n").unwrap();
+        fs::write(tmp.path().join("kept.rs"), "fn k() {}").unwrap();
+        fs::write(tmp.path().join("ignored.rs"), "fn i() {}").unwrap();
+
+        let files = source_file_paths(tmp.path());
+
+        assert!(files.contains(&"kept.rs".to_string()), "got: {files:?}");
+        assert!(
+            !files.contains(&"ignored.rs".to_string()),
+            "gitignored files are unreachable for the agents too: {files:?}"
+        );
+    }
+
+    #[test]
+    fn source_file_paths_is_sorted_and_slash_normalized() {
+        let tmp = TempDir::new().unwrap();
+        fs::create_dir(tmp.path().join("z")).unwrap();
+        fs::create_dir(tmp.path().join("a")).unwrap();
+        fs::write(tmp.path().join("z").join("one.rs"), "x").unwrap();
+        fs::write(tmp.path().join("a").join("two.rs"), "x").unwrap();
+
+        let files = source_file_paths(tmp.path());
+
+        assert_eq!(files, vec!["a/two.rs".to_string(), "z/one.rs".to_string()]);
     }
 }
