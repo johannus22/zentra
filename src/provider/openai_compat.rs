@@ -78,40 +78,19 @@ impl OpenAICompatProvider {
         cancel_token: Option<&CancellationToken>,
     ) -> Result<serde_json::Value> {
         let url = self.chat_completions_url();
-        let request = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key.as_str()))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .build()
-            .context("Failed to build HTTP request")?;
-
-        let resp = if let Some(token) = cancel_token {
-            tokio::select! {
-                biased;
-                _ = token.cancelled() => {
-                    return Err(anyhow::anyhow!("LLM request cancelled by user"));
-                }
-                resp = self.client.execute(request) => {
-                    resp.context("HTTP request failed")?
-                }
-            }
-        } else {
-            self.client
-                .execute(request)
-                .await
-                .context("HTTP request failed")?
-        };
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = super::read_text_preview(resp, 64 * 1024).await;
-            return Err(anyhow::anyhow!("Provider returned {}: {}", status, text));
-        }
-
-        let bytes = super::read_body_capped(resp, super::MAX_RESPONSE_BYTES).await?;
-        serde_json::from_slice(&bytes).context("parsing provider response")
+        super::post_json_with_retry(
+            &self.client,
+            &url,
+            &body,
+            "Provider",
+            |request| {
+                request
+                    .header("Authorization", format!("Bearer {}", self.api_key.as_str()))
+                    .header("Content-Type", "application/json")
+            },
+            cancel_token,
+        )
+        .await
     }
 }
 

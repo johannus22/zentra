@@ -1,5 +1,5 @@
 use super::*;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
@@ -50,41 +50,20 @@ impl AnthropicProvider {
         cancel_token: Option<&CancellationToken>,
     ) -> Result<serde_json::Value> {
         let url = format!("{}/messages", self.base_url.trim_end_matches('/'));
-        let request = self
-            .client
-            .post(&url)
-            .header("x-api-key", self.api_key.as_str())
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&body)
-            .build()
-            .context("Failed to build HTTP request")?;
-
-        let resp = if let Some(token) = cancel_token {
-            tokio::select! {
-                biased;
-                _ = token.cancelled() => {
-                    return Err(anyhow::anyhow!("LLM request cancelled by user"));
-                }
-                resp = self.client.execute(request) => {
-                    resp.context("HTTP request to Anthropic failed")?
-                }
-            }
-        } else {
-            self.client
-                .execute(request)
-                .await
-                .context("HTTP request to Anthropic failed")?
-        };
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = super::read_text_preview(resp, 64 * 1024).await;
-            return Err(anyhow::anyhow!("Anthropic returned {}: {}", status, text));
-        }
-
-        let bytes = super::read_body_capped(resp, super::MAX_RESPONSE_BYTES).await?;
-        serde_json::from_slice(&bytes).context("parsing Anthropic response")
+        super::post_json_with_retry(
+            &self.client,
+            &url,
+            &body,
+            "Anthropic",
+            |request| {
+                request
+                    .header("x-api-key", self.api_key.as_str())
+                    .header("anthropic-version", "2023-06-01")
+                    .header("content-type", "application/json")
+            },
+            cancel_token,
+        )
+        .await
     }
 }
 
