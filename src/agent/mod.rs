@@ -3,6 +3,7 @@ pub mod correlation;
 pub mod coverage;
 pub mod orchestrator;
 pub mod scanner;
+pub mod screening;
 
 use crate::state::Finding;
 

@@ -84,6 +84,8 @@ fn ui_state_apply_finding_added() {
         cvss_vector: None,
         cvss_score: None,
         owasp: None,
+        confidence: None,
+        screening: None,
     };
     state.apply_event(ScanEvent::FindingAdded(f));
     assert_eq!(state.findings.len(), 1);
@@ -538,6 +540,8 @@ fn ui_state_select_next_wraps() {
         cvss_vector: None,
         cvss_score: None,
         owasp: None,
+        confidence: None,
+        screening: None,
     };
     state.apply_event(ScanEvent::FindingAdded(f.clone()));
     state.apply_event(ScanEvent::FindingAdded(f));

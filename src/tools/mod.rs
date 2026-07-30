@@ -327,6 +327,11 @@ data entry points, security middleware already present, and known safety guarant
                     cvss_vector,
                     cvss_score,
                     owasp,
+                    // Screening belongs to the audit pass. A scanner grading its
+                    // own finding is not evidence, so `write_finding` cannot set
+                    // these and the tool schema does not expose them.
+                    confidence: None,
+                    screening: None,
                 };
                 if let Err(e) = state_writer.write_finding(&finding) {
                     return format!("Error writing finding: {}", e);

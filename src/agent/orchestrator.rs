@@ -236,6 +236,24 @@ Delete this file and re-run the scan to retry.",
             }
         }
 
+        // Phase 2.6: screen the deduplicated set for reachability, so the report
+        // consumes findings that carry a verdict. After correlation on purpose:
+        // screening a duplicate twice would pay for the same issue twice.
+        // Best-effort and annotate-only, like 2.5.
+        if scanners.contains(&ScannerType::Report) {
+            let raw = self.state_writer.read_findings_raw().unwrap_or_default();
+            let parsed = crate::state::parse_findings(&raw);
+            if !parsed.is_empty() {
+                let screened = crate::agent::screening::screen(
+                    &self.provider,
+                    self.state_writer.project_root(),
+                    parsed,
+                )
+                .await;
+                let _ = self.state_writer.rewrite_findings(&screened);
+            }
+        }
+
         // Phase 3: Report — sequential, runs last
         if scanners.contains(&ScannerType::Report) {
             if self

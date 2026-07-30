@@ -203,6 +203,8 @@ mod tests {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         }
     }
 

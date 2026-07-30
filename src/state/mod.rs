@@ -225,11 +225,22 @@ fn format_finding_block(finding: &Finding, cwe_template: &str) -> String {
         .map(|o| format!("**OWASP:** {}\n", sanitize_field(o)))
         .unwrap_or_default();
 
+    // Emitted only once the audit pass has run, so an unscreened finding keeps
+    // byte-identical output to before this field existed.
+    let screening_line = match (finding.screening, finding.confidence) {
+        (Some(verdict), Some(confidence)) => {
+            format!("**Screening:** {verdict} ({confidence}% confidence)\n")
+        }
+        (Some(verdict), None) => format!("**Screening:** {verdict}\n"),
+        (None, _) => String::new(),
+    };
+
     format!(
-        "## [{}] {}\n**Scanner:** {}\n{}{}{}{}{}{}**Description:** {}\n**Recommendation:** {}\n\n---\n",
+        "## [{}] {}\n**Scanner:** {}\n{}{}{}{}{}{}{}**Description:** {}\n**Recommendation:** {}\n\n---\n",
         finding.severity,
         sanitize_field(&finding.title),
         sanitize_field(&finding.scanner),
+        screening_line,
         corroborated_line,
         cwe_line,
         secondary_line,
@@ -270,6 +281,8 @@ fn parse_finding_block(block: &str) -> Option<Finding> {
     let mut secondary_cwe: Vec<String> = Vec::new();
     let mut cvss_vector = None;
     let mut owasp = None;
+    let mut confidence = None;
+    let mut screening = None;
 
     for line in lines {
         if let Some(v) = line.strip_prefix("**Scanner:** ") {
@@ -309,6 +322,15 @@ fn parse_finding_block(block: &str) -> Option<Finding> {
             }
         } else if let Some(v) = line.strip_prefix("**OWASP:** ") {
             owasp = Some(v.trim().to_string());
+        } else if let Some(v) = line.strip_prefix("**Screening:** ") {
+            // value is "<verdict> (<n>% confidence)"; either part may be absent.
+            screening = crate::state::finding::Screening::parse(
+                v.split_whitespace().next().unwrap_or(""),
+            );
+            confidence = v
+                .split_once('(')
+                .and_then(|(_, rest)| rest.split_once('%'))
+                .and_then(|(number, _)| number.trim().parse::<u8>().ok());
         }
     }
 
@@ -332,6 +354,8 @@ fn parse_finding_block(block: &str) -> Option<Finding> {
             .map(|(s, _)| s),
         cvss_vector,
         owasp,
+        confidence,
+        screening,
     })
 }
 
@@ -404,6 +428,8 @@ mod enriched_tests {
             cvss_vector: Some("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H".into()),
             cvss_score: Some(9.8),
             owasp: Some("A03:2021-Injection".into()),
+            confidence: None,
+            screening: None,
         }
     }
 

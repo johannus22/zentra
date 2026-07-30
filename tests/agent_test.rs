@@ -42,6 +42,8 @@ fn state_writer_creates_findings_file() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         })
         .unwrap();
 
@@ -77,6 +79,8 @@ fn state_writer_appends_multiple_findings() {
                 cvss_vector: None,
                 cvss_score: None,
                 owasp: None,
+                confidence: None,
+                screening: None,
             })
             .unwrap();
     }
@@ -125,6 +129,8 @@ fn concurrent_write_finding_never_drops_a_finding() {
                         cvss_vector: None,
                         cvss_score: None,
                         owasp: None,
+                        confidence: None,
+                        screening: None,
                     })
                     .unwrap();
                 }
@@ -168,6 +174,8 @@ fn state_writer_sorts_findings_by_severity_in_markdown() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         })
         .unwrap();
     writer
@@ -184,6 +192,8 @@ fn state_writer_sorts_findings_by_severity_in_markdown() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         })
         .unwrap();
 
@@ -256,6 +266,8 @@ fn read_findings_raw_returns_written_findings() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         })
         .unwrap();
 
@@ -1153,6 +1165,8 @@ fn finding_block_roundtrips_corroboration() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         })
         .unwrap();
 
@@ -1198,6 +1212,8 @@ fn singleton_finding_markdown_has_no_corroboration_line() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         })
         .unwrap();
     let raw = writer.read_findings_raw().unwrap();
@@ -1255,6 +1271,8 @@ async fn correlate_merges_semantic_duplicates_via_llm() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         },
         Finding {
             scanner: "sast".to_string(),
@@ -1269,6 +1287,8 @@ async fn correlate_merges_semantic_duplicates_via_llm() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         },
     ];
 
@@ -1357,6 +1377,8 @@ async fn correlate_preserves_findings_on_llm_failure() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         },
         Finding {
             scanner: "sast".to_string(),
@@ -1371,6 +1393,8 @@ async fn correlate_preserves_findings_on_llm_failure() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         },
     ];
 
@@ -1445,6 +1469,8 @@ async fn orchestrator_incremental_carries_and_reconciles() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         })
         .unwrap();
 
@@ -1461,6 +1487,8 @@ async fn orchestrator_incremental_carries_and_reconciles() {
         cvss_vector: None,
         cvss_score: None,
         owasp: None,
+        confidence: None,
+        screening: None,
     }];
     let change_set = ChangeSet {
         changed: vec!["src/changed.rs".into()],
@@ -1596,6 +1624,8 @@ fn ordering_finding(sev: Severity, title: &str, loc: &str, scanner: &str) -> Fin
         cvss_vector: None,
         cvss_score: None,
         owasp: None,
+        confidence: None,
+        screening: None,
     }
 }
 
@@ -1908,4 +1938,234 @@ async fn orchestrator_writes_the_coverage_artifact_end_to_end() {
     assert!(body.contains("Never opened (2 files)"), "got:\n{body}");
     assert!(body.contains("- a.rs"), "got:\n{body}");
     assert!(body.contains("- b.rs"), "got:\n{body}");
+}
+
+// --- Screening (the precision pass) ---
+
+fn screening_finding(title: &str, location: Option<&str>) -> Finding {
+    Finding {
+        scanner: "sast".to_string(),
+        severity: Severity::High,
+        title: title.to_string(),
+        description: "user input reaches a query".to_string(),
+        location: location.map(str::to_string),
+        recommendation: "parameterize".to_string(),
+        corroborated_by: vec![],
+        cwe: Some("CWE-89".to_string()),
+        secondary_cwe: vec![],
+        cvss_vector: None,
+        cvss_score: None,
+        owasp: None,
+        confidence: None,
+        screening: None,
+    }
+}
+
+#[test]
+fn screening_verdict_survives_the_markdown_round_trip() {
+    let dir = TempDir::new().unwrap();
+    let writer = StateWriter::new(dir.path()).unwrap();
+
+    let mut finding = screening_finding("SQL injection", Some("src/db.rs:42"));
+    finding.screening = Some(zentra_cli::state::finding::Screening::Confirmed);
+    finding.confidence = Some(87);
+    writer.write_finding(&finding).unwrap();
+
+    let raw = writer.read_findings_raw().unwrap();
+    assert!(
+        raw.contains("**Screening:** confirmed (87% confidence)"),
+        "got:\n{raw}"
+    );
+
+    let parsed = zentra_cli::state::parse_findings(&raw);
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(
+        parsed[0].screening,
+        Some(zentra_cli::state::finding::Screening::Confirmed)
+    );
+    assert_eq!(parsed[0].confidence, Some(87));
+}
+
+#[test]
+fn every_screening_verdict_round_trips() {
+    use zentra_cli::state::finding::Screening;
+
+    for verdict in [Screening::Confirmed, Screening::Disputed, Screening::Unclear] {
+        let dir = TempDir::new().unwrap();
+        let writer = StateWriter::new(dir.path()).unwrap();
+
+        let mut finding = screening_finding("Issue", Some("src/a.rs:1"));
+        finding.screening = Some(verdict);
+        finding.confidence = Some(50);
+        writer.write_finding(&finding).unwrap();
+
+        let parsed = zentra_cli::state::parse_findings(&writer.read_findings_raw().unwrap());
+        assert_eq!(parsed[0].screening, Some(verdict), "verdict {verdict} lost");
+    }
+}
+
+#[test]
+fn an_unscreened_finding_emits_no_screening_line() {
+    let dir = TempDir::new().unwrap();
+    let writer = StateWriter::new(dir.path()).unwrap();
+
+    writer
+        .write_finding(&screening_finding("Unscreened", Some("src/a.rs:1")))
+        .unwrap();
+
+    let raw = writer.read_findings_raw().unwrap();
+    assert!(
+        !raw.contains("Screening"),
+        "an unscreened finding must look as it did before the field existed:\n{raw}"
+    );
+
+    let parsed = zentra_cli::state::parse_findings(&raw);
+    assert_eq!(parsed[0].screening, None);
+    assert_eq!(parsed[0].confidence, None);
+}
+
+#[test]
+fn a_legacy_findings_file_parses_without_a_screening_line() {
+    // Files written before this field existed must still load.
+    let legacy = "## [HIGH] Old finding\n**Scanner:** sast\n**Location:** src/a.rs:1\n\
+**Description:** d\n**Recommendation:** r\n\n---\n";
+    let parsed = zentra_cli::state::parse_findings(legacy);
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(parsed[0].screening, None);
+    assert_eq!(parsed[0].confidence, None);
+}
+
+#[tokio::test]
+async fn screening_pass_annotates_findings_from_the_provider_verdict() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "tool_calls": [{
+                "id": "c1",
+                "type": "function",
+                "function": {
+                    "name": "report_screening",
+                    "arguments": "{\"verdicts\":[{\"index\":0,\"verdict\":\"confirmed\",\"confidence\":91,\"reason\":\"reachable from the HTTP handler\"},{\"index\":1,\"verdict\":\"disputed\",\"confidence\":80,\"reason\":\"test fixture only\"}]}"
+                }
+            }]}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("db.rs"), "fn query() {}").unwrap();
+
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
+        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
+    );
+    let findings = vec![
+        screening_finding("Real SQLi", Some("db.rs:1")),
+        screening_finding("Fixture SQLi", Some("db.rs:1")),
+    ];
+
+    let out = zentra_cli::agent::screening::screen(&provider, dir.path(), findings).await;
+
+    assert_eq!(out.len(), 2);
+    assert_eq!(
+        out[0].screening,
+        Some(zentra_cli::state::finding::Screening::Confirmed)
+    );
+    assert_eq!(out[0].confidence, Some(91));
+    assert_eq!(
+        out[1].screening,
+        Some(zentra_cli::state::finding::Screening::Disputed)
+    );
+    assert_eq!(out[1].confidence, Some(80));
+}
+
+#[tokio::test]
+async fn screening_pass_returns_findings_unchanged_when_the_provider_fails() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("Too Many Requests"))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
+        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
+    );
+    let findings = vec![screening_finding("Critical thing", Some("db.rs:1"))];
+
+    let out = zentra_cli::agent::screening::screen(&provider, dir.path(), findings).await;
+
+    assert_eq!(out.len(), 1, "a rate limit must never drop a finding");
+    assert_eq!(out[0].screening, None, "unscreened, not silently confirmed");
+    assert_eq!(out[0].confidence, None);
+}
+
+#[tokio::test]
+async fn screening_pass_survives_a_response_with_no_tool_call() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "I cannot decide"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
+        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
+    );
+    let findings = vec![screening_finding("Thing", None)];
+
+    let out = zentra_cli::agent::screening::screen(&provider, dir.path(), findings).await;
+
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].screening, None);
+}
+
+#[tokio::test]
+async fn screening_pass_handles_more_findings_than_one_batch() {
+    let server = MockServer::start().await;
+    // Every batch gets the same single verdict for local index 0.
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "tool_calls": [{
+                "id": "c1",
+                "type": "function",
+                "function": {
+                    "name": "report_screening",
+                    "arguments": "{\"verdicts\":[{\"index\":0,\"verdict\":\"unclear\",\"confidence\":10}]}"
+                }
+            }]}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
+        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
+    );
+    // 10 findings = one batch of 8 plus one of 2.
+    let findings: Vec<Finding> = (0..10)
+        .map(|i| screening_finding(&format!("Finding {i}"), None))
+        .collect();
+
+    let out = zentra_cli::agent::screening::screen(&provider, dir.path(), findings).await;
+
+    assert_eq!(out.len(), 10, "batching must not lose a finding");
+    // Local index 0 of each batch maps to global 0 and 8.
+    assert_eq!(
+        out[0].screening,
+        Some(zentra_cli::state::finding::Screening::Unclear)
+    );
+    assert_eq!(
+        out[8].screening,
+        Some(zentra_cli::state::finding::Screening::Unclear),
+        "local index 0 of the second batch must map to global index 8"
+    );
+    assert_eq!(out[1].screening, None);
 }
