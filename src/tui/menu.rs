@@ -582,6 +582,9 @@ impl ProviderFormState {
                 let t = self.reasoning_effort.trim();
                 if t.is_empty() { None } else { Some(t.to_string()) }
             },
+            // The form has no temperature field. The prior value is carried
+            // forward below, once the config file is loaded.
+            temperature: None,
         };
 
         if let Some(ref tokens) = oauth_tokens {
@@ -603,6 +606,13 @@ impl ProviderFormState {
         }
 
         let mut global = GlobalConfig::load_from(config_path)?;
+        // Preserve a hand-set temperature: the form cannot express it, so an
+        // edit of the model or the key must not silently reset sampling.
+        let mut profile = profile;
+        profile.temperature = global
+            .profiles
+            .get(&target_name)
+            .and_then(|prior| prior.temperature);
         global.profiles.insert(target_name.clone(), profile);
         if global.default_profile.is_none() {
             global.default_profile = Some(target_name.clone());

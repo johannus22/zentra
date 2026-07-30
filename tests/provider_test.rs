@@ -296,3 +296,171 @@ fn openai_compat_honors_context_window_override() {
     );
     assert_eq!(default.context_window(), 128_000); // existing fallback unchanged
 }
+
+// --- Sampling temperature (determinism) ---
+//
+// Neither provider used to send `temperature`, so every scan ran at the provider
+// default (1.0 on Anthropic). These tests pin the wire half of the contract:
+// a value is always present, a profile value wins, and a bad value is clamped.
+
+async fn body_of_first_request(server: &MockServer) -> serde_json::Value {
+    let reqs = server.received_requests().await.unwrap();
+    serde_json::from_slice(&reqs[0].body).unwrap()
+}
+
+fn anthropic_ok() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "content": [{"type": "text", "text": "ok"}],
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    }))
+}
+
+fn openai_ok() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+    }))
+}
+
+#[tokio::test]
+async fn anthropic_sends_default_temperature() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(anthropic_ok())
+        .mount(&server)
+        .await;
+
+    let provider =
+        AnthropicProvider::new(server.uri(), "claude-opus-4-7".to_string(), "k".to_string());
+    provider
+        .complete_with_tools("sys", &[AgentMessage::User("hi".to_string())], &[] as &[ToolDefinition], 64, None)
+        .await
+        .unwrap();
+
+    let body = body_of_first_request(&server).await;
+    assert!(
+        (body["temperature"].as_f64().unwrap() - 0.2).abs() < 1e-9,
+        "got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn anthropic_sends_configured_temperature() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(anthropic_ok())
+        .mount(&server)
+        .await;
+
+    let provider =
+        AnthropicProvider::new(server.uri(), "claude-opus-4-7".to_string(), "k".to_string())
+            .with_temperature(Some(0.0));
+    provider
+        .complete_with_tools("sys", &[AgentMessage::User("hi".to_string())], &[] as &[ToolDefinition], 64, None)
+        .await
+        .unwrap();
+
+    let body = body_of_first_request(&server).await;
+    assert!(
+        (body["temperature"].as_f64().unwrap() - 0.0).abs() < 1e-9,
+        "got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn anthropic_clamps_out_of_range_temperature() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(anthropic_ok())
+        .mount(&server)
+        .await;
+
+    let provider =
+        AnthropicProvider::new(server.uri(), "claude-opus-4-7".to_string(), "k".to_string())
+            .with_temperature(Some(9.5));
+    provider
+        .complete_with_tools("sys", &[AgentMessage::User("hi".to_string())], &[] as &[ToolDefinition], 64, None)
+        .await
+        .unwrap();
+
+    let body = body_of_first_request(&server).await;
+    assert!(
+        (body["temperature"].as_f64().unwrap() - 2.0).abs() < 1e-9,
+        "got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn anthropic_sends_temperature_on_the_plain_complete_path_too() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(anthropic_ok())
+        .mount(&server)
+        .await;
+
+    let provider =
+        AnthropicProvider::new(server.uri(), "claude-opus-4-7".to_string(), "k".to_string())
+            .with_temperature(Some(0.0));
+    provider
+        .complete(CompletionRequest {
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: "hi".to_string(),
+            }],
+            tools: vec![],
+            max_tokens: Some(16),
+        })
+        .await
+        .unwrap();
+
+    let body = body_of_first_request(&server).await;
+    assert!(
+        (body["temperature"].as_f64().unwrap() - 0.0).abs() < 1e-9,
+        "got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn openai_compat_sends_default_temperature() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(openai_ok())
+        .mount(&server)
+        .await;
+
+    let provider = OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "k".to_string());
+    provider
+        .complete_with_tools("sys", &[AgentMessage::User("hi".to_string())], &[] as &[ToolDefinition], 64, None)
+        .await
+        .unwrap();
+
+    let body = body_of_first_request(&server).await;
+    assert!(
+        (body["temperature"].as_f64().unwrap() - 0.2).abs() < 1e-9,
+        "got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn openai_compat_sends_configured_temperature() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(openai_ok())
+        .mount(&server)
+        .await;
+
+    let provider = OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "k".to_string())
+        .with_temperature(Some(0.0));
+    provider
+        .complete_with_tools("sys", &[AgentMessage::User("hi".to_string())], &[] as &[ToolDefinition], 64, None)
+        .await
+        .unwrap();
+
+    let body = body_of_first_request(&server).await;
+    assert!(
+        (body["temperature"].as_f64().unwrap() - 0.0).abs() < 1e-9,
+        "got: {body}"
+    );
+}

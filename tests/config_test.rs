@@ -20,6 +20,7 @@ fn global_config_roundtrip() {
             auth_method: Default::default(),
             context_window: None,
             reasoning_effort: None,
+            temperature: None,
         },
     );
 
@@ -54,6 +55,7 @@ fn save_to_writes_schema_directive_and_sidecar_and_roundtrips() {
             auth_method: Default::default(),
             context_window: None,
             reasoning_effort: None,
+            temperature: None,
         },
     );
 
@@ -340,6 +342,7 @@ fn provider_profile_context_window_round_trips() {
             auth_method: Default::default(),
             context_window: Some(64_000),
             reasoning_effort: None,
+            temperature: None,
         },
     );
     let serialized = toml::to_string_pretty(&cfg).unwrap();
@@ -649,6 +652,7 @@ fn provider_profile_reasoning_effort_round_trips() {
             auth_method: Default::default(),
             context_window: None,
             reasoning_effort: Some("high".to_string()),
+            temperature: None,
         },
     );
     let serialized = toml::to_string_pretty(&cfg).unwrap();
@@ -806,4 +810,114 @@ fn project_config_save_overwrites_atomically_without_temp_leftover() {
         !dir.path().join("config.json.tmp").exists(),
         "atomic write must not leave a temp file"
     );
+}
+
+// --- Sampling temperature (determinism) ---
+//
+// No provider used to send `temperature`, so every scan ran at the provider
+// default (1.0 on Anthropic). These tests pin the config half of the contract:
+// the key round-trips, an absent key resolves to the default, and an absent key
+// is never written back into the user's file.
+
+#[test]
+fn profile_temperature_roundtrips() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+default_profile = "p"
+
+[profiles.p]
+kind = "anthropic"
+base_url = "https://api.anthropic.com"
+model = "claude-opus-4-7"
+temperature = 0.0
+"#,
+    )
+    .unwrap();
+
+    let cfg = GlobalConfig::load_from(&path).unwrap();
+    let p = cfg.profiles.get("p").unwrap();
+    assert_eq!(p.temperature, Some(0.0));
+    assert!((p.resolved_temperature() - 0.0).abs() < 1e-9);
+}
+
+#[test]
+fn profile_without_temperature_resolves_to_default() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+default_profile = "p"
+
+[profiles.p]
+kind = "anthropic"
+base_url = "https://api.anthropic.com"
+model = "claude-opus-4-7"
+"#,
+    )
+    .unwrap();
+
+    let cfg = GlobalConfig::load_from(&path).unwrap();
+    let p = cfg.profiles.get("p").unwrap();
+    assert_eq!(p.temperature, None);
+    assert!((p.resolved_temperature() - 0.2).abs() < 1e-9);
+}
+
+#[test]
+fn out_of_range_temperature_is_clamped_not_rejected() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+default_profile = "p"
+
+[profiles.p]
+kind = "anthropic"
+base_url = "https://api.anthropic.com"
+model = "claude-opus-4-7"
+temperature = 9.5
+"#,
+    )
+    .unwrap();
+
+    let cfg = GlobalConfig::load_from(&path).unwrap();
+    let p = cfg.profiles.get("p").unwrap();
+    assert!((p.resolved_temperature() - 2.0).abs() < 1e-9);
+}
+
+#[test]
+fn omitted_temperature_is_not_serialized() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("config.toml");
+
+    let mut profiles = HashMap::new();
+    profiles.insert(
+        "p".to_string(),
+        ProviderProfile {
+            kind: "anthropic".to_string(),
+            base_url: "https://api.anthropic.com".to_string(),
+            model: "claude-opus-4-7".to_string(),
+            keyless: false,
+            auth_method: Default::default(),
+            context_window: None,
+            reasoning_effort: None,
+            temperature: None,
+        },
+    );
+    GlobalConfig {
+        profiles,
+        default_profile: Some("p".to_string()),
+        output_dir: None,
+        theme: None,
+        cwe_url_template: None,
+    }
+    .save_to(&path)
+    .unwrap();
+
+    let body = std::fs::read_to_string(&path).unwrap();
+    assert!(!body.contains("temperature"), "got: {body}");
 }

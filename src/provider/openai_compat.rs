@@ -10,6 +10,7 @@ pub struct OpenAICompatProvider {
     client: reqwest::Client,
     reasoning_effort: Option<String>,
     context_window_override: Option<u32>,
+    temperature: f64,
 }
 
 impl OpenAICompatProvider {
@@ -27,7 +28,18 @@ impl OpenAICompatProvider {
                 .unwrap_or_else(|_| reqwest::Client::new()),
             reasoning_effort: None,
             context_window_override: None,
+            temperature: crate::config::DEFAULT_TEMPERATURE,
         }
+    }
+
+    /// Builder: set the sampling temperature. `None` keeps
+    /// [`crate::config::DEFAULT_TEMPERATURE`]. The value is clamped to 0.0..=2.0,
+    /// so a hand-edited config cannot make the API reject the request.
+    pub fn with_temperature(mut self, t: Option<f64>) -> Self {
+        self.temperature = t
+            .unwrap_or(crate::config::DEFAULT_TEMPERATURE)
+            .clamp(0.0, 2.0);
+        self
     }
 
     /// Builder: set the reasoning level forwarded as `reasoning_effort`.
@@ -48,6 +60,12 @@ impl OpenAICompatProvider {
         if let Some(ref effort) = self.reasoning_effort {
             body["reasoning_effort"] = serde_json::json!(effort);
         }
+    }
+
+    /// Always sets the field. An omitted temperature means the endpoint picks
+    /// its own default, which is the drift this exists to remove.
+    fn apply_temperature(&self, body: &mut serde_json::Value) {
+        body["temperature"] = serde_json::json!(self.temperature);
     }
 
     fn chat_completions_url(&self) -> String {
@@ -121,6 +139,7 @@ impl LLMProvider for OpenAICompatProvider {
         }
 
         self.apply_reasoning(&mut body);
+        self.apply_temperature(&mut body);
         let json = self.post_chat(body, None).await?;
         parse_openai_response(&json)
     }
@@ -204,6 +223,7 @@ impl LLMProvider for OpenAICompatProvider {
         }
 
         self.apply_reasoning(&mut body);
+        self.apply_temperature(&mut body);
         let json = self.post_chat(body, cancel_token).await?;
         parse_openai_response(&json)
     }

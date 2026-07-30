@@ -121,11 +121,10 @@ async fn run_once(
     let (tx, rx) = mpsc::channel(128);
 
     let provider: Arc<dyn LLMProvider> = match profile.kind.as_str() {
-        "anthropic" => Arc::new(AnthropicProvider::new(
-            profile.base_url.clone(),
-            profile.model.clone(),
-            api_key,
-        )),
+        "anthropic" => Arc::new(
+            AnthropicProvider::new(profile.base_url.clone(), profile.model.clone(), api_key)
+                .with_temperature(profile.temperature),
+        ),
         "claude_cli" => Arc::new(CliProvider::new(
             CliKind::Claude,
             resolve_cli_binary(&profile.kind, &profile.base_url),
@@ -142,7 +141,8 @@ async fn run_once(
         _ => Arc::new(
             OpenAICompatProvider::new(profile.base_url.clone(), profile.model.clone(), api_key)
                 .with_reasoning(profile.reasoning_effort.clone())
-                .with_context_window(profile.context_window),
+                .with_context_window(profile.context_window)
+                .with_temperature(profile.temperature),
         ),
     };
 
@@ -526,6 +526,7 @@ mod tests {
             auth_method: AuthMethod::OAuth,
             context_window: None,
             reasoning_effort: None,
+            temperature: None,
         };
 
         let err = ensure_supported_scan_auth("openai", &profile).unwrap_err();

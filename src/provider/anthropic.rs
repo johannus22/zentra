@@ -8,6 +8,7 @@ pub struct AnthropicProvider {
     model: String,
     api_key: zeroize::Zeroizing<String>,
     client: reqwest::Client,
+    temperature: f64,
 }
 
 impl AnthropicProvider {
@@ -29,7 +30,18 @@ impl AnthropicProvider {
             model,
             api_key: zeroize::Zeroizing::new(api_key),
             client,
+            temperature: crate::config::DEFAULT_TEMPERATURE,
         }
+    }
+
+    /// Builder: set the sampling temperature. `None` keeps
+    /// [`crate::config::DEFAULT_TEMPERATURE`]. The value is clamped to 0.0..=2.0,
+    /// so a hand-edited config cannot make the API reject the request.
+    pub fn with_temperature(mut self, t: Option<f64>) -> Self {
+        self.temperature = t
+            .unwrap_or(crate::config::DEFAULT_TEMPERATURE)
+            .clamp(0.0, 2.0);
+        self
     }
 
     async fn post_messages(
@@ -124,6 +136,7 @@ impl LLMProvider for AnthropicProvider {
             "model": self.model,
             "messages": req.messages,
             "max_tokens": req.max_tokens.unwrap_or(4096),
+            "temperature": self.temperature,
         });
 
         let json = self.post_messages(body, None).await?;
@@ -195,6 +208,7 @@ impl LLMProvider for AnthropicProvider {
             "system": system,
             "messages": wire_messages,
             "max_tokens": max_tokens,
+            "temperature": self.temperature,
         });
 
         if !wire_tools.is_empty() {

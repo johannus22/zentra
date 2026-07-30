@@ -1145,6 +1145,7 @@ fn settings_provider_change_persists_via_hub() {
             auth_method: AuthMethod::ApiKey,
             context_window: None,
             reasoning_effort: None,
+            temperature: None,
         },
     );
     profiles.insert(
@@ -1157,6 +1158,7 @@ fn settings_provider_change_persists_via_hub() {
             auth_method: AuthMethod::ApiKey,
             context_window: None,
             reasoning_effort: None,
+            temperature: None,
         },
     );
     GlobalConfig {
@@ -1564,6 +1566,7 @@ fn seed_provider_config(name: &str) -> (std::path::PathBuf, TempDir) {
             auth_method: AuthMethod::ApiKey,
             context_window: Some(128_000),
             reasoning_effort: Some("high".to_string()),
+            temperature: None,
         },
     );
     global.default_profile = Some(name.to_string());
@@ -1983,6 +1986,7 @@ fn apply_provider_change_persists_default_and_refreshes_state_in_place() {
             auth_method: AuthMethod::ApiKey,
             context_window: None,
             reasoning_effort: None,
+            temperature: None,
         },
     );
     profiles.insert(
@@ -1995,6 +1999,7 @@ fn apply_provider_change_persists_default_and_refreshes_state_in_place() {
             auth_method: AuthMethod::ApiKey,
             context_window: None,
             reasoning_effort: None,
+            temperature: None,
         },
     );
     GlobalConfig {
