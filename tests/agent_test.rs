@@ -1704,13 +1704,27 @@ fn severity_still_dominates_the_order() {
     );
 }
 
+/// Drive one async block to completion on this thread.
+///
+/// The CWD-dependent coverage tests hold `cwd_lock()` while they run, and a
+/// `std::sync::MutexGuard` must not be held across an `.await` in an async fn —
+/// on a multi-threaded runtime the task can resume on another thread. A
+/// current-thread runtime inside a sync test removes the await point entirely.
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(future)
+}
+
 // --- Coverage ledger wiring ---
 //
 // The ledger lives in ToolRegistry so `dispatch` can record without a signature
 // change, and so all four parallel Phase 2 scanners share one tally.
 
-#[tokio::test]
-async fn dispatch_records_read_coverage() {
+#[test]
+fn dispatch_records_read_coverage() {
     let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("a.rs"), "fn a() {}").unwrap();
@@ -1721,15 +1735,13 @@ async fn dispatch_records_read_coverage() {
     let writer = StateWriter::new(dir.path()).unwrap();
     let (tx, _rx) = tokio::sync::mpsc::channel(16);
 
-    registry
-        .dispatch(
-            "read_file",
-            &serde_json::json!({"path": "a.rs"}),
-            &writer,
-            &tx,
-            ScannerType::Sast,
-        )
-        .await;
+    block_on(registry.dispatch(
+        "read_file",
+        &serde_json::json!({"path": "a.rs"}),
+        &writer,
+        &tx,
+        ScannerType::Sast,
+    ));
 
     std::env::set_current_dir(original).unwrap();
 
@@ -1765,8 +1777,8 @@ async fn dispatch_records_a_rejected_read_as_a_hole_not_coverage() {
     assert_eq!(summary.percent(), 0);
 }
 
-#[tokio::test]
-async fn dispatch_records_listings_and_searches() {
+#[test]
+fn dispatch_records_listings_and_searches() {
     let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("a.rs"), "fn a() {}").unwrap();
@@ -1777,24 +1789,20 @@ async fn dispatch_records_listings_and_searches() {
     let writer = StateWriter::new(dir.path()).unwrap();
     let (tx, _rx) = tokio::sync::mpsc::channel(16);
 
-    registry
-        .dispatch(
-            "list_files",
-            &serde_json::json!({"dir": "."}),
-            &writer,
-            &tx,
-            ScannerType::Sast,
-        )
-        .await;
-    registry
-        .dispatch(
-            "grep_code",
-            &serde_json::json!({"pattern": "fn"}),
-            &writer,
-            &tx,
-            ScannerType::Sast,
-        )
-        .await;
+    block_on(registry.dispatch(
+        "list_files",
+        &serde_json::json!({"dir": "."}),
+        &writer,
+        &tx,
+        ScannerType::Sast,
+    ));
+    block_on(registry.dispatch(
+        "grep_code",
+        &serde_json::json!({"pattern": "fn"}),
+        &writer,
+        &tx,
+        ScannerType::Sast,
+    ));
 
     std::env::set_current_dir(original).unwrap();
 
@@ -1807,8 +1815,8 @@ async fn dispatch_records_listings_and_searches() {
     );
 }
 
-#[tokio::test]
-async fn last_outcome_for_is_visible_through_the_registry() {
+#[test]
+fn last_outcome_for_is_visible_through_the_registry() {
     let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("a.rs"), "fn a() {}").unwrap();
@@ -1819,15 +1827,13 @@ async fn last_outcome_for_is_visible_through_the_registry() {
     let writer = StateWriter::new(dir.path()).unwrap();
     let (tx, _rx) = tokio::sync::mpsc::channel(16);
 
-    registry
-        .dispatch(
-            "read_file",
-            &serde_json::json!({"path": "a.rs"}),
-            &writer,
-            &tx,
-            ScannerType::Sast,
-        )
-        .await;
+    block_on(registry.dispatch(
+        "read_file",
+        &serde_json::json!({"path": "a.rs"}),
+        &writer,
+        &tx,
+        ScannerType::Sast,
+    ));
 
     std::env::set_current_dir(original).unwrap();
 
