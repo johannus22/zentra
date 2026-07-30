@@ -1,5 +1,5 @@
 use crate::agent::{McpStatus, ScanEvent, ScannerType};
-use crate::tui::{ScanOutcome, ScanStatus, UiState};
+use crate::tui::{ScanOutcome, ScanResult, ScanStatus, UiState};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::{
@@ -213,7 +213,7 @@ async fn run_loop(
         // Detect scan completion after any event (Bug 4)
         if state.all_done() && !state.scan_done {
             state.mark_complete();
-            state.activity = "✓ Scan complete — browse findings · q to exit".to_string();
+            state.activity = completion_hint(state.outcome());
         }
 
         terminal.draw(|f| render(f, &mut state))?;
@@ -561,20 +561,58 @@ fn render_findings(frame: &mut Frame, area: Rect, state: &mut UiState) {
     frame.render_stateful_widget(list, area, &mut list_state);
 }
 
+/// Icon, colour, and label for a finished scan.
+///
+/// `all_done()` is true whether every scanner succeeded or every one failed, so
+/// this used to read "Hacked in Ns" over an empty findings file whenever the
+/// provider was down. The banner now states what happened.
+pub fn completion_banner(
+    outcome: ScanResult,
+    elapsed_secs: u64,
+    theme: &crate::tui::theme::Theme,
+) -> (&'static str, ratatui::style::Color, String) {
+    let duration = if elapsed_secs >= 60 {
+        format!("{}m {}s", elapsed_secs / 60, elapsed_secs % 60)
+    } else {
+        format!("{elapsed_secs}s")
+    };
+
+    match outcome {
+        ScanResult::Aborted => ("✗", theme.error, "Aborted".to_string()),
+        ScanResult::AllFailed { failed } => (
+            "✗",
+            theme.error,
+            format!("All {failed} scanners failed"),
+        ),
+        ScanResult::PartialFailure { failed } => (
+            "⚠",
+            theme.warning,
+            format!("Done in {duration} · {failed} failed"),
+        ),
+        ScanResult::Clean => ("✓", theme.success, format!("Hacked in {duration}")),
+    }
+}
+
+/// The hint shown beside the banner once the scan finishes.
+pub fn completion_hint(outcome: ScanResult) -> String {
+    match outcome {
+        ScanResult::AllFailed { .. } => {
+            "no findings were produced — check the scanner errors · q to exit".to_string()
+        }
+        ScanResult::PartialFailure { failed } => {
+            format!("{failed} scanners produced no findings — browse the rest · q to exit")
+        }
+        _ => "browse findings · q to exit".to_string(),
+    }
+}
+
 fn render_activity(frame: &mut Frame, area: Rect, state: &UiState) {
     let content = if state.scan_done {
-        let (icon, icon_color, verb) = if state.scan_aborted {
-            ("✗", state.theme.error, "Aborted".to_string())
-        } else {
-            let elapsed = state.elapsed_duration();
-            let secs = elapsed.as_secs();
-            let duration = if secs >= 60 {
-                format!("Hacked in {}m {}s", secs / 60, secs % 60)
-            } else {
-                format!("Hacked in {}s", secs)
-            };
-            ("✓", state.theme.success, duration)
-        };
+        let (icon, icon_color, verb) = completion_banner(
+            state.outcome(),
+            state.elapsed_duration().as_secs(),
+            &state.theme,
+        );
         Line::from(vec![
             Span::styled(
                 format!("{:<2}", icon),

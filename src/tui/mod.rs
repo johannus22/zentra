@@ -54,6 +54,19 @@ pub enum ScanStatus {
     Failed,
 }
 
+/// How a finished scan ended, for the completion banner and the activity line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanResult {
+    /// Every scanner finished without error.
+    Clean,
+    /// Some scanners failed; the rest produced findings.
+    PartialFailure { failed: usize },
+    /// Every scanner failed. Nothing was produced, whatever the findings file says.
+    AllFailed { failed: usize },
+    /// The user stopped the run.
+    Aborted,
+}
+
 #[derive(Debug, Clone)]
 pub struct UiScanner {
     pub scanner_type: ScannerType,
@@ -240,6 +253,30 @@ impl UiState {
         self.scanners
             .iter()
             .all(|s| matches!(s.status, ScanStatus::Done | ScanStatus::Failed))
+    }
+
+    /// How many scanners ended in `Failed`.
+    pub fn failed_count(&self) -> usize {
+        self.scanners
+            .iter()
+            .filter(|s| s.status == ScanStatus::Failed)
+            .count()
+    }
+
+    /// How the run actually ended.
+    ///
+    /// `all_done()` is true whether every scanner succeeded or every one failed,
+    /// so the completion banner used to read as success either way — a
+    /// rate-limited scan printed "Hacked in 2s" over an empty findings file.
+    pub fn outcome(&self) -> ScanResult {
+        if self.scan_aborted {
+            return ScanResult::Aborted;
+        }
+        match self.failed_count() {
+            0 => ScanResult::Clean,
+            failed if failed == self.scanners.len() => ScanResult::AllFailed { failed },
+            failed => ScanResult::PartialFailure { failed },
+        }
     }
 
     pub fn select_next(&mut self) {
