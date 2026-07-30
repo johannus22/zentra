@@ -358,6 +358,8 @@ mod tests {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         }
     }
 
@@ -469,6 +471,8 @@ mod tests {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         };
         let other = Finding {
             scanner: "threat_model".into(),
@@ -483,6 +487,8 @@ mod tests {
             cvss_vector: Some("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H".into()),
             cvss_score: Some(9.8),
             owasp: Some("A03:2021-Injection".into()),
+            confidence: None,
+            screening: None,
         };
         let group = vec![primary, other];
         let merged = merge_group(&group, &[0, 1]);
@@ -508,6 +514,8 @@ mod tests {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         };
         let other = Finding {
             scanner: "threat_model".into(),
@@ -522,6 +530,8 @@ mod tests {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         };
         let merged = merge_group(&vec![primary, other], &[0, 1]);
         assert_eq!(merged.cwe.as_deref(), Some("CWE-89")); // primary wins

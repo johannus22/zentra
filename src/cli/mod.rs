@@ -40,6 +40,14 @@ pub enum Commands {
         /// Force a full rescan instead of an incremental one
         #[arg(long)]
         full: bool,
+        /// Send the whole filtered repository in one prompt instead of letting the
+        /// agent navigate. Refuses when the repository does not fit the context.
+        #[arg(long)]
+        pack: bool,
+        /// With --pack: print the pack size and token estimate, then exit without
+        /// calling the provider
+        #[arg(long = "dry-run")]
+        dry_run: bool,
     },
     /// Run dynamic browser pentest against an authorized target
     Pentest {

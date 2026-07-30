@@ -88,6 +88,8 @@ fn sample_finding(severity: Severity, title: &str) -> Finding {
         cvss_vector: None,
         cvss_score: None,
         owasp: None,
+        confidence: None,
+        screening: None,
     }
 }
 

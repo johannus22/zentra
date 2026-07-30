@@ -10,6 +10,7 @@ pub struct OpenAICompatProvider {
     client: reqwest::Client,
     reasoning_effort: Option<String>,
     context_window_override: Option<u32>,
+    temperature: f64,
 }
 
 impl OpenAICompatProvider {
@@ -27,7 +28,18 @@ impl OpenAICompatProvider {
                 .unwrap_or_else(|_| reqwest::Client::new()),
             reasoning_effort: None,
             context_window_override: None,
+            temperature: crate::config::DEFAULT_TEMPERATURE,
         }
+    }
+
+    /// Builder: set the sampling temperature. `None` keeps
+    /// [`crate::config::DEFAULT_TEMPERATURE`]. The value is clamped to 0.0..=2.0,
+    /// so a hand-edited config cannot make the API reject the request.
+    pub fn with_temperature(mut self, t: Option<f64>) -> Self {
+        self.temperature = t
+            .unwrap_or(crate::config::DEFAULT_TEMPERATURE)
+            .clamp(0.0, 2.0);
+        self
     }
 
     /// Builder: set the reasoning level forwarded as `reasoning_effort`.
@@ -50,6 +62,12 @@ impl OpenAICompatProvider {
         }
     }
 
+    /// Always sets the field. An omitted temperature means the endpoint picks
+    /// its own default, which is the drift this exists to remove.
+    fn apply_temperature(&self, body: &mut serde_json::Value) {
+        body["temperature"] = serde_json::json!(self.temperature);
+    }
+
     fn chat_completions_url(&self) -> String {
         chat_completions_url(&self.base_url)
     }
@@ -60,40 +78,19 @@ impl OpenAICompatProvider {
         cancel_token: Option<&CancellationToken>,
     ) -> Result<serde_json::Value> {
         let url = self.chat_completions_url();
-        let request = self
-            .client
-            .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key.as_str()))
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .build()
-            .context("Failed to build HTTP request")?;
-
-        let resp = if let Some(token) = cancel_token {
-            tokio::select! {
-                biased;
-                _ = token.cancelled() => {
-                    return Err(anyhow::anyhow!("LLM request cancelled by user"));
-                }
-                resp = self.client.execute(request) => {
-                    resp.context("HTTP request failed")?
-                }
-            }
-        } else {
-            self.client
-                .execute(request)
-                .await
-                .context("HTTP request failed")?
-        };
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = super::read_text_preview(resp, 64 * 1024).await;
-            return Err(anyhow::anyhow!("Provider returned {}: {}", status, text));
-        }
-
-        let bytes = super::read_body_capped(resp, super::MAX_RESPONSE_BYTES).await?;
-        serde_json::from_slice(&bytes).context("parsing provider response")
+        super::post_json_with_retry(
+            &self.client,
+            &url,
+            &body,
+            "Provider",
+            |request| {
+                request
+                    .header("Authorization", format!("Bearer {}", self.api_key.as_str()))
+                    .header("Content-Type", "application/json")
+            },
+            cancel_token,
+        )
+        .await
     }
 }
 
@@ -121,6 +118,7 @@ impl LLMProvider for OpenAICompatProvider {
         }
 
         self.apply_reasoning(&mut body);
+        self.apply_temperature(&mut body);
         let json = self.post_chat(body, None).await?;
         parse_openai_response(&json)
     }
@@ -204,6 +202,7 @@ impl LLMProvider for OpenAICompatProvider {
         }
 
         self.apply_reasoning(&mut body);
+        self.apply_temperature(&mut body);
         let json = self.post_chat(body, cancel_token).await?;
         parse_openai_response(&json)
     }

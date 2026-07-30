@@ -1,5 +1,5 @@
 use super::*;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
@@ -8,6 +8,7 @@ pub struct AnthropicProvider {
     model: String,
     api_key: zeroize::Zeroizing<String>,
     client: reqwest::Client,
+    temperature: f64,
 }
 
 impl AnthropicProvider {
@@ -29,7 +30,18 @@ impl AnthropicProvider {
             model,
             api_key: zeroize::Zeroizing::new(api_key),
             client,
+            temperature: crate::config::DEFAULT_TEMPERATURE,
         }
+    }
+
+    /// Builder: set the sampling temperature. `None` keeps
+    /// [`crate::config::DEFAULT_TEMPERATURE`]. The value is clamped to 0.0..=2.0,
+    /// so a hand-edited config cannot make the API reject the request.
+    pub fn with_temperature(mut self, t: Option<f64>) -> Self {
+        self.temperature = t
+            .unwrap_or(crate::config::DEFAULT_TEMPERATURE)
+            .clamp(0.0, 2.0);
+        self
     }
 
     async fn post_messages(
@@ -38,41 +50,20 @@ impl AnthropicProvider {
         cancel_token: Option<&CancellationToken>,
     ) -> Result<serde_json::Value> {
         let url = format!("{}/messages", self.base_url.trim_end_matches('/'));
-        let request = self
-            .client
-            .post(&url)
-            .header("x-api-key", self.api_key.as_str())
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&body)
-            .build()
-            .context("Failed to build HTTP request")?;
-
-        let resp = if let Some(token) = cancel_token {
-            tokio::select! {
-                biased;
-                _ = token.cancelled() => {
-                    return Err(anyhow::anyhow!("LLM request cancelled by user"));
-                }
-                resp = self.client.execute(request) => {
-                    resp.context("HTTP request to Anthropic failed")?
-                }
-            }
-        } else {
-            self.client
-                .execute(request)
-                .await
-                .context("HTTP request to Anthropic failed")?
-        };
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = super::read_text_preview(resp, 64 * 1024).await;
-            return Err(anyhow::anyhow!("Anthropic returned {}: {}", status, text));
-        }
-
-        let bytes = super::read_body_capped(resp, super::MAX_RESPONSE_BYTES).await?;
-        serde_json::from_slice(&bytes).context("parsing Anthropic response")
+        super::post_json_with_retry(
+            &self.client,
+            &url,
+            &body,
+            "Anthropic",
+            |request| {
+                request
+                    .header("x-api-key", self.api_key.as_str())
+                    .header("anthropic-version", "2023-06-01")
+                    .header("content-type", "application/json")
+            },
+            cancel_token,
+        )
+        .await
     }
 }
 
@@ -124,6 +115,7 @@ impl LLMProvider for AnthropicProvider {
             "model": self.model,
             "messages": req.messages,
             "max_tokens": req.max_tokens.unwrap_or(4096),
+            "temperature": self.temperature,
         });
 
         let json = self.post_messages(body, None).await?;
@@ -195,6 +187,7 @@ impl LLMProvider for AnthropicProvider {
             "system": system,
             "messages": wire_messages,
             "max_tokens": max_tokens,
+            "temperature": self.temperature,
         });
 
         if !wire_tools.is_empty() {

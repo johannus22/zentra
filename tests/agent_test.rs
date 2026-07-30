@@ -42,6 +42,8 @@ fn state_writer_creates_findings_file() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         })
         .unwrap();
 
@@ -77,6 +79,8 @@ fn state_writer_appends_multiple_findings() {
                 cvss_vector: None,
                 cvss_score: None,
                 owasp: None,
+                confidence: None,
+                screening: None,
             })
             .unwrap();
     }
@@ -125,6 +129,8 @@ fn concurrent_write_finding_never_drops_a_finding() {
                         cvss_vector: None,
                         cvss_score: None,
                         owasp: None,
+                        confidence: None,
+                        screening: None,
                     })
                     .unwrap();
                 }
@@ -168,6 +174,8 @@ fn state_writer_sorts_findings_by_severity_in_markdown() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         })
         .unwrap();
     writer
@@ -184,6 +192,8 @@ fn state_writer_sorts_findings_by_severity_in_markdown() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         })
         .unwrap();
 
@@ -256,6 +266,8 @@ fn read_findings_raw_returns_written_findings() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         })
         .unwrap();
 
@@ -1153,6 +1165,8 @@ fn finding_block_roundtrips_corroboration() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         })
         .unwrap();
 
@@ -1198,6 +1212,8 @@ fn singleton_finding_markdown_has_no_corroboration_line() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         })
         .unwrap();
     let raw = writer.read_findings_raw().unwrap();
@@ -1255,6 +1271,8 @@ async fn correlate_merges_semantic_duplicates_via_llm() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         },
         Finding {
             scanner: "sast".to_string(),
@@ -1269,6 +1287,8 @@ async fn correlate_merges_semantic_duplicates_via_llm() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         },
     ];
 
@@ -1357,6 +1377,8 @@ async fn correlate_preserves_findings_on_llm_failure() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         },
         Finding {
             scanner: "sast".to_string(),
@@ -1371,6 +1393,8 @@ async fn correlate_preserves_findings_on_llm_failure() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         },
     ];
 
@@ -1445,6 +1469,8 @@ async fn orchestrator_incremental_carries_and_reconciles() {
             cvss_vector: None,
             cvss_score: None,
             owasp: None,
+            confidence: None,
+            screening: None,
         })
         .unwrap();
 
@@ -1461,6 +1487,8 @@ async fn orchestrator_incremental_carries_and_reconciles() {
         cvss_vector: None,
         cvss_score: None,
         owasp: None,
+        confidence: None,
+        screening: None,
     }];
     let change_set = ChangeSet {
         changed: vec!["src/changed.rs".into()],
@@ -1572,5 +1600,754 @@ fn scanner_prompts_request_classification() {
         let p = scanners::system_prompt(st);
         assert!(p.contains("CWE"), "{st:?} prompt should mention CWE");
         assert!(p.contains("CVSS"), "{st:?} prompt should mention CVSS");
+    }
+}
+
+// --- Findings file ordering (determinism) ---
+//
+// The sort key used to be severity alone, and `sort_by_key` is stable. Phase 2
+// writes from four parallel scanners, so thread interleaving decided the order
+// of equal-severity findings and the same findings produced a different file on
+// every run. The key is now (severity, location, title, scanner).
+
+fn ordering_finding(sev: Severity, title: &str, loc: &str, scanner: &str) -> Finding {
+    Finding {
+        scanner: scanner.to_string(),
+        severity: sev,
+        title: title.to_string(),
+        description: "d".to_string(),
+        location: Some(loc.to_string()),
+        recommendation: "r".to_string(),
+        corroborated_by: vec![],
+        cwe: None,
+        secondary_cwe: vec![],
+        cvss_vector: None,
+        cvss_score: None,
+        owasp: None,
+        confidence: None,
+        screening: None,
+    }
+}
+
+#[test]
+fn findings_file_bytes_do_not_depend_on_write_order() {
+    let dir_a = TempDir::new().unwrap();
+    let dir_b = TempDir::new().unwrap();
+    let a = StateWriter::new(dir_a.path()).unwrap();
+    let b = StateWriter::new(dir_b.path()).unwrap();
+
+    let f1 = ordering_finding(Severity::High, "Zebra issue", "src/z.rs:1", "sast");
+    let f2 = ordering_finding(Severity::High, "Alpha issue", "src/a.rs:1", "api_scan");
+    let f3 = ordering_finding(Severity::High, "Middle issue", "src/m.rs:1", "iac_scan");
+
+    for f in [&f1, &f2, &f3] {
+        a.write_finding(f).unwrap();
+    }
+    for f in [&f3, &f1, &f2] {
+        b.write_finding(f).unwrap();
+    }
+
+    assert_eq!(
+        a.read_findings_raw().unwrap(),
+        b.read_findings_raw().unwrap(),
+        "equal-severity findings must not depend on write order"
+    );
+}
+
+#[test]
+fn equal_severity_findings_sort_by_location_then_title() {
+    let dir = TempDir::new().unwrap();
+    let w = StateWriter::new(dir.path()).unwrap();
+
+    w.write_finding(&ordering_finding(
+        Severity::High,
+        "B",
+        "src/z.rs:1",
+        "sast",
+    ))
+    .unwrap();
+    w.write_finding(&ordering_finding(
+        Severity::High,
+        "A",
+        "src/a.rs:1",
+        "sast",
+    ))
+    .unwrap();
+
+    let raw = w.read_findings_raw().unwrap();
+    let a_at = raw.find("src/a.rs:1").unwrap();
+    let z_at = raw.find("src/z.rs:1").unwrap();
+    assert!(a_at < z_at, "src/a.rs must precede src/z.rs:\n{raw}");
+}
+
+#[test]
+fn same_location_findings_sort_by_title() {
+    let dir = TempDir::new().unwrap();
+    let w = StateWriter::new(dir.path()).unwrap();
+
+    w.write_finding(&ordering_finding(
+        Severity::High,
+        "Zeta problem",
+        "src/a.rs:1",
+        "sast",
+    ))
+    .unwrap();
+    w.write_finding(&ordering_finding(
+        Severity::High,
+        "Alpha problem",
+        "src/a.rs:1",
+        "sast",
+    ))
+    .unwrap();
+
+    let raw = w.read_findings_raw().unwrap();
+    assert!(
+        raw.find("Alpha problem").unwrap() < raw.find("Zeta problem").unwrap(),
+        "titles must break a location tie:\n{raw}"
+    );
+}
+
+#[test]
+fn severity_still_dominates_the_order() {
+    let dir = TempDir::new().unwrap();
+    let w = StateWriter::new(dir.path()).unwrap();
+
+    w.write_finding(&ordering_finding(
+        Severity::Low,
+        "aaa",
+        "src/a.rs:1",
+        "sast",
+    ))
+    .unwrap();
+    w.write_finding(&ordering_finding(
+        Severity::Critical,
+        "zzz",
+        "src/z.rs:1",
+        "sast",
+    ))
+    .unwrap();
+
+    let raw = w.read_findings_raw().unwrap();
+    assert!(
+        raw.find("[CRITICAL]").unwrap() < raw.find("[LOW]").unwrap(),
+        "critical must sort before low:\n{raw}"
+    );
+}
+
+/// Drive one async block to completion on this thread.
+///
+/// The CWD-dependent coverage tests hold `cwd_lock()` while they run, and a
+/// `std::sync::MutexGuard` must not be held across an `.await` in an async fn —
+/// on a multi-threaded runtime the task can resume on another thread. A
+/// current-thread runtime inside a sync test removes the await point entirely.
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(future)
+}
+
+// --- Coverage ledger wiring ---
+//
+// The ledger lives in ToolRegistry so `dispatch` can record without a signature
+// change, and so all four parallel Phase 2 scanners share one tally.
+
+#[test]
+fn dispatch_records_read_coverage() {
+    let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("a.rs"), "fn a() {}").unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let registry = zentra_cli::tools::ToolRegistry::new();
+    let writer = StateWriter::new(dir.path()).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+
+    block_on(registry.dispatch(
+        "read_file",
+        &serde_json::json!({"path": "a.rs"}),
+        &writer,
+        &tx,
+        ScannerType::Sast,
+    ));
+
+    std::env::set_current_dir(original).unwrap();
+
+    let summary = registry.coverage_snapshot(1);
+    assert_eq!(summary.distinct_read, 1);
+    assert_eq!(summary.candidate_count, 1);
+    assert_eq!(summary.percent(), 100);
+    assert_eq!(summary.per_scanner.len(), 1);
+    assert_eq!(summary.per_scanner[0].scanner, "sast");
+    assert_eq!(summary.per_scanner[0].files_read, 1);
+}
+
+#[tokio::test]
+async fn dispatch_records_a_rejected_read_as_a_hole_not_coverage() {
+    let dir = TempDir::new().unwrap();
+    let registry = zentra_cli::tools::ToolRegistry::new();
+    let writer = StateWriter::new(dir.path()).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+
+    registry
+        .dispatch(
+            "read_file",
+            &serde_json::json!({"path": "missing.rs"}),
+            &writer,
+            &tx,
+            ScannerType::Sast,
+        )
+        .await;
+
+    let summary = registry.coverage_snapshot(1);
+    assert_eq!(summary.distinct_read, 0, "a failed read is not coverage");
+    assert_eq!(summary.per_scanner[0].failed, 1);
+    assert_eq!(summary.percent(), 0);
+}
+
+#[test]
+fn dispatch_records_listings_and_searches() {
+    let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("a.rs"), "fn a() {}").unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let registry = zentra_cli::tools::ToolRegistry::new();
+    let writer = StateWriter::new(dir.path()).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+
+    block_on(registry.dispatch(
+        "list_files",
+        &serde_json::json!({"dir": "."}),
+        &writer,
+        &tx,
+        ScannerType::Sast,
+    ));
+    block_on(registry.dispatch(
+        "grep_code",
+        &serde_json::json!({"pattern": "fn"}),
+        &writer,
+        &tx,
+        ScannerType::Sast,
+    ));
+
+    std::env::set_current_dir(original).unwrap();
+
+    let summary = registry.coverage_snapshot(1);
+    assert_eq!(summary.per_scanner[0].listings, 1);
+    assert_eq!(summary.per_scanner[0].searches, 1);
+    assert_eq!(
+        summary.distinct_read, 0,
+        "navigation is not reading — this is the monorepo failure mode"
+    );
+}
+
+#[test]
+fn last_outcome_for_is_visible_through_the_registry() {
+    let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("a.rs"), "fn a() {}").unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(dir.path()).unwrap();
+
+    let registry = zentra_cli::tools::ToolRegistry::new();
+    let writer = StateWriter::new(dir.path()).unwrap();
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+
+    block_on(registry.dispatch(
+        "read_file",
+        &serde_json::json!({"path": "a.rs"}),
+        &writer,
+        &tx,
+        ScannerType::Sast,
+    ));
+
+    std::env::set_current_dir(original).unwrap();
+
+    assert_eq!(
+        registry.last_outcome_for(ScannerType::Sast, "a.rs"),
+        Some(zentra_cli::tools::fs_tools::ReadOutcome::Read { bytes: 9 })
+    );
+    assert_eq!(registry.last_outcome_for(ScannerType::ApiScan, "a.rs"), None);
+}
+
+#[tokio::test]
+async fn never_read_snapshot_names_untouched_candidates() {
+    let dir = TempDir::new().unwrap();
+    let registry = zentra_cli::tools::ToolRegistry::new();
+    let candidates = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
+    let _ = &dir;
+
+    assert_eq!(registry.never_read_snapshot(&candidates), candidates);
+}
+
+#[test]
+fn state_writer_writes_the_coverage_artifact() {
+    let dir = TempDir::new().unwrap();
+    let w = StateWriter::new(dir.path()).unwrap();
+    w.write_coverage("# Scan Coverage\n").unwrap();
+    let body = std::fs::read_to_string(dir.path().join(".zentra").join("coverage.md")).unwrap();
+    assert!(body.contains("# Scan Coverage"));
+}
+
+// End-to-end: a real orchestrator run against a mock provider must leave a
+// coverage artifact on disk. This is the closest check to the operator's
+// experience that does not need a live API key.
+#[tokio::test]
+async fn orchestrator_writes_the_coverage_artifact_end_to_end() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    // Two candidate source files the agent never opens: the mock provider makes
+    // no tool calls, so this is exactly the "read nothing, report success" case.
+    std::fs::write(dir.path().join("a.rs"), "fn a() {}").unwrap();
+    std::fs::write(dir.path().join("b.rs"), "fn b() {}").unwrap();
+
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
+        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
+    );
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let writer = Arc::new(zentra_cli::state::StateWriter::new(dir.path()).unwrap());
+    let (tx, mut rx) = mpsc::channel(64);
+
+    let summary = OrchestratorAgent::new(provider, registry, writer, tx, CancellationToken::new())
+        .run(&[ScannerType::Sast])
+        .await
+        .unwrap();
+
+    while rx.try_recv().is_ok() {}
+
+    assert_eq!(summary.coverage.candidate_count, 2);
+    assert_eq!(summary.coverage.distinct_read, 0);
+    assert_eq!(summary.coverage.percent(), 0);
+
+    let body = std::fs::read_to_string(dir.path().join(".zentra").join("coverage.md")).unwrap();
+    assert!(body.contains("# Scan Coverage"), "got:\n{body}");
+    assert!(body.contains("0 of 2 (0%)"), "got:\n{body}");
+    assert!(body.contains("Never opened (2 files)"), "got:\n{body}");
+    assert!(body.contains("- a.rs"), "got:\n{body}");
+    assert!(body.contains("- b.rs"), "got:\n{body}");
+}
+
+// --- Screening (the precision pass) ---
+
+fn screening_finding(title: &str, location: Option<&str>) -> Finding {
+    Finding {
+        scanner: "sast".to_string(),
+        severity: Severity::High,
+        title: title.to_string(),
+        description: "user input reaches a query".to_string(),
+        location: location.map(str::to_string),
+        recommendation: "parameterize".to_string(),
+        corroborated_by: vec![],
+        cwe: Some("CWE-89".to_string()),
+        secondary_cwe: vec![],
+        cvss_vector: None,
+        cvss_score: None,
+        owasp: None,
+        confidence: None,
+        screening: None,
+    }
+}
+
+#[test]
+fn screening_verdict_survives_the_markdown_round_trip() {
+    let dir = TempDir::new().unwrap();
+    let writer = StateWriter::new(dir.path()).unwrap();
+
+    let mut finding = screening_finding("SQL injection", Some("src/db.rs:42"));
+    finding.screening = Some(zentra_cli::state::finding::Screening::Confirmed);
+    finding.confidence = Some(87);
+    writer.write_finding(&finding).unwrap();
+
+    let raw = writer.read_findings_raw().unwrap();
+    assert!(
+        raw.contains("**Screening:** confirmed (87% confidence)"),
+        "got:\n{raw}"
+    );
+
+    let parsed = zentra_cli::state::parse_findings(&raw);
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(
+        parsed[0].screening,
+        Some(zentra_cli::state::finding::Screening::Confirmed)
+    );
+    assert_eq!(parsed[0].confidence, Some(87));
+}
+
+#[test]
+fn every_screening_verdict_round_trips() {
+    use zentra_cli::state::finding::Screening;
+
+    for verdict in [Screening::Confirmed, Screening::Disputed, Screening::Unclear] {
+        let dir = TempDir::new().unwrap();
+        let writer = StateWriter::new(dir.path()).unwrap();
+
+        let mut finding = screening_finding("Issue", Some("src/a.rs:1"));
+        finding.screening = Some(verdict);
+        finding.confidence = Some(50);
+        writer.write_finding(&finding).unwrap();
+
+        let parsed = zentra_cli::state::parse_findings(&writer.read_findings_raw().unwrap());
+        assert_eq!(parsed[0].screening, Some(verdict), "verdict {verdict} lost");
+    }
+}
+
+#[test]
+fn an_unscreened_finding_emits_no_screening_line() {
+    let dir = TempDir::new().unwrap();
+    let writer = StateWriter::new(dir.path()).unwrap();
+
+    writer
+        .write_finding(&screening_finding("Unscreened", Some("src/a.rs:1")))
+        .unwrap();
+
+    let raw = writer.read_findings_raw().unwrap();
+    assert!(
+        !raw.contains("Screening"),
+        "an unscreened finding must look as it did before the field existed:\n{raw}"
+    );
+
+    let parsed = zentra_cli::state::parse_findings(&raw);
+    assert_eq!(parsed[0].screening, None);
+    assert_eq!(parsed[0].confidence, None);
+}
+
+#[test]
+fn a_legacy_findings_file_parses_without_a_screening_line() {
+    // Files written before this field existed must still load.
+    let legacy = "## [HIGH] Old finding\n**Scanner:** sast\n**Location:** src/a.rs:1\n\
+**Description:** d\n**Recommendation:** r\n\n---\n";
+    let parsed = zentra_cli::state::parse_findings(legacy);
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(parsed[0].screening, None);
+    assert_eq!(parsed[0].confidence, None);
+}
+
+#[tokio::test]
+async fn screening_pass_annotates_findings_from_the_provider_verdict() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "tool_calls": [{
+                "id": "c1",
+                "type": "function",
+                "function": {
+                    "name": "report_screening",
+                    "arguments": "{\"verdicts\":[{\"index\":0,\"verdict\":\"confirmed\",\"confidence\":91,\"reason\":\"reachable from the HTTP handler\"},{\"index\":1,\"verdict\":\"disputed\",\"confidence\":80,\"reason\":\"test fixture only\"}]}"
+                }
+            }]}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    std::fs::write(dir.path().join("db.rs"), "fn query() {}").unwrap();
+
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
+        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
+    );
+    let findings = vec![
+        screening_finding("Real SQLi", Some("db.rs:1")),
+        screening_finding("Fixture SQLi", Some("db.rs:1")),
+    ];
+
+    let out = zentra_cli::agent::screening::screen(&provider, dir.path(), findings).await;
+
+    assert_eq!(out.len(), 2);
+    assert_eq!(
+        out[0].screening,
+        Some(zentra_cli::state::finding::Screening::Confirmed)
+    );
+    assert_eq!(out[0].confidence, Some(91));
+    assert_eq!(
+        out[1].screening,
+        Some(zentra_cli::state::finding::Screening::Disputed)
+    );
+    assert_eq!(out[1].confidence, Some(80));
+}
+
+#[tokio::test]
+async fn screening_pass_returns_findings_unchanged_when_the_provider_fails() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("Too Many Requests"))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
+        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
+    );
+    let findings = vec![screening_finding("Critical thing", Some("db.rs:1"))];
+
+    let out = zentra_cli::agent::screening::screen(&provider, dir.path(), findings).await;
+
+    assert_eq!(out.len(), 1, "a rate limit must never drop a finding");
+    assert_eq!(out[0].screening, None, "unscreened, not silently confirmed");
+    assert_eq!(out[0].confidence, None);
+}
+
+#[tokio::test]
+async fn screening_pass_survives_a_response_with_no_tool_call() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "I cannot decide"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
+        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
+    );
+    let findings = vec![screening_finding("Thing", None)];
+
+    let out = zentra_cli::agent::screening::screen(&provider, dir.path(), findings).await;
+
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].screening, None);
+}
+
+#[tokio::test]
+async fn screening_pass_handles_more_findings_than_one_batch() {
+    let server = MockServer::start().await;
+    // Every batch gets the same single verdict for local index 0.
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "tool_calls": [{
+                "id": "c1",
+                "type": "function",
+                "function": {
+                    "name": "report_screening",
+                    "arguments": "{\"verdicts\":[{\"index\":0,\"verdict\":\"unclear\",\"confidence\":10}]}"
+                }
+            }]}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
+        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
+    );
+    // 10 findings = one batch of 8 plus one of 2.
+    let findings: Vec<Finding> = (0..10)
+        .map(|i| screening_finding(&format!("Finding {i}"), None))
+        .collect();
+
+    let out = zentra_cli::agent::screening::screen(&provider, dir.path(), findings).await;
+
+    assert_eq!(out.len(), 10, "batching must not lose a finding");
+    // Local index 0 of each batch maps to global 0 and 8.
+    assert_eq!(
+        out[0].screening,
+        Some(zentra_cli::state::finding::Screening::Unclear)
+    );
+    assert_eq!(
+        out[8].screening,
+        Some(zentra_cli::state::finding::Screening::Unclear),
+        "local index 0 of the second batch must map to global index 8"
+    );
+    assert_eq!(out[1].screening, None);
+}
+
+// --- Pack mode (whole-repository compaction) ---
+//
+// Pack mode replaces the navigation prompt with the whole filtered repository.
+// The guarantee it buys is coverage: if a file is in the pack, the model saw it.
+
+fn pack_repo(files: &[(&str, &str)]) -> TempDir {
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+    for (path, body) in files {
+        let full = dir.path().join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, body).unwrap();
+    }
+    dir
+}
+
+#[tokio::test]
+async fn pack_mode_sends_the_repository_and_never_lists_files() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "reviewed"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = pack_repo(&[
+        ("src/handler.rs", "fn handle(input: &str) {}"),
+        ("src/db.rs", "fn query(sql: &str) {}"),
+        ("tests/it.rs", "fn excluded_from_pack() {}"),
+    ]);
+
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
+        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
+    );
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let writer = Arc::new(zentra_cli::state::StateWriter::new(dir.path()).unwrap());
+    let (tx, mut rx) = mpsc::channel(64);
+
+    let built = zentra_cli::agent::pack::build_pack(dir.path());
+    let rendered = Arc::new(built.render());
+
+    OrchestratorAgent::new(provider, registry, writer, tx, CancellationToken::new())
+        .with_pack(Some(Arc::clone(&rendered)))
+        .run(&[ScannerType::Sast])
+        .await
+        .unwrap();
+
+    while rx.try_recv().is_ok() {}
+
+    // The provider saw the pack as the opening user message.
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    let sent = body["messages"].as_array().unwrap();
+    let first_user = sent
+        .iter()
+        .find(|m| m["role"] == "user")
+        .unwrap()
+        .get("content")
+        .unwrap()
+        .as_str()
+        .unwrap();
+
+    assert!(
+        first_user.contains("=== FILE: src/handler.rs ==="),
+        "the pack must be the opening message, got:\n{first_user}"
+    );
+    assert!(first_user.contains("fn query(sql: &str)"), "got:\n{first_user}");
+    assert!(
+        !first_user.contains("excluded_from_pack"),
+        "tests are filtered out of the pack, got:\n{first_user}"
+    );
+    assert!(
+        first_user.contains("Do not call list_files"),
+        "got:\n{first_user}"
+    );
+    assert!(
+        !first_user.contains("Start by listing the project files"),
+        "pack mode must replace the navigation opener, got:\n{first_user}"
+    );
+}
+
+#[tokio::test]
+async fn without_pack_the_opener_is_unchanged() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = pack_repo(&[("src/a.rs", "fn a() {}")]);
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
+        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
+    );
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let writer = Arc::new(zentra_cli::state::StateWriter::new(dir.path()).unwrap());
+    let (tx, mut rx) = mpsc::channel(64);
+
+    OrchestratorAgent::new(provider, registry, writer, tx, CancellationToken::new())
+        .run(&[ScannerType::Sast])
+        .await
+        .unwrap();
+
+    while rx.try_recv().is_ok() {}
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    let first_user = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["role"] == "user")
+        .unwrap()
+        .get("content")
+        .unwrap()
+        .as_str()
+        .unwrap();
+
+    assert_eq!(first_user, "Begin your security scan. Start by listing the project files.");
+}
+
+#[tokio::test]
+async fn every_parallel_scanner_receives_the_pack() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = pack_repo(&[("src/a.rs", "fn marker_in_pack() {}")]);
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
+        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
+    );
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let writer = Arc::new(zentra_cli::state::StateWriter::new(dir.path()).unwrap());
+    let (tx, mut rx) = mpsc::channel(128);
+
+    let rendered = Arc::new(zentra_cli::agent::pack::build_pack(dir.path()).render());
+
+    // Sast, SupplyChain, ApiScan and IacScan all run through the parallel spawn
+    // path, which builds ScannerAgent directly rather than via run_llm_scanner.
+    OrchestratorAgent::new(provider, registry, writer, tx, CancellationToken::new())
+        .with_pack(Some(rendered))
+        .run(&[
+            ScannerType::Sast,
+            ScannerType::SupplyChain,
+            ScannerType::ApiScan,
+            ScannerType::IacScan,
+        ])
+        .await
+        .unwrap();
+
+    while rx.try_recv().is_ok() {}
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 4, "one opening call per parallel scanner");
+    for request in &requests {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        let has_pack = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| {
+                m["content"]
+                    .as_str()
+                    .map(|c| c.contains("marker_in_pack"))
+                    .unwrap_or(false)
+            });
+        assert!(has_pack, "every parallel scanner must open with the pack");
     }
 }

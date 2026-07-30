@@ -63,4 +63,48 @@ pub struct Finding {
     /// OWASP Top 10 category, e.g. "A03:2021-Injection". Model-supplied (best-effort).
     #[serde(default)]
     pub owasp: Option<String>,
+    /// Screening confidence, 0-100. Set by the audit pass (`agent::screening`),
+    /// never by the scanner that reported the finding — a scanner grading its own
+    /// work is not evidence. `None` means the finding was never screened.
+    #[serde(default)]
+    pub confidence: Option<u8>,
+    /// What the audit pass concluded. `None` means it never ran on this finding.
+    #[serde(default)]
+    pub screening: Option<Screening>,
+}
+
+/// The audit pass verdict on one finding.
+///
+/// The pass annotates and never drops, matching the correlation pass: a
+/// `Disputed` Critical that turns out to be real must still reach the human.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Screening {
+    /// Reachable from untrusted input with no mitigation in the way.
+    Confirmed,
+    /// The pass could not show reachability, or found a mitigation.
+    Disputed,
+    /// Not enough context in the batch to decide either way.
+    Unclear,
+}
+
+impl fmt::Display for Screening {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Screening::Confirmed => write!(f, "confirmed"),
+            Screening::Disputed => write!(f, "disputed"),
+            Screening::Unclear => write!(f, "unclear"),
+        }
+    }
+}
+
+impl Screening {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "confirmed" => Some(Screening::Confirmed),
+            "disputed" => Some(Screening::Disputed),
+            "unclear" => Some(Screening::Unclear),
+            _ => None,
+        }
+    }
 }

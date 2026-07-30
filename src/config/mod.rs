@@ -32,6 +32,6 @@ pub(crate) fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> 
 pub use custom_providers::CustomProvider;
 pub use global::{
     cwe_link, global_zentra_dir, AuthMethod, GlobalConfig, ProviderProfile,
-    DEFAULT_CWE_URL_TEMPLATE,
+    DEFAULT_CWE_URL_TEMPLATE, DEFAULT_TEMPERATURE,
 };
 pub use project::ProjectConfig;

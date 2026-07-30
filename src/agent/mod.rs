@@ -1,7 +1,10 @@
 pub mod context_budget;
 pub mod correlation;
+pub mod coverage;
 pub mod orchestrator;
+pub mod pack;
 pub mod scanner;
+pub mod screening;
 
 use crate::state::Finding;
 
@@ -56,6 +59,14 @@ pub enum ScanEvent {
     Error {
         scanner: ScannerType,
         message: String,
+    },
+    /// One file read attempt and its outcome. The TUI counts these, so the live
+    /// panel and `.zentra/coverage.md` are driven by the same signal and cannot
+    /// disagree.
+    FileRead {
+        scanner: ScannerType,
+        path: String,
+        outcome: crate::tools::fs_tools::ReadOutcome,
     },
     TokensUsed {
         input: u32,

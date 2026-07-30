@@ -6,6 +6,7 @@ use tokio_util::sync::CancellationToken;
 pub mod anthropic;
 pub mod openai_compat;
 pub mod cli;
+pub mod retry;
 
 /// Max bytes to buffer from an LLM HTTP response. Bodies larger than this are
 /// rejected rather than buffered, so a hostile or misconfigured endpoint (a
@@ -53,6 +54,101 @@ pub(crate) async fn read_text_preview(mut resp: reqwest::Response, max_bytes: us
         }
     }
     String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// POST `body` to `url`, retrying the transient failures, and return the parsed
+/// JSON response.
+///
+/// Both HTTP providers route through here so the retry policy has one owner. The
+/// request is rebuilt per attempt — cheap, and it avoids relying on a reqwest
+/// body being cloneable.
+///
+/// `label` names the provider in log lines and errors. `decorate` adds the
+/// provider's auth and version headers.
+pub(crate) async fn post_json_with_retry<F>(
+    client: &reqwest::Client,
+    url: &str,
+    body: &serde_json::Value,
+    label: &str,
+    decorate: F,
+    cancel_token: Option<&CancellationToken>,
+) -> Result<serde_json::Value>
+where
+    F: Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
+{
+    use anyhow::Context;
+
+    let max_attempts = retry::max_attempts();
+    let mut last_error = String::new();
+
+    for attempt in 1..=max_attempts {
+        let request = decorate(client.post(url))
+            .json(body)
+            .build()
+            .context("Failed to build HTTP request")?;
+
+        let outcome = if let Some(token) = cancel_token {
+            tokio::select! {
+                biased;
+                _ = token.cancelled() => {
+                    return Err(anyhow::anyhow!("LLM request cancelled by user"));
+                }
+                outcome = client.execute(request) => outcome,
+            }
+        } else {
+            client.execute(request).await
+        };
+
+        let (retryable, retry_after, error_text) = match outcome {
+            Ok(response) if response.status().is_success() => {
+                let bytes = read_body_capped(response, MAX_RESPONSE_BYTES).await?;
+                return serde_json::from_slice(&bytes)
+                    .with_context(|| format!("parsing {label} response"));
+            }
+            Ok(response) => {
+                let status = response.status();
+                let retry_after = response
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| retry::parse_retry_after(v, chrono::Utc::now()));
+                let text = read_text_preview(response, 64 * 1024).await;
+                (
+                    retry::is_retryable_status(status.as_u16()),
+                    retry_after,
+                    format!("{label} returned {status}: {text}"),
+                )
+            }
+            Err(e) => (
+                retry::is_retryable_transport_error(&e),
+                None,
+                format!("HTTP request to {label} failed: {e}"),
+            ),
+        };
+
+        last_error = error_text;
+
+        if !retryable {
+            return Err(anyhow::anyhow!(last_error));
+        }
+
+        match retry::decide(attempt, max_attempts, retry_after) {
+            retry::Decision::GiveUp => break,
+            retry::Decision::RetryAfter(delay) => {
+                crate::logging::warn(
+                    "provider",
+                    retry::retry_log_line(label, attempt, max_attempts, delay, &last_error),
+                );
+                retry::wait(delay, cancel_token).await?;
+            }
+        }
+    }
+
+    Err(anyhow::anyhow!(retry::exhausted_message(
+        label,
+        max_attempts,
+        &last_error
+    )))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

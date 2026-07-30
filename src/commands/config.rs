@@ -133,6 +133,7 @@ mod tests {
                 auth_method: AuthMethod::OAuth,
                 context_window: None,
                 reasoning_effort: None,
+                temperature: None,
             },
         );
         GlobalConfig {
