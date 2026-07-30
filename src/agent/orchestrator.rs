@@ -53,6 +53,9 @@ pub struct OrchestratorAgent {
     focus_context: Option<String>,
     security: SecurityContext,
     incremental: Option<IncrementalCtx>,
+    /// The whole filtered repository, when pack mode is on. Every scanner opens
+    /// with it instead of navigating, so it is shared behind one Arc.
+    pack: Option<Arc<String>>,
 }
 
 impl OrchestratorAgent {
@@ -70,6 +73,7 @@ impl OrchestratorAgent {
             tx,
             cancel_token,
             focus_context: None,
+            pack: None,
             security: SecurityContext::disabled(),
             incremental: None,
         }
@@ -87,6 +91,14 @@ impl OrchestratorAgent {
 
     pub fn with_incremental(mut self, prior: Vec<Finding>, change_set: ChangeSet) -> Self {
         self.incremental = Some(IncrementalCtx { prior, change_set });
+        self
+    }
+
+    /// Open every scanner with the whole filtered repository instead of a
+    /// navigation prompt. The caller checks the budget first — by the time the
+    /// pack reaches here it has already been shown to fit.
+    pub fn with_pack(mut self, pack: Option<Arc<String>>) -> Self {
+        self.pack = pack;
         self
     }
 
@@ -157,6 +169,7 @@ Delete this file and re-run the scan to retry.",
                 let focus_ctx = self.focus_context.clone();
                 let token = cancel_token.clone();
                 let security = self.security.clone();
+                let pack = self.pack.clone();
                 let incremental_scope = self
                     .incremental
                     .as_ref()
@@ -176,6 +189,7 @@ Delete this file and re-run the scan to retry.",
                         )
                         .with_security(security)
                         .with_incremental_scope(incremental_scope)
+                        .with_pack(pack)
                         .run()
                         .await
                     }),
@@ -305,6 +319,7 @@ Delete this file and re-run the scan to retry.",
             self.cancel_token.clone(),
         )
         .with_security(self.security.clone())
+        .with_pack(self.pack.clone())
         .run()
         .await
     }

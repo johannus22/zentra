@@ -2169,3 +2169,185 @@ async fn screening_pass_handles_more_findings_than_one_batch() {
     );
     assert_eq!(out[1].screening, None);
 }
+
+// --- Pack mode (whole-repository compaction) ---
+//
+// Pack mode replaces the navigation prompt with the whole filtered repository.
+// The guarantee it buys is coverage: if a file is in the pack, the model saw it.
+
+fn pack_repo(files: &[(&str, &str)]) -> TempDir {
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+    for (path, body) in files {
+        let full = dir.path().join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, body).unwrap();
+    }
+    dir
+}
+
+#[tokio::test]
+async fn pack_mode_sends_the_repository_and_never_lists_files() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "reviewed"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = pack_repo(&[
+        ("src/handler.rs", "fn handle(input: &str) {}"),
+        ("src/db.rs", "fn query(sql: &str) {}"),
+        ("tests/it.rs", "fn excluded_from_pack() {}"),
+    ]);
+
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
+        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
+    );
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let writer = Arc::new(zentra_cli::state::StateWriter::new(dir.path()).unwrap());
+    let (tx, mut rx) = mpsc::channel(64);
+
+    let built = zentra_cli::agent::pack::build_pack(dir.path());
+    let rendered = Arc::new(built.render());
+
+    OrchestratorAgent::new(provider, registry, writer, tx, CancellationToken::new())
+        .with_pack(Some(Arc::clone(&rendered)))
+        .run(&[ScannerType::Sast])
+        .await
+        .unwrap();
+
+    while rx.try_recv().is_ok() {}
+
+    // The provider saw the pack as the opening user message.
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    let sent = body["messages"].as_array().unwrap();
+    let first_user = sent
+        .iter()
+        .find(|m| m["role"] == "user")
+        .unwrap()
+        .get("content")
+        .unwrap()
+        .as_str()
+        .unwrap();
+
+    assert!(
+        first_user.contains("=== FILE: src/handler.rs ==="),
+        "the pack must be the opening message, got:\n{first_user}"
+    );
+    assert!(first_user.contains("fn query(sql: &str)"), "got:\n{first_user}");
+    assert!(
+        !first_user.contains("excluded_from_pack"),
+        "tests are filtered out of the pack, got:\n{first_user}"
+    );
+    assert!(
+        first_user.contains("Do not call list_files"),
+        "got:\n{first_user}"
+    );
+    assert!(
+        !first_user.contains("Start by listing the project files"),
+        "pack mode must replace the navigation opener, got:\n{first_user}"
+    );
+}
+
+#[tokio::test]
+async fn without_pack_the_opener_is_unchanged() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = pack_repo(&[("src/a.rs", "fn a() {}")]);
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
+        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
+    );
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let writer = Arc::new(zentra_cli::state::StateWriter::new(dir.path()).unwrap());
+    let (tx, mut rx) = mpsc::channel(64);
+
+    OrchestratorAgent::new(provider, registry, writer, tx, CancellationToken::new())
+        .run(&[ScannerType::Sast])
+        .await
+        .unwrap();
+
+    while rx.try_recv().is_ok() {}
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    let first_user = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["role"] == "user")
+        .unwrap()
+        .get("content")
+        .unwrap()
+        .as_str()
+        .unwrap();
+
+    assert_eq!(first_user, "Begin your security scan. Start by listing the project files.");
+}
+
+#[tokio::test]
+async fn every_parallel_scanner_receives_the_pack() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"role": "assistant", "content": "done"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = pack_repo(&[("src/a.rs", "fn marker_in_pack() {}")]);
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
+        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
+    );
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let writer = Arc::new(zentra_cli::state::StateWriter::new(dir.path()).unwrap());
+    let (tx, mut rx) = mpsc::channel(128);
+
+    let rendered = Arc::new(zentra_cli::agent::pack::build_pack(dir.path()).render());
+
+    // Sast, SupplyChain, ApiScan and IacScan all run through the parallel spawn
+    // path, which builds ScannerAgent directly rather than via run_llm_scanner.
+    OrchestratorAgent::new(provider, registry, writer, tx, CancellationToken::new())
+        .with_pack(Some(rendered))
+        .run(&[
+            ScannerType::Sast,
+            ScannerType::SupplyChain,
+            ScannerType::ApiScan,
+            ScannerType::IacScan,
+        ])
+        .await
+        .unwrap();
+
+    while rx.try_recv().is_ok() {}
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 4, "one opening call per parallel scanner");
+    for request in &requests {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        let has_pack = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| {
+                m["content"]
+                    .as_str()
+                    .map(|c| c.contains("marker_in_pack"))
+                    .unwrap_or(false)
+            });
+        assert!(has_pack, "every parallel scanner must open with the pack");
+    }
+}

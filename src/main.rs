@@ -149,7 +149,9 @@ async fn run() -> anyhow::Result<()> {
             provider,
             only,
             full,
-        }) => commands::scan::run(provider, only, full).await?,
+            pack,
+            dry_run,
+        }) => commands::scan::run(provider, only, full, pack, dry_run).await?,
         Some(cli::Commands::Pentest {
             url,
             allow_hosts,
