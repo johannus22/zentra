@@ -1574,3 +1574,132 @@ fn scanner_prompts_request_classification() {
         assert!(p.contains("CVSS"), "{st:?} prompt should mention CVSS");
     }
 }
+
+// --- Findings file ordering (determinism) ---
+//
+// The sort key used to be severity alone, and `sort_by_key` is stable. Phase 2
+// writes from four parallel scanners, so thread interleaving decided the order
+// of equal-severity findings and the same findings produced a different file on
+// every run. The key is now (severity, location, title, scanner).
+
+fn ordering_finding(sev: Severity, title: &str, loc: &str, scanner: &str) -> Finding {
+    Finding {
+        scanner: scanner.to_string(),
+        severity: sev,
+        title: title.to_string(),
+        description: "d".to_string(),
+        location: Some(loc.to_string()),
+        recommendation: "r".to_string(),
+        corroborated_by: vec![],
+        cwe: None,
+        secondary_cwe: vec![],
+        cvss_vector: None,
+        cvss_score: None,
+        owasp: None,
+    }
+}
+
+#[test]
+fn findings_file_bytes_do_not_depend_on_write_order() {
+    let dir_a = TempDir::new().unwrap();
+    let dir_b = TempDir::new().unwrap();
+    let a = StateWriter::new(dir_a.path()).unwrap();
+    let b = StateWriter::new(dir_b.path()).unwrap();
+
+    let f1 = ordering_finding(Severity::High, "Zebra issue", "src/z.rs:1", "sast");
+    let f2 = ordering_finding(Severity::High, "Alpha issue", "src/a.rs:1", "api_scan");
+    let f3 = ordering_finding(Severity::High, "Middle issue", "src/m.rs:1", "iac_scan");
+
+    for f in [&f1, &f2, &f3] {
+        a.write_finding(f).unwrap();
+    }
+    for f in [&f3, &f1, &f2] {
+        b.write_finding(f).unwrap();
+    }
+
+    assert_eq!(
+        a.read_findings_raw().unwrap(),
+        b.read_findings_raw().unwrap(),
+        "equal-severity findings must not depend on write order"
+    );
+}
+
+#[test]
+fn equal_severity_findings_sort_by_location_then_title() {
+    let dir = TempDir::new().unwrap();
+    let w = StateWriter::new(dir.path()).unwrap();
+
+    w.write_finding(&ordering_finding(
+        Severity::High,
+        "B",
+        "src/z.rs:1",
+        "sast",
+    ))
+    .unwrap();
+    w.write_finding(&ordering_finding(
+        Severity::High,
+        "A",
+        "src/a.rs:1",
+        "sast",
+    ))
+    .unwrap();
+
+    let raw = w.read_findings_raw().unwrap();
+    let a_at = raw.find("src/a.rs:1").unwrap();
+    let z_at = raw.find("src/z.rs:1").unwrap();
+    assert!(a_at < z_at, "src/a.rs must precede src/z.rs:\n{raw}");
+}
+
+#[test]
+fn same_location_findings_sort_by_title() {
+    let dir = TempDir::new().unwrap();
+    let w = StateWriter::new(dir.path()).unwrap();
+
+    w.write_finding(&ordering_finding(
+        Severity::High,
+        "Zeta problem",
+        "src/a.rs:1",
+        "sast",
+    ))
+    .unwrap();
+    w.write_finding(&ordering_finding(
+        Severity::High,
+        "Alpha problem",
+        "src/a.rs:1",
+        "sast",
+    ))
+    .unwrap();
+
+    let raw = w.read_findings_raw().unwrap();
+    assert!(
+        raw.find("Alpha problem").unwrap() < raw.find("Zeta problem").unwrap(),
+        "titles must break a location tie:\n{raw}"
+    );
+}
+
+#[test]
+fn severity_still_dominates_the_order() {
+    let dir = TempDir::new().unwrap();
+    let w = StateWriter::new(dir.path()).unwrap();
+
+    w.write_finding(&ordering_finding(
+        Severity::Low,
+        "aaa",
+        "src/a.rs:1",
+        "sast",
+    ))
+    .unwrap();
+    w.write_finding(&ordering_finding(
+        Severity::Critical,
+        "zzz",
+        "src/z.rs:1",
+        "sast",
+    ))
+    .unwrap();
+
+    let raw = w.read_findings_raw().unwrap();
+    assert!(
+        raw.find("[CRITICAL]").unwrap() < raw.find("[LOW]").unwrap(),
+        "critical must sort before low:\n{raw}"
+    );
+}
