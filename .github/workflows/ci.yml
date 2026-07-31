@@ -1,6 +1,11 @@
 name: CI
 
 on:
+  # Pull requests as well as main. Without this the matrix only ran after a
+  # merge, and merge commits carry `[skip ci]` — so the Linux and macOS builds
+  # saw neither the PR nor the merge, and the clippy gate below could only turn
+  # main red instead of blocking the change that broke it.
+  pull_request:
   push:
     branches: [main]
 
