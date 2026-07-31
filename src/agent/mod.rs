@@ -46,6 +46,11 @@ impl ScannerType {
     }
 }
 
+// `FindingAdded` carries a whole `Finding`, which makes the enum large next to
+// variants that carry two u32s. Boxing it would touch every construction and
+// every match arm to save bytes on a low-frequency channel: one event per
+// finding, bounded at 128 in flight. Not worth the churn.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum ScanEvent {
     ScannerStarted(ScannerType),

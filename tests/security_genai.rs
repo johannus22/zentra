@@ -162,7 +162,7 @@ impl RecordingProvider {
         system.lines().find_map(|line| {
             let trimmed = line.trim();
             if let Some(rest) = trimmed.strip_prefix("ZENTRA-NONCE:") {
-                let nonce = rest.trim().split_whitespace().next()?;
+                let nonce = rest.split_whitespace().next()?;
                 Some(nonce.to_string())
             } else {
                 None

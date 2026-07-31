@@ -500,7 +500,7 @@ impl ProviderFormState {
                 Ok(handle) => handle.block_on(crate::auth::run_oauth_flow()),
                 Err(_) => tokio::runtime::Runtime::new()?.block_on(crate::auth::run_oauth_flow()),
             },
-            |profile_name, tokens| keychain::set_oauth_tokens(profile_name, tokens),
+            keychain::set_oauth_tokens,
         )
     }
 
@@ -533,9 +533,9 @@ impl ProviderFormState {
             config_path,
             _run_oauth,
             store_oauth,
-            |profile_name| keychain::delete_oauth_tokens(profile_name),
+            keychain::delete_oauth_tokens,
             |profile_name, api_key| keychain::set_key(profile_name, api_key).map(|_| ()),
-            |profile_name| keychain::delete_key(profile_name),
+            keychain::delete_key,
         )
     }
 
@@ -1193,7 +1193,7 @@ impl MenuState {
 
                     let profile_name = match self.form.save_with_oauth(
                         || Ok(tokens),
-                        |profile_name, tokens| keychain::set_oauth_tokens(profile_name, tokens),
+                        keychain::set_oauth_tokens,
                     ) {
                         Ok(profile_name) => profile_name,
                         Err(err) => {
@@ -1213,6 +1213,10 @@ impl MenuState {
     }
 }
 
+// The menu entry point. Its blocking twin below must mirror this signature,
+// so widening one means widening both — a params struct would have to be
+// threaded through both for no behavioral gain.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_menu(
     provider_configured: bool,
     project_configured: bool,
@@ -1238,6 +1242,8 @@ pub async fn run_menu(
     .await?
 }
 
+// Mirrors `run_menu` above, deliberately.
+#[allow(clippy::too_many_arguments)]
 fn run_menu_blocking(
     provider_configured: bool,
     project_configured: bool,
@@ -2469,8 +2475,10 @@ mod cwe_settings_tests {
             .save_to(&cfg_path)
             .unwrap();
 
-        let mut form = SettingsFormState::default();
-        form.cwe_url_template = "https://wiki.acme.com/cwe/{id}".to_string();
+        let mut form = SettingsFormState {
+            cwe_url_template: "https://wiki.acme.com/cwe/{id}".to_string(),
+            ..Default::default()
+        };
         form.save_cwe_to(&cfg_path).unwrap();
         let g = crate::config::GlobalConfig::load_from(&cfg_path).unwrap();
         assert_eq!(

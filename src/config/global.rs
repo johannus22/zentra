@@ -218,8 +218,10 @@ mod cwe_tests {
 
     #[test]
     fn config_roundtrips_cwe_template() {
-        let mut cfg = GlobalConfig::default();
-        cfg.cwe_url_template = Some("https://wiki.acme.com/cwe/{id}".to_string());
+        let cfg = GlobalConfig {
+            cwe_url_template: Some("https://wiki.acme.com/cwe/{id}".to_string()),
+            ..Default::default()
+        };
         let json = serde_json::to_string(&cfg).unwrap();
         let back: GlobalConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(

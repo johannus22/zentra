@@ -742,8 +742,10 @@ async fn scanner_cancel_emits_completed_and_returns() {
     );
 }
 
-#[tokio::test]
-async fn scanner_agent_blocks_out_of_scope_tool_calls_under_incremental_scope() {
+#[test]
+fn scanner_agent_blocks_out_of_scope_tool_calls_under_incremental_scope() {
+    // Sync plus block_on: a std MutexGuard must not cross an await point, or the
+    // task can resume on another runtime thread while holding the CWD lock.
     let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
     let original_cwd = std::env::current_dir().unwrap();
     let dir = TempDir::new().unwrap();
@@ -753,10 +755,10 @@ async fn scanner_agent_blocks_out_of_scope_tool_calls_under_incremental_scope() 
     std::fs::write(dir.path().join("keep.rs"), "fn keep() {}").unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
 
-    let server = MockServer::start().await;
+    let server = block_on(MockServer::start());
 
     // First response: agent calls list_files, which is always out of scope.
-    Mock::given(method("POST"))
+    let first_response = Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "choices": [{
@@ -776,19 +778,17 @@ async fn scanner_agent_blocks_out_of_scope_tool_calls_under_incremental_scope() 
             "usage": {"prompt_tokens": 20, "completion_tokens": 10, "total_tokens": 30}
         })))
         .up_to_n_times(1)
-        .expect(1)
-        .mount(&server)
-        .await;
+        .expect(1);
+    block_on(first_response.mount(&server));
 
     // Fallback for all subsequent requests: agent is done.
-    Mock::given(method("POST"))
+    let fallback = Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "choices": [{"message": {"role": "assistant", "content": "Scan complete."}}],
             "usage": {"prompt_tokens": 30, "completion_tokens": 5, "total_tokens": 35}
-        })))
-        .mount(&server)
-        .await;
+        })));
+    block_on(fallback.mount(&server));
 
     let provider = Arc::new(OpenAICompatProvider::new(
         server.uri(),
@@ -810,7 +810,7 @@ async fn scanner_agent_blocks_out_of_scope_tool_calls_under_incremental_scope() 
         CancellationToken::new(),
     )
     .with_incremental_scope(Some(vec!["keep.rs".to_string()]));
-    let result = agent.run().await;
+    let result = block_on(agent.run());
 
     std::env::set_current_dir(&original_cwd).unwrap();
     result.unwrap();
@@ -818,7 +818,7 @@ async fn scanner_agent_blocks_out_of_scope_tool_calls_under_incremental_scope() 
     // The second request carries the tool result for the blocked list_files
     // call. It must show the block message and must NOT show a real
     // directory listing (which would include "secret.rs").
-    let requests = server.received_requests().await.unwrap();
+    let requests = block_on(server.received_requests()).unwrap();
     assert!(
         requests.len() >= 2,
         "expected at least 2 requests, got {}",
@@ -1497,7 +1497,7 @@ async fn orchestrator_incremental_carries_and_reconciles() {
 
     // Provider unused: run with an empty scanner list so no LLM call happens;
     // reconciliation still runs because `incremental` is set and Report is absent.
-    let provider = Arc::new(test_support::NoopProvider::default());
+    let provider = Arc::new(test_support::NoopProvider);
     let (tx, _rx) = mpsc::channel(128);
     let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
     let summary = OrchestratorAgent::new(

@@ -13,8 +13,8 @@ pub struct StateWriter {
     cwe_template: String,
     /// Serializes the findings-file read-modify-write. Phase 2 runs the SAST,
     /// SupplyChain, ApiScan and IaCScan scanners on separate runtime threads,
-    /// all sharing one `Arc<StateWriter>`; `write_finding` (append + read-whole
-    /// + sort + rewrite) and `rewrite_findings` are non-atomic, so without this
+    /// all sharing one `Arc<StateWriter>`. `write_finding` (append, read whole,
+    /// sort, rewrite) and `rewrite_findings` are non-atomic, so without this
     /// lock concurrent calls lose updates — silently dropping findings, up to
     /// and including a Critical, while the scan still reports success.
     findings_lock: std::sync::Mutex<()>,
