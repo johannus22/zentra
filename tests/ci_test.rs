@@ -7,12 +7,14 @@ use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 use zentra_cli::agent::{ScanEvent, ScannerType};
 use zentra_cli::ci::{
-    build_sticky_comment_body, candidate_git_diff_ranges, comment_http_timeout,
-    detect_ci_context_from_env, generate_ci_workflow_at, git_diff_error_with_guidance,
-    gitlab_auth_header_from_env, parse_git_diff_name_only, prepare_comment_request_from_env,
-    redact_token, resolve_fail_threshold, select_impact_files, select_sticky_comment_action,
-    severity_counts, should_fail_ci, write_ci_artifacts, CiCommentPlan, CiContext, CiPlatformKind,
-    GitlabAuthHeader, StickyCommentAction, FAIL_THRESHOLD_ENV,
+    build_sticky_comment_body, build_triage_issue_body, candidate_git_diff_ranges,
+    comment_http_timeout, detect_ci_context_from_env, detect_full_scan_ci_context_from_env,
+    finding_fingerprint, generate_ci_workflow_at, git_diff_error_with_guidance,
+    gitlab_auth_header_from_env, parse_git_diff_name_only, parse_prior_fingerprints,
+    prepare_comment_request_from_env, publish_triage_issue_best_effort, redact_token,
+    resolve_fail_threshold, select_impact_files, select_sticky_comment_action, severity_counts,
+    should_fail_ci, write_ci_artifacts, CiCommentPlan, CiContext, CiPlatformKind, GitlabAuthHeader,
+    StickyCommentAction, TRIAGE_ISSUE_MARKER, FAIL_THRESHOLD_ENV,
 };
 use zentra_cli::commands::ci::{
     build_ci_focus_context, run_headless_scan_with_provider, select_ci_scanners,
@@ -128,7 +130,7 @@ fn writes_ci_markdown_and_json_artifacts_with_summary_shape() {
         sample_finding(Severity::High, "Missing authorization"),
     ];
 
-    let paths = write_ci_artifacts(dir.path(), &context, &findings, Severity::Critical).unwrap();
+    let paths = write_ci_artifacts(dir.path(), &context, &findings, Severity::Critical, None).unwrap();
 
     assert_eq!(
         paths.markdown,
@@ -665,6 +667,7 @@ async fn ci_focus_context_is_injected_with_architecture_context() {
         dir.path(),
         vec![ScannerType::Sast],
         Some(focus_context),
+        false,
     )
     .await
     .unwrap();
@@ -718,6 +721,7 @@ async fn headless_ci_scan_collects_events_without_tui() {
         Path::new(dir.path()),
         vec![ScannerType::ThreatModel, ScannerType::Report],
         None,
+        false,
     )
     .await
     .unwrap();
@@ -743,6 +747,7 @@ async fn headless_ci_scan_runs_framework_analysis_first_when_architecture_is_mis
         Path::new(dir.path()),
         vec![ScannerType::ThreatModel, ScannerType::Report],
         None,
+        false,
     )
     .await
     .unwrap();
@@ -777,6 +782,7 @@ async fn headless_ci_scan_does_not_add_framework_analysis_when_architecture_exis
         Path::new(dir.path()),
         vec![ScannerType::ThreatModel, ScannerType::Report],
         None,
+        false,
     )
     .await
     .unwrap();
@@ -853,4 +859,601 @@ fn does_not_overwrite_existing_gitlab_ci() {
         std::fs::read_to_string(workflow_path).unwrap(),
         "existing: true\n"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Full-scan + report-only / GitLab triage ticket
+// ---------------------------------------------------------------------------
+
+fn gitlab_push_env(branch: &str) -> HashMap<String, String> {
+    HashMap::from([
+        ("GITLAB_CI".to_string(), "true".to_string()),
+        ("CI_PIPELINE_SOURCE".to_string(), "push".to_string()),
+        ("CI_COMMIT_BRANCH".to_string(), branch.to_string()),
+        ("CI_COMMIT_SHA".to_string(), "feedface".to_string()),
+        ("CI_PROJECT_ID".to_string(), "42".to_string()),
+    ])
+}
+
+fn triage_context(branch: &str) -> CiContext {
+    CiContext {
+        platform: CiPlatformKind::Gitlab,
+        base_ref: branch.to_string(),
+        head_ref: branch.to_string(),
+        changed_files: vec![],
+        impact_files: vec![],
+        commit_sha: Some("feedface".to_string()),
+        pr_or_mr_number: None,
+    }
+}
+
+fn triage_finding(severity: Severity, title: &str, location: &str) -> Finding {
+    Finding {
+        scanner: "sast".to_string(),
+        severity,
+        title: title.to_string(),
+        description: "User input reaches a dangerous sink.".to_string(),
+        location: Some(location.to_string()),
+        recommendation: "Validate and sanitize the input.".to_string(),
+        corroborated_by: vec![],
+        cwe: Some("CWE-89".to_string()),
+        secondary_cwe: vec![],
+        cvss_vector: None,
+        cvss_score: None,
+        owasp: None,
+        confidence: None,
+        screening: None,
+    }
+}
+
+#[test]
+fn fingerprint_is_stable_across_calls_and_distinct_across_inputs() {
+    let f = triage_finding(Severity::Critical, "SQL injection", "src/db.rs:10");
+    let fp1 = finding_fingerprint(&f);
+    let fp2 = finding_fingerprint(&f);
+
+    assert_eq!(fp1, fp2, "fingerprint must be deterministic");
+    assert_eq!(fp1.len(), 16, "fingerprint must be 16 hex chars");
+
+    let mut moved = f.clone();
+    moved.title = "SQL injection v2".to_string();
+    assert_ne!(finding_fingerprint(&moved), fp1, "title change must change fp");
+
+    let mut moved = f.clone();
+    moved.location = Some("src/db.rs:99".to_string());
+    assert_ne!(
+        finding_fingerprint(&moved),
+        fp1,
+        "location change must change fp"
+    );
+
+    let mut moved = f.clone();
+    moved.scanner = "iac_scan".to_string();
+    assert_ne!(
+        finding_fingerprint(&moved),
+        fp1,
+        "scanner change must change fp"
+    );
+}
+
+#[test]
+fn parse_prior_fingerprints_returns_empty_for_garbage_bodies() {
+    assert!(parse_prior_fingerprints("just prose, no marker").is_empty());
+    assert!(parse_prior_fingerprints("<!-- zentra-fingerprints: not json -->").is_empty());
+    assert!(parse_prior_fingerprints("<!-- zentra-fingerprints: [1, 2").is_empty());
+}
+
+#[test]
+fn triage_body_roundtrips_fingerprints_and_lists_only_new_findings() {
+    let context = triage_context("staging");
+    let findings = vec![
+        triage_finding(Severity::Critical, "SQL injection", "src/db.rs:10"),
+        triage_finding(Severity::High, "Missing authz", "src/api.rs:4"),
+    ];
+
+    // Simulate a second run where only the High finding is new.
+    let critical_fp = finding_fingerprint(&findings[0]);
+    let new_fingerprints = vec![finding_fingerprint(&findings[1])];
+
+    let body = build_triage_issue_body(&context, &findings, &new_fingerprints);
+
+    // Marker present.
+    assert!(body.contains(TRIAGE_ISSUE_MARKER), "{body}");
+
+    // "New since last run" lists only the new (High) finding. The full findings
+    // table below legitimately still contains the old one, so scope the check to
+    // the section between the header and the "All findings" table.
+    let new_section = body
+        .split("## New since last run")
+        .nth(1)
+        .and_then(|s| s.split("## All findings").next())
+        .unwrap_or("");
+    assert!(new_section.contains("Missing authz"), "{new_section}");
+    assert!(
+        !new_section.contains("SQL injection"),
+        "old finding must not be listed as new: {new_section}"
+    );
+
+    // The full findings table still holds every finding.
+    let all_section = body.split("## All findings").nth(1).unwrap_or("");
+    assert!(all_section.contains("SQL injection"), "{all_section}");
+    assert!(all_section.contains("Missing authz"), "{all_section}");
+
+    // Hidden fingerprints comment holds ALL current fingerprints.
+    let parsed = parse_prior_fingerprints(&body);
+    assert_eq!(parsed.len(), 2, "{parsed:?}");
+    assert!(parsed.contains(&critical_fp), "{parsed:?}");
+}
+
+#[test]
+fn triage_body_with_zero_findings_states_clean_scan() {
+    let context = triage_context("staging");
+    let body = build_triage_issue_body(&context, &[], &[]);
+
+    assert!(body.contains(TRIAGE_ISSUE_MARKER), "{body}");
+    assert!(body.contains("clean"), "{body}");
+    // Fingerprints array is present but empty.
+    let parsed = parse_prior_fingerprints(&body);
+    assert!(parsed.is_empty(), "{parsed:?}");
+}
+
+#[test]
+fn gitlab_push_pipeline_accepted_when_push_allowed() {
+    let env = gitlab_push_env("staging");
+
+    let context = detect_full_scan_ci_context_from_env(&env, true).unwrap();
+
+    assert_eq!(context.platform, CiPlatformKind::Gitlab);
+    assert_eq!(context.base_ref, "staging");
+    assert_eq!(context.head_ref, "staging");
+    assert_eq!(context.commit_sha.as_deref(), Some("feedface"));
+    assert!(context.pr_or_mr_number.is_none());
+    assert!(context.changed_files.is_empty());
+    assert!(context.impact_files.is_empty());
+}
+
+#[test]
+fn gitlab_push_pipeline_rejected_when_push_not_allowed() {
+    let env = gitlab_push_env("staging");
+
+    let err = detect_full_scan_ci_context_from_env(&env, false).unwrap_err();
+
+    assert_eq!(
+        err.to_string(),
+        "Zentra CI supports pull request and merge request pipelines only."
+    );
+}
+
+#[test]
+fn gitlab_mr_pipeline_path_unchanged_for_full_scan() {
+    // A merge request env (with CI_MERGE_REQUEST_IID) is still accepted by the
+    // full-scan path even without push — the MR path is the default.
+    let env = HashMap::from([
+        ("GITLAB_CI".to_string(), "true".to_string()),
+        ("CI_MERGE_REQUEST_IID".to_string(), "7".to_string()),
+        (
+            "CI_MERGE_REQUEST_TARGET_BRANCH_NAME".to_string(),
+            "main".to_string(),
+        ),
+        (
+            "CI_MERGE_REQUEST_SOURCE_BRANCH_NAME".to_string(),
+            "feature/x".to_string(),
+        ),
+        ("CI_COMMIT_SHA".to_string(), "abc".to_string()),
+    ]);
+
+    let context = detect_full_scan_ci_context_from_env(&env, false).unwrap();
+
+    assert_eq!(context.platform, CiPlatformKind::Gitlab);
+    assert_eq!(context.pr_or_mr_number.as_deref(), Some("7"));
+    assert_eq!(context.base_ref, "main");
+    assert_eq!(context.head_ref, "feature/x");
+}
+
+#[test]
+fn gitlab_ci_workflow_includes_staging_full_scan_job() {
+    let dir = TempDir::new().unwrap();
+
+    generate_ci_workflow_at(dir.path(), CiPlatformKind::Gitlab).unwrap();
+
+    let workflow = std::fs::read_to_string(dir.path().join(".gitlab-ci.yml")).unwrap();
+    assert!(workflow.contains("zentra_full_scan_staging:"), "{workflow}");
+    assert!(workflow.contains("CI_COMMIT_BRANCH == \"staging\""), "{workflow}");
+    assert!(workflow.contains("allow_failure: true"), "{workflow}");
+    assert!(workflow.contains("zentra ci --full --report-only"), "{workflow}");
+    // Original MR job is still present.
+    assert!(workflow.contains("zentra_security_scan:"), "{workflow}");
+    assert!(workflow.contains("merge_request_event"), "{workflow}");
+}
+
+#[test]
+fn ci_report_includes_triage_note_line_when_provided() {
+    let dir = TempDir::new().unwrap();
+    let context = sample_context();
+
+    let paths = write_ci_artifacts(
+        dir.path(),
+        &context,
+        &[sample_finding(Severity::Critical, "SQL injection")],
+        Severity::Critical,
+        Some("created issue #99"),
+    )
+    .unwrap();
+
+    let markdown = std::fs::read_to_string(paths.markdown).unwrap();
+    assert!(markdown.contains("Triage ticket: created issue #99"), "{markdown}");
+}
+
+#[test]
+fn ci_report_omits_triage_note_line_when_none() {
+    let dir = TempDir::new().unwrap();
+    let context = sample_context();
+
+    let paths = write_ci_artifacts(
+        dir.path(),
+        &context,
+        &[sample_finding(Severity::Critical, "SQL injection")],
+        Severity::Critical,
+        None,
+    )
+    .unwrap();
+
+    let markdown = std::fs::read_to_string(paths.markdown).unwrap();
+    assert!(!markdown.contains("Triage ticket:"), "{markdown}");
+}
+
+#[tokio::test]
+async fn triage_creates_issue_when_no_sticky_exists() {
+    use wiremock::matchers::{header, method, path, query_param};
+
+    let server = wiremock::MockServer::start().await;
+
+    // No open issues with our label yet.
+    wiremock::Mock::given(method("GET"))
+        .and(path("/projects/42/issues"))
+        .and(query_param("labels", "zentra-triage"))
+        .and(query_param("state", "opened"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("[]"))
+        .mount(&server)
+        .await;
+
+    // Token-owner lookup → id 55.
+    wiremock::Mock::given(method("GET"))
+        .and(path("/user"))
+        .and(header("Authorization", "Bearer glpat-secret"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(r#"{"id":55,"username":"sec"}"#))
+        .mount(&server)
+        .await;
+
+    // Issue creation → iid 12.
+    wiremock::Mock::given(method("POST"))
+        .and(path("/projects/42/issues"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(201)
+                .set_body_string(r#"{"iid":12,"title":"x"}"#),
+        )
+        .mount(&server)
+        .await;
+
+    let context = triage_context("staging");
+    let env_set = env_with_token("glpat-secret", &server.uri());
+    let _guard = set_triage_env(&env_set);
+
+    let findings = vec![triage_finding(Severity::High, "Missing authz", "src/api.rs:4")];
+    let note = publish_triage_issue_best_effort(&context, &findings)
+        .await
+        .unwrap();
+
+    assert_eq!(note, "created issue #12");
+
+    // The POST body must carry the labels and the resolved assignee id.
+    let posts: Vec<wiremock::Request> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.method.as_str() == "POST" && r.url.as_str().contains("/projects/42/issues"))
+        .collect();
+    assert_eq!(posts.len(), 1);
+    let body = String::from_utf8_lossy(&posts[0].body);
+    assert!(body.contains("\"labels\":\"security,zentra-triage\""), "{body}");
+    assert!(body.contains("\"assignee_ids\":[55]"), "{body}");
+    assert!(body.contains(TRIAGE_ISSUE_MARKER), "{body}");
+}
+
+#[tokio::test]
+async fn triage_updates_existing_sticky_issue() {
+    use wiremock::matchers::{method, path};
+
+    let server = wiremock::MockServer::start().await;
+
+    // The sticky issue already exists, with a prior fingerprint for the old
+    // finding so only the new one is flagged as "new". Build the response body
+    // via serde_json to avoid raw-string brace escaping mistakes.
+    let prior_body = format!(
+        "{TRIAGE_ISSUE_MARKER}\nold\n<!-- zentra-fingerprints: [\"{}\"] -->",
+        finding_fingerprint(&triage_finding(Severity::Critical, "OLD", "src/x.rs:1"))
+    );
+    let issues_body = serde_json::json!([{
+        "iid": 33,
+        "description": prior_body,
+    }])
+    .to_string();
+    wiremock::Mock::given(method("GET"))
+        .and(path("/projects/42/issues"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(issues_body))
+        .mount(&server)
+        .await;
+
+    wiremock::Mock::given(method("GET"))
+        .and(path("/user"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(r#"{"id":7}"#))
+        .mount(&server)
+        .await;
+
+    // PUT update on the existing iid.
+    wiremock::Mock::given(method("PUT"))
+        .and(path("/projects/42/issues/33"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(r#"{"iid":33}"#))
+        .mount(&server)
+        .await;
+
+    let context = triage_context("staging");
+    let env_set = env_with_token("glpat-secret", &server.uri());
+    let _guard = set_triage_env(&env_set);
+
+    let findings = vec![
+        triage_finding(Severity::Critical, "OLD", "src/x.rs:1"),
+        triage_finding(Severity::High, "NEW", "src/y.rs:2"),
+    ];
+    let note = publish_triage_issue_best_effort(&context, &findings)
+        .await
+        .unwrap();
+
+    assert_eq!(note, "updated issue #33");
+
+    // Exactly one PUT to the right iid, and no POST (no create).
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests.iter().any(|r| r.method.as_str() == "PUT"
+            && r.url.as_str().contains("/projects/42/issues/33")),
+        "expected a PUT to /projects/42/issues/33"
+    );
+    assert!(
+        !requests.iter().any(|r| r.method.as_str() == "POST"),
+        "must not POST-create when a sticky issue exists"
+    );
+}
+
+#[tokio::test]
+async fn triage_assignee_resolution_uses_env_username_lookup() {
+    use wiremock::matchers::{method, path, query_param};
+
+    let server = wiremock::MockServer::start().await;
+
+    wiremock::Mock::given(method("GET"))
+        .and(path("/projects/42/issues"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("[]"))
+        .mount(&server)
+        .await;
+
+    // ZENTRA_TRIAGE_ASSIGNEE path: GET /users?username=sec-engineer → id 88.
+    wiremock::Mock::given(method("GET"))
+        .and(path("/users"))
+        .and(query_param("username", "sec-engineer"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_string(r#"[{"id":88,"username":"sec-engineer"}]"#),
+        )
+        .mount(&server)
+        .await;
+
+    wiremock::Mock::given(method("POST"))
+        .and(path("/projects/42/issues"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(201).set_body_string(r#"{"iid":5}"#),
+        )
+        .mount(&server)
+        .await;
+
+    let context = triage_context("staging");
+    let mut env_set = env_with_token("glpat-secret", &server.uri());
+    env_set.insert(
+        "ZENTRA_TRIAGE_ASSIGNEE".to_string(),
+        "sec-engineer".to_string(),
+    );
+    let _guard = set_triage_env(&env_set);
+
+    let note = publish_triage_issue_best_effort(
+        &context,
+        &[triage_finding(Severity::High, "X", "a.rs:1")],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(note, "created issue #5");
+
+    let posts: Vec<wiremock::Request> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.method.as_str() == "POST")
+        .collect();
+    let body = String::from_utf8_lossy(&posts[0].body);
+    assert!(body.contains("\"assignee_ids\":[88]"), "{body}");
+}
+
+#[tokio::test]
+async fn triage_skips_without_token_and_makes_no_http_calls() {
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::any())
+        .respond_with(wiremock::ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
+
+    let context = triage_context("staging");
+    // No GITLAB_TOKEN, no CI_JOB_TOKEN.
+    let mut env_set = HashMap::new();
+    env_set.insert("CI_API_V4_URL".to_string(), server.uri());
+    env_set.insert("CI_PROJECT_ID".to_string(), "42".to_string());
+    let _guard = set_triage_env(&env_set);
+
+    let note = publish_triage_issue_best_effort(
+        &context,
+        &[triage_finding(Severity::High, "X", "a.rs:1")],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(note, "not created (no GitLab token configured)");
+    // No request should have hit the server.
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn triage_proceeds_with_only_zentra_gitlab_token_set() {
+    use wiremock::matchers::{header, method, path, query_param};
+
+    let server = wiremock::MockServer::start().await;
+
+    // No open sticky issue yet → create path.
+    wiremock::Mock::given(method("GET"))
+        .and(path("/projects/42/issues"))
+        .and(query_param("labels", "zentra-triage"))
+        .and(query_param("state", "opened"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("[]"))
+        .mount(&server)
+        .await;
+
+    // Token-owner lookup must be authenticated with the ZENTRA_GITLAB_TOKEN
+    // value as a Bearer token — proving the dedicated var is what we sent.
+    wiremock::Mock::given(method("GET"))
+        .and(path("/user"))
+        .and(header("Authorization", "Bearer zentra-pat-secret"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(r#"{"id":9,"username":"owner"}"#))
+        .mount(&server)
+        .await;
+
+    wiremock::Mock::given(method("POST"))
+        .and(path("/projects/42/issues"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(201).set_body_string(r#"{"iid":77,"title":"x"}"#),
+        )
+        .mount(&server)
+        .await;
+
+    let context = triage_context("staging");
+    // Only ZENTRA_GITLAB_TOKEN is set; GITLAB_TOKEN and CI_JOB_TOKEN are absent.
+    let mut env_set = HashMap::new();
+    env_set.insert(
+        "ZENTRA_GITLAB_TOKEN".to_string(),
+        "zentra-pat-secret".to_string(),
+    );
+    env_set.insert("CI_API_V4_URL".to_string(), server.uri());
+    env_set.insert("CI_PROJECT_ID".to_string(), "42".to_string());
+    let _guard = set_triage_env(&env_set);
+
+    let note = publish_triage_issue_best_effort(
+        &context,
+        &[triage_finding(Severity::High, "Missing authz", "src/api.rs:4")],
+    )
+    .await
+    .unwrap();
+
+    // The publish path proceeded (did not skip) and created the issue.
+    assert_eq!(note, "created issue #77");
+
+    // At least one POST hit the server — proving token resolution succeeded
+    // with only the dedicated var set.
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests.iter().any(|r| r.method.as_str() == "POST"),
+        "expected a POST create request; got: {:?}",
+        requests.iter().map(|r| r.method.as_str().to_string()).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn triage_skips_creation_when_no_findings_and_no_sticky() {
+    use wiremock::matchers::{method, path};
+
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(method("GET"))
+        .and(path("/projects/42/issues"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("[]"))
+        .mount(&server)
+        .await;
+
+    let context = triage_context("staging");
+    let env_set = env_with_token("glpat-secret", &server.uri());
+    let _guard = set_triage_env(&env_set);
+
+    let note = publish_triage_issue_best_effort(&context, &[]).await.unwrap();
+    assert_eq!(note, "skipped (no findings)");
+
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        !requests.iter().any(|r| r.method.as_str() == "POST"),
+        "must not create an issue when there are no findings"
+    );
+}
+
+/// Build a GitLab env map with a token and an API URL pointed at the mock.
+fn env_with_token(token: &str, api_url: &str) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    env.insert("GITLAB_TOKEN".to_string(), token.to_string());
+    env.insert("CI_API_V4_URL".to_string(), api_url.to_string());
+    env.insert("CI_PROJECT_ID".to_string(), "42".to_string());
+    env
+}
+
+/// Sets the process env from `env` for the duration of the guard, restoring the
+/// prior values on drop. Holds a process-wide lock so concurrent env-mutating
+/// triage tests do not race. The stored `MutexGuard` makes the guard `!Send`;
+/// that is fine because these tests use the default current-thread tokio runtime.
+struct TriageEnvGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    saved: HashMap<String, Option<String>>,
+}
+
+static TRIAGE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn set_triage_env(env: &HashMap<String, String>) -> TriageEnvGuard {
+    // Recover from poison: if a prior test panicked while holding this lock,
+    // we still need to run. Test isolation is preserved by the save/restore below.
+    let lock = TRIAGE_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let keys = [
+        "GITLAB_TOKEN",
+        "CI_JOB_TOKEN",
+        "CI_API_V4_URL",
+        "CI_PROJECT_ID",
+        "ZENTRA_TRIAGE_ASSIGNEE",
+        "ZENTRA_GITLAB_TOKEN",
+    ];
+    let mut saved = HashMap::new();
+    for key in keys {
+        saved.insert(key.to_string(), std::env::var(key).ok());
+        std::env::remove_var(key);
+    }
+    for (k, v) in env {
+        std::env::set_var(k, v);
+    }
+    TriageEnvGuard {
+        _lock: lock,
+        saved,
+    }
+}
+
+impl Drop for TriageEnvGuard {
+    fn drop(&mut self) {
+        for (k, v) in &self.saved {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
 }
