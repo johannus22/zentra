@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     Critical,
@@ -31,6 +31,17 @@ impl Severity {
             Severity::Medium => 2,
             Severity::Low => 3,
             Severity::Info => 4,
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "critical" => Some(Severity::Critical),
+            "high" => Some(Severity::High),
+            "medium" => Some(Severity::Medium),
+            "low" => Some(Severity::Low),
+            "info" => Some(Severity::Info),
+            _ => None,
         }
     }
 }

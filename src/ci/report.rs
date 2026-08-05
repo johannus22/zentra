@@ -25,6 +25,7 @@ pub struct SeverityCounts {
 #[derive(Serialize)]
 struct CiJsonReport<'a> {
     context: CiJsonContext<'a>,
+    fail_threshold: String,
     summary: SeverityCounts,
     findings: &'a [Finding],
 }
@@ -47,6 +48,7 @@ pub fn write_ci_artifacts(
     project_root: &Path,
     context: &CiContext,
     findings: &[Finding],
+    fail_threshold: Severity,
 ) -> Result<CiArtifactPaths> {
     let output_dir = project_root.join(".zentra");
     fs::create_dir_all(&output_dir)?;
@@ -54,11 +56,15 @@ pub fn write_ci_artifacts(
     let markdown = output_dir.join("ci-report.md");
     let json = output_dir.join("ci-report.json");
 
-    fs::write(&markdown, render_markdown_report(context, findings))?;
+    fs::write(
+        &markdown,
+        render_markdown_report(context, findings, fail_threshold),
+    )?;
     fs::write(
         &json,
         serde_json::to_string_pretty(&CiJsonReport {
             context: json_context(context),
+            fail_threshold: fail_threshold.to_string(),
             summary: severity_counts(findings),
             findings,
         })?,
@@ -81,16 +87,21 @@ pub fn severity_counts(findings: &[Finding]) -> SeverityCounts {
     counts
 }
 
-fn render_markdown_report(context: &CiContext, findings: &[Finding]) -> String {
+fn render_markdown_report(
+    context: &CiContext,
+    findings: &[Finding],
+    fail_threshold: Severity,
+) -> String {
     let counts = severity_counts(findings);
     let mut report = format!(
-        "# Zentra CI Security Report\n\n## CI Summary\n\nPlatform: {}\nScope: PR/MR {}\nBase: {}\nHead: {}\nChanged files: {}\nImpact files: {}\n\n## Severity Summary\n\nCritical: {}\nHigh: {}\nMedium: {}\nLow: {}\nInfo: {}\n\n## Findings\n\n",
+        "# Zentra CI Security Report\n\n## CI Summary\n\nPlatform: {}\nScope: PR/MR {}\nBase: {}\nHead: {}\nChanged files: {}\nImpact files: {}\nFail threshold: {}\n\n## Severity Summary\n\nCritical: {}\nHigh: {}\nMedium: {}\nLow: {}\nInfo: {}\n\n## Findings\n\n",
         context.platform.as_str(),
         context.pr_or_mr_number.as_deref().unwrap_or("unknown"),
         context.base_ref,
         context.head_ref,
         context.changed_files.len(),
         context.impact_files.len(),
+        fail_threshold,
         counts.critical,
         counts.high,
         counts.medium,

@@ -19,7 +19,7 @@ pub use diff::{
     candidate_git_diff_ranges, changed_files_from_git, git_diff_error_with_guidance,
     missing_history_guidance, parse_git_diff_name_only,
 };
-pub use exit::should_fail_ci;
+pub use exit::{resolve_fail_threshold, should_fail_ci, FAIL_THRESHOLD_ENV};
 pub use impact::select_impact_files;
 pub(crate) use platform::extract_ci_metadata_from_current_env;
 pub use platform::{

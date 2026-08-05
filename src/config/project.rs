@@ -18,6 +18,13 @@ pub struct ProjectConfig {
     pub target_path: String,
     pub stack: String,
     pub exclusions: Vec<String>,
+    /// Minimum severity that fails `zentra ci` (blocks the PR/MR): one of
+    /// critical/high/medium/low/info, case-insensitive. `None` — including
+    /// every config written before this field existed — means the default,
+    /// High (blocks High and Critical findings). `ZENTRA_CI_FAIL_THRESHOLD`
+    /// overrides this at CI runtime; see `ci::resolve_fail_threshold`.
+    #[serde(default)]
+    pub fail_threshold: Option<String>,
 }
 
 impl ProjectConfig {
@@ -26,6 +33,7 @@ impl ProjectConfig {
             target_path: ".".to_string(),
             stack: stack.to_string(),
             exclusions,
+            fail_threshold: None,
         }
     }
 

@@ -118,7 +118,44 @@ zentra ci
 5. Runs focused security scanners, with no TUI.
 6. Writes CI artifacts.
 7. Tries to post a sticky PR/MR comment, when platform token metadata is available. This step is best-effort.
-8. Fails only for two reasons: Critical findings, or a scanner or system failure.
+8. Fails only for two reasons: findings at or above the fail threshold, or a scanner or system failure.
+
+### Fail threshold (blocking severity)
+
+By default, `zentra ci` blocks the PR/MR on any **Critical or High** finding. Medium, Low, and Info findings are reported but do not fail the job.
+
+The threshold is configurable, in order of precedence:
+
+1. `ZENTRA_CI_FAIL_THRESHOLD` environment variable — set this in the CI job or as a repo/group secret. Takes one of `critical`, `high`, `medium`, `low`, `info` (case-insensitive).
+2. `fail_threshold` field in `.zentra/config.json` — commit this to persist the policy for every run, without touching pipeline config.
+3. Default: `high` (blocks High and Critical).
+
+Example — only block on Critical, in GitHub Actions:
+
+```yaml
+- name: Run Zentra CI
+  env:
+    ZENTRA_API_KEY: ${{ secrets.ZENTRA_API_KEY }}
+    ZENTRA_PROVIDER_BASE_URL: ${{ secrets.ZENTRA_PROVIDER_BASE_URL }}
+    ZENTRA_PROVIDER_MODEL: ${{ vars.ZENTRA_PROVIDER_MODEL }}
+    ZENTRA_CI_FAIL_THRESHOLD: critical
+  run: zentra ci
+```
+
+Example — persist the same policy in `.zentra/config.json` instead:
+
+```json
+{
+  "target_path": ".",
+  "stack": "rust",
+  "exclusions": [],
+  "fail_threshold": "critical"
+}
+```
+
+Set `critical` to block on Critical findings only. This is more permissive than the default.
+
+Set `medium`, `low`, or `info` to block on lower-severity findings too. This is stricter than the default.
 
 ### Generate GitHub Actions workflow
 
@@ -153,6 +190,7 @@ The generated workflow does the following:
 | `ZENTRA_PROVIDER_KIND` | no | Defaults to `openai_compat`. Set to `anthropic` to use the native Anthropic provider. |
 | `ZENTRA_PROVIDER_REASONING_EFFORT` | no | Passes through to OpenAI-compatible providers. |
 | `ZENTRA_PROVIDER_CONTEXT_WINDOW` | no | Overrides the provider's default context window. |
+| `ZENTRA_CI_FAIL_THRESHOLD` | no | Minimum severity that blocks the PR. Defaults to `high`. See [Fail threshold](#fail-threshold-blocking-severity). |
 
 If none of `ZENTRA_API_KEY`, `ZENTRA_PROVIDER_BASE_URL`, or `ZENTRA_PROVIDER_MODEL` are set, `zentra ci` falls back to the profile you configured with `zentra config setup`, in `~/.zentra/config.toml`.
 
@@ -204,17 +242,19 @@ The reports include:
 
 ### CI exit policy
 
-Default CI policy:
+Default CI policy (no `ZENTRA_CI_FAIL_THRESHOLD` and no `fail_threshold` in `.zentra/config.json`):
 
 | Result | Pipeline behavior |
 | --- | --- |
 | Critical findings | Fail |
-| High findings | Warn/pass |
+| High findings | Fail |
 | Medium findings | Warn/pass |
 | Low findings | Warn/pass |
 | Scanner/system failure | Fail |
 
-This policy keeps CI useful, without blocking teams for every warning.
+This is the fail threshold, and it is configurable. See [Fail threshold](#fail-threshold-blocking-severity) above to change it, for example to fail only on Critical, or to also fail on Medium.
+
+The default keeps CI useful without blocking teams on every Medium or Low warning, while still catching the two severities worth an automatic stop.
 
 ### Architecture context in CI
 
