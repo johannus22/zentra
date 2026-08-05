@@ -239,12 +239,8 @@ fn find_close_tag_outside_cdata(s: &str) -> Option<usize> {
                 if cdata_body_start >= s.len() {
                     return None;
                 }
-                match s[cdata_body_start..].find(CDATA_END) {
-                    None => return None,
-                    Some(e) => {
-                        pos = cdata_body_start + e + CDATA_END.len();
-                    }
-                }
+                let e = s[cdata_body_start..].find(CDATA_END)?;
+                pos = cdata_body_start + e + CDATA_END.len();
             }
         }
     }

@@ -10,13 +10,14 @@ use zentra_cli::ci::{
     build_sticky_comment_body, candidate_git_diff_ranges, comment_http_timeout,
     detect_ci_context_from_env, generate_ci_workflow_at, git_diff_error_with_guidance,
     gitlab_auth_header_from_env, parse_git_diff_name_only, prepare_comment_request_from_env,
-    redact_token, select_impact_files, select_sticky_comment_action, severity_counts,
-    should_fail_ci, write_ci_artifacts, CiCommentPlan, CiContext, CiPlatformKind, GitlabAuthHeader,
-    StickyCommentAction,
+    redact_token, resolve_fail_threshold, select_impact_files, select_sticky_comment_action,
+    severity_counts, should_fail_ci, write_ci_artifacts, CiCommentPlan, CiContext, CiPlatformKind,
+    GitlabAuthHeader, StickyCommentAction, FAIL_THRESHOLD_ENV,
 };
 use zentra_cli::commands::ci::{
     build_ci_focus_context, run_headless_scan_with_provider, select_ci_scanners,
 };
+use zentra_cli::config::ProjectConfig;
 use zentra_cli::provider::{
     AgentMessage, CompletionRequest, CompletionResponse, LLMProvider, TokenUsage, ToolDefinition,
 };
@@ -127,7 +128,7 @@ fn writes_ci_markdown_and_json_artifacts_with_summary_shape() {
         sample_finding(Severity::High, "Missing authorization"),
     ];
 
-    let paths = write_ci_artifacts(dir.path(), &context, &findings).unwrap();
+    let paths = write_ci_artifacts(dir.path(), &context, &findings, Severity::Critical).unwrap();
 
     assert_eq!(
         paths.markdown,
@@ -146,6 +147,7 @@ fn writes_ci_markdown_and_json_artifacts_with_summary_shape() {
     assert!(markdown.contains("Head: feature/auth"));
     assert!(markdown.contains("Changed files: 2"));
     assert!(markdown.contains("Impact files: 2"));
+    assert!(markdown.contains("Fail threshold: CRITICAL"));
     assert!(markdown.contains("Critical: 1"));
     assert!(markdown.contains("High: 1"));
     assert!(markdown.contains("SQL injection"));
@@ -158,6 +160,7 @@ fn writes_ci_markdown_and_json_artifacts_with_summary_shape() {
     assert_eq!(json["context"]["head_ref"], "feature/auth");
     assert_eq!(json["context"]["changed_files_count"], 2);
     assert_eq!(json["context"]["impact_files_count"], 2);
+    assert_eq!(json["fail_threshold"], "CRITICAL");
     assert_eq!(json["summary"]["critical"], 1);
     assert_eq!(json["summary"]["high"], 1);
     assert_eq!(json["findings"][0]["title"], "SQL injection");
@@ -194,6 +197,90 @@ fn critical_only_exit_policy_fails_but_high_only_passes() {
 }
 
 #[test]
+fn high_threshold_also_fails_on_high_findings() {
+    assert!(should_fail_ci(
+        &[sample_finding(Severity::High, "high")],
+        Severity::High
+    ));
+    assert!(should_fail_ci(
+        &[sample_finding(Severity::Critical, "critical")],
+        Severity::High
+    ));
+    assert!(!should_fail_ci(
+        &[sample_finding(Severity::Medium, "medium")],
+        Severity::High
+    ));
+}
+
+#[test]
+fn severity_parse_is_case_insensitive_and_rejects_unknown_values() {
+    assert_eq!(Severity::parse("critical").unwrap().order(), 0);
+    assert_eq!(Severity::parse("HIGH").unwrap().order(), 1);
+    assert_eq!(Severity::parse("  Medium  ").unwrap().order(), 2);
+    assert_eq!(Severity::parse("low").unwrap().order(), 3);
+    assert_eq!(Severity::parse("info").unwrap().order(), 4);
+    assert!(Severity::parse("severe").is_none());
+    assert!(Severity::parse("").is_none());
+}
+
+fn project_config_with_threshold(threshold: Option<&str>) -> ProjectConfig {
+    ProjectConfig {
+        target_path: ".".to_string(),
+        stack: "rust".to_string(),
+        exclusions: vec![],
+        fail_threshold: threshold.map(str::to_string),
+    }
+}
+
+#[test]
+fn resolve_fail_threshold_defaults_to_high_when_unset() {
+    let env = HashMap::new();
+    let cfg = project_config_with_threshold(None);
+
+    assert_eq!(resolve_fail_threshold(&env, &cfg).unwrap(), Severity::High);
+}
+
+#[test]
+fn resolve_fail_threshold_honors_project_config_over_default() {
+    let env = HashMap::new();
+    let cfg = project_config_with_threshold(Some("medium"));
+
+    assert_eq!(
+        resolve_fail_threshold(&env, &cfg).unwrap(),
+        Severity::Medium
+    );
+}
+
+#[test]
+fn resolve_fail_threshold_env_overrides_project_config() {
+    let env = HashMap::from([(FAIL_THRESHOLD_ENV.to_string(), "critical".to_string())]);
+    let cfg = project_config_with_threshold(Some("low"));
+
+    assert_eq!(
+        resolve_fail_threshold(&env, &cfg).unwrap(),
+        Severity::Critical
+    );
+}
+
+#[test]
+fn resolve_fail_threshold_rejects_invalid_env_value() {
+    let env = HashMap::from([(FAIL_THRESHOLD_ENV.to_string(), "yolo".to_string())]);
+    let cfg = project_config_with_threshold(None);
+
+    let err = resolve_fail_threshold(&env, &cfg).unwrap_err();
+    assert!(err.to_string().contains(FAIL_THRESHOLD_ENV));
+}
+
+#[test]
+fn resolve_fail_threshold_rejects_invalid_project_config_value() {
+    let env = HashMap::new();
+    let cfg = project_config_with_threshold(Some("yolo"));
+
+    let err = resolve_fail_threshold(&env, &cfg).unwrap_err();
+    assert!(err.to_string().contains("fail_threshold"));
+}
+
+#[test]
 fn comment_request_skips_without_token_or_pr_metadata_and_redacts_tokens() {
     let context = CiContext {
         pr_or_mr_number: None,
@@ -201,7 +288,7 @@ fn comment_request_skips_without_token_or_pr_metadata_and_redacts_tokens() {
     };
     let env = HashMap::new();
 
-    let plan = prepare_comment_request_from_env(&env, &context, &[]);
+    let plan = prepare_comment_request_from_env(&env, &context, &[], Severity::Critical);
 
     assert!(matches!(plan, CiCommentPlan::Skip { reason } if reason.contains("token")));
     assert_eq!(redact_token("ghp_secret-token"), "[redacted]");
@@ -211,7 +298,7 @@ fn comment_request_skips_without_token_or_pr_metadata_and_redacts_tokens() {
 fn github_comment_request_skips_without_repository_metadata_and_redacts_token() {
     let env = HashMap::from([("GITHUB_TOKEN".to_string(), "ghp_secret-token".to_string())]);
 
-    let plan = prepare_comment_request_from_env(&env, &sample_context(), &[]);
+    let plan = prepare_comment_request_from_env(&env, &sample_context(), &[], Severity::Critical);
 
     match plan {
         CiCommentPlan::Skip { reason } => {
@@ -231,7 +318,7 @@ fn gitlab_comment_request_skips_without_project_metadata_and_redacts_token() {
     };
     let env = HashMap::from([("GITLAB_TOKEN".to_string(), "glpat_secret-token".to_string())]);
 
-    let plan = prepare_comment_request_from_env(&env, &context, &[]);
+    let plan = prepare_comment_request_from_env(&env, &context, &[], Severity::Critical);
 
     match plan {
         CiCommentPlan::Skip { reason } => {
@@ -298,6 +385,7 @@ fn sticky_comment_body_lists_every_finding_with_severity_location_and_artifacts(
             sample_finding(Severity::Critical, "SQL injection"),
             sample_finding(Severity::Low, "Verbose error"),
         ],
+        Severity::Critical,
     );
 
     assert!(body.contains("<!-- zentra-ci-comment -->"));
@@ -309,6 +397,7 @@ fn sticky_comment_body_lists_every_finding_with_severity_location_and_artifacts(
     assert!(body.contains("| 🔵 LOW | Verbose error | `src/auth.rs:42` |"));
     assert!(body.contains(".zentra/ci-report.md"));
     assert!(body.contains(".zentra/ci-report.json"));
+    assert!(body.contains("Fail threshold: CRITICAL"));
 }
 
 #[test]
@@ -316,6 +405,7 @@ fn sticky_comment_body_shows_passed_status_and_no_critical_rows_when_none_found(
     let body = build_sticky_comment_body(
         &sample_context(),
         &[sample_finding(Severity::Low, "Verbose error")],
+        Severity::Critical,
     );
 
     assert!(body.contains("✅ Passed"));
@@ -325,11 +415,24 @@ fn sticky_comment_body_shows_passed_status_and_no_critical_rows_when_none_found(
 
 #[test]
 fn sticky_comment_body_reports_no_findings_when_scan_is_clean() {
-    let body = build_sticky_comment_body(&sample_context(), &[]);
+    let body = build_sticky_comment_body(&sample_context(), &[], Severity::Critical);
 
     assert!(body.contains("✅ Passed"));
     assert!(body.contains("0 total"));
     assert!(body.contains("No findings."));
+}
+
+#[test]
+fn sticky_comment_body_fails_on_high_when_threshold_is_high() {
+    let body = build_sticky_comment_body(
+        &sample_context(),
+        &[sample_finding(Severity::High, "Missing authorization")],
+        Severity::High,
+    );
+
+    assert!(body.contains("❌ Failed"));
+    assert!(body.contains("Fix 1 HIGH-or-higher finding before you merge this."));
+    assert!(body.contains("Fail threshold: HIGH"));
 }
 
 #[test]

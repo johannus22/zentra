@@ -1,6 +1,11 @@
 name: CI
 
 on:
+  # Pull requests as well as main. Without this the matrix only ran after a
+  # merge, and merge commits carry `[skip ci]` — so the Linux and macOS builds
+  # saw neither the PR nor the merge, and the clippy gate below could only turn
+  # main red instead of blocking the change that broke it.
+  pull_request:
   push:
     branches: [main]
 
@@ -43,8 +48,9 @@ jobs:
       - name: Test
         run: cargo test --locked
 
-      # Advisory only for now: the tree has ~17 pre-existing clippy lints, so
-      # this deliberately omits `-- -D warnings` to avoid a red-on-arrival gate.
-      # Once those are cleared, append `-- -D warnings` to make clippy blocking.
+      # Hard gate. The pre-existing lints this used to tolerate are cleared, so
+      # the tree starts clean and a new warning is a build failure rather than a
+      # line in a log nobody reads. Findings that were considered and accepted
+      # carry a local `#[allow]` with the reason next to the code.
       - name: Clippy
-        run: cargo clippy --all-targets --locked
+        run: cargo clippy --all-targets --locked -- -D warnings

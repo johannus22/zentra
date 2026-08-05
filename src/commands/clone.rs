@@ -46,7 +46,7 @@ pub fn derive_repo_name(url: &str) -> String {
     let trimmed = url.trim().trim_end_matches('/');
     // Handle scp-like `git@host:owner/repo` by splitting on both ':' and '/'.
     let last = trimmed
-        .rsplit(|c| c == '/' || c == ':')
+        .rsplit(['/', ':'])
         .find(|s| !s.is_empty())
         .unwrap_or("");
     let stripped = last.strip_suffix(".git").unwrap_or(last);
@@ -76,7 +76,7 @@ pub fn derive_audit_name(url: &str) -> String {
     let repo = derive_repo_name(url);
     let trimmed = url.trim().trim_end_matches('/');
     let segments: Vec<&str> = trimmed
-        .rsplit(|c| c == '/' || c == ':')
+        .rsplit(['/', ':'])
         .filter(|s| !s.is_empty())
         .collect();
     // segments[0] == repo segment; segments[1] == owner candidate (if any).

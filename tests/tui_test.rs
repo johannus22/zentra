@@ -12,7 +12,7 @@ use zentra_cli::tui::menu::{
 use zentra_cli::tui::pentest_setup::build_pentest_config_from_setup_input;
 use zentra_cli::tui::pentest_ui::PentestUiState;
 use zentra_cli::tools::fs_tools::ReadOutcome;
-use zentra_cli::tui::{ScanStatus, UiState};
+use zentra_cli::tui::{ScanResult, ScanStatus, UiState};
 
 #[test]
 fn ui_state_scanner_starts_as_queued() {
@@ -255,7 +255,7 @@ fn pentest_ui_state_handles_error_and_completed_events() {
     });
     state.apply_event(PentestEvent::Completed);
 
-    assert_eq!(state.completed, true);
+    assert!(state.completed);
     assert!(state.error_stages.contains(&7));
     assert!(state.activity[0].contains("Authorization: Bearer <redacted>"));
     assert!(!state.activity[0].contains("secret-token"));
@@ -2333,4 +2333,152 @@ fn file_read_event_for_an_unknown_scanner_is_ignored() {
 
     assert_eq!(state.scanners[0].files_read(), 0);
     assert_eq!(state.scanners[1].files_read(), 0);
+}
+
+// --- Honest completion banner ---
+//
+// `all_done()` is true whether every scanner succeeded or every one failed, so
+// the banner used to print "Hacked in 2s" over an empty findings file whenever
+// the provider was rate limited. A real run did exactly that: six 429s, zero
+// findings, and a green tick.
+
+fn banner_state(count: usize) -> UiState {
+    let scanners = [ScannerType::Sast,
+        ScannerType::SupplyChain,
+        ScannerType::ApiScan,
+        ScannerType::IacScan];
+    UiState::new(
+        scanners[..count].to_vec(),
+        "gpt-4o".to_string(),
+        200_000,
+        vec![],
+        String::new(),
+        String::new(),
+        String::new(),
+    )
+}
+
+fn fail(state: &mut UiState, scanner: ScannerType) {
+    state.apply_event(ScanEvent::Error {
+        scanner,
+        message: "Provider returned 429 Too Many Requests".to_string(),
+    });
+    state.apply_event(ScanEvent::ScannerCompleted(scanner));
+}
+
+fn succeed(state: &mut UiState, scanner: ScannerType) {
+    state.apply_event(ScanEvent::ScannerStarted(scanner));
+    state.apply_event(ScanEvent::ScannerCompleted(scanner));
+}
+
+#[test]
+fn outcome_is_clean_when_no_scanner_failed() {
+    let mut state = banner_state(2);
+    succeed(&mut state, ScannerType::Sast);
+    succeed(&mut state, ScannerType::SupplyChain);
+
+    assert!(state.all_done());
+    assert_eq!(state.failed_count(), 0);
+    assert_eq!(state.outcome(), ScanResult::Clean);
+}
+
+#[test]
+fn outcome_is_all_failed_when_every_scanner_failed() {
+    let mut state = banner_state(2);
+    fail(&mut state, ScannerType::Sast);
+    fail(&mut state, ScannerType::SupplyChain);
+
+    assert!(
+        state.all_done(),
+        "all_done is true even when everything failed — that is the trap"
+    );
+    assert_eq!(state.outcome(), ScanResult::AllFailed { failed: 2 });
+}
+
+#[test]
+fn outcome_is_partial_when_some_scanners_failed() {
+    let mut state = banner_state(3);
+    succeed(&mut state, ScannerType::Sast);
+    fail(&mut state, ScannerType::SupplyChain);
+    fail(&mut state, ScannerType::ApiScan);
+
+    assert_eq!(state.outcome(), ScanResult::PartialFailure { failed: 2 });
+}
+
+#[test]
+fn abort_wins_over_a_failure_count() {
+    let mut state = banner_state(2);
+    fail(&mut state, ScannerType::Sast);
+    state.abort_scan();
+
+    assert_eq!(
+        state.outcome(),
+        ScanResult::Aborted,
+        "the user stopping the run is the more useful explanation"
+    );
+}
+
+#[test]
+fn banner_never_claims_success_when_everything_failed() {
+    let theme = zentra_cli::tui::theme::Theme::default();
+    let (icon, _, verb) = zentra_cli::tui::scan_ui::completion_banner(
+        ScanResult::AllFailed { failed: 6 },
+        2,
+        &theme,
+    );
+
+    assert_eq!(icon, "✗");
+    assert_eq!(verb, "All 6 scanners failed");
+    assert!(
+        !verb.contains("Hacked"),
+        "this is the exact regression: {verb}"
+    );
+}
+
+#[test]
+fn banner_warns_on_a_partial_failure() {
+    let theme = zentra_cli::tui::theme::Theme::default();
+    let (icon, _, verb) =
+        zentra_cli::tui::scan_ui::completion_banner(ScanResult::PartialFailure { failed: 2 }, 75, &theme);
+
+    assert_eq!(icon, "⚠");
+    assert_eq!(verb, "Done in 1m 15s · 2 failed");
+}
+
+#[test]
+fn banner_keeps_the_happy_path_unchanged() {
+    let theme = zentra_cli::tui::theme::Theme::default();
+    let (icon, _, verb) =
+        zentra_cli::tui::scan_ui::completion_banner(ScanResult::Clean, 12, &theme);
+
+    assert_eq!(icon, "✓");
+    assert_eq!(verb, "Hacked in 12s");
+
+    let (_, _, long) = zentra_cli::tui::scan_ui::completion_banner(ScanResult::Clean, 135, &theme);
+    assert_eq!(long, "Hacked in 2m 15s");
+}
+
+#[test]
+fn banner_reports_an_abort() {
+    let theme = zentra_cli::tui::theme::Theme::default();
+    let (icon, _, verb) =
+        zentra_cli::tui::scan_ui::completion_banner(ScanResult::Aborted, 5, &theme);
+
+    assert_eq!(icon, "✗");
+    assert_eq!(verb, "Aborted");
+}
+
+#[test]
+fn hint_tells_the_operator_there_are_no_findings_to_browse() {
+    let all_failed =
+        zentra_cli::tui::scan_ui::completion_hint(ScanResult::AllFailed { failed: 6 });
+    assert!(all_failed.contains("no findings were produced"), "got: {all_failed}");
+    assert!(!all_failed.contains("browse findings"), "got: {all_failed}");
+
+    let partial =
+        zentra_cli::tui::scan_ui::completion_hint(ScanResult::PartialFailure { failed: 2 });
+    assert!(partial.contains("2 scanners produced no findings"), "got: {partial}");
+
+    let clean = zentra_cli::tui::scan_ui::completion_hint(ScanResult::Clean);
+    assert_eq!(clean, "browse findings · q to exit");
 }

@@ -140,15 +140,14 @@ Delete this file and re-run the scan to retry.",
                 Some(ctx) => is_arch_significant(&ctx.change_set.changed),
                 None => true,
             };
-        if run_threat_model {
-            if self
+        if run_threat_model
+            && self
                 .run_llm_scanner(ScannerType::ThreatModel, context_opt.as_deref())
                 .await
                 .is_err()
             {
                 failed.push(ScannerType::ThreatModel);
             }
-        }
 
         // Phase 2: parallel scanners (SAST, SCA, API, IaC)
         let parallel: Vec<ScannerType> = PARALLEL_SCANNERS
@@ -269,15 +268,14 @@ Delete this file and re-run the scan to retry.",
         }
 
         // Phase 3: Report — sequential, runs last
-        if scanners.contains(&ScannerType::Report) {
-            if self
+        if scanners.contains(&ScannerType::Report)
+            && self
                 .run_llm_scanner(ScannerType::Report, context_opt.as_deref())
                 .await
                 .is_err()
             {
                 failed.push(ScannerType::Report);
             }
-        }
 
         // Coverage ledger, written last so it reflects every scanner. Reports
         // only — a thin scan never fails the run here, it just stops looking

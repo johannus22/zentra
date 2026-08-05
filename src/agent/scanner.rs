@@ -144,6 +144,10 @@ impl ScannerAgent {
         }
     }
 
+    // Takes its collaborators positionally, like `new` above. The optional
+    // parts already move through `with_*` builders; folding the required ones
+    // into a struct would add a type that exists only to satisfy a lint.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_contexts(
         scanner_type: ScannerType,
         provider: Arc<dyn LLMProvider>,
