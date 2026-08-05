@@ -4,6 +4,7 @@ mod exit;
 mod impact;
 mod platform;
 mod report;
+mod triage;
 mod workflow;
 
 use anyhow::{bail, Result};
@@ -23,9 +24,14 @@ pub use exit::{resolve_fail_threshold, should_fail_ci, FAIL_THRESHOLD_ENV};
 pub use impact::select_impact_files;
 pub(crate) use platform::extract_ci_metadata_from_current_env;
 pub use platform::{
-    detect_ci_context_from_current_env, detect_ci_context_from_env, CiContext, PR_MR_ONLY_MESSAGE,
+    detect_ci_context_from_current_env, detect_ci_context_from_env,
+    detect_full_scan_ci_context_from_env, CiContext, PR_MR_ONLY_MESSAGE,
 };
 pub use report::{severity_counts, write_ci_artifacts, CiArtifactPaths, SeverityCounts};
+pub use triage::{
+    build_triage_issue_body, finding_fingerprint, parse_prior_fingerprints,
+    publish_triage_issue_best_effort, TRIAGE_ISSUE_MARKER,
+};
 pub use workflow::generate_ci_workflow_at;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

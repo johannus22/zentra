@@ -8,9 +8,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::{orchestrator::OrchestratorAgent, ScanEvent, ScannerType};
 use crate::ci::{
-    changed_files_from_git, git_diff_error_with_guidance, missing_history_guidance,
-    publish_comment_best_effort, resolve_fail_threshold, select_impact_files, should_fail_ci,
-    write_ci_artifacts, CiContext,
+    changed_files_from_git, detect_full_scan_ci_context_from_env,
+    git_diff_error_with_guidance, missing_history_guidance, publish_comment_best_effort,
+    publish_triage_issue_best_effort, resolve_fail_threshold, select_impact_files,
+    should_fail_ci, write_ci_artifacts, CiContext, CiPlatformKind,
 };
 use crate::config::{keychain, AuthMethod, GlobalConfig, ProjectConfig, ProviderProfile};
 use crate::provider::{
@@ -20,52 +21,122 @@ use crate::security::{self, AuditEvent, AuditLog, SecurityConfig, SecurityContex
 use crate::state::{Finding, Severity, StateWriter};
 use crate::tools::ToolRegistry;
 
-pub async fn run() -> Result<()> {
+/// Every scanner `select_ci_scanners` can ever return. Used by `--full`, which
+/// scans the whole repo and so must consider dependency, API, and IaC files even
+/// when no diff narrows the set. Kept as a const next to that function so the
+/// two stay in sync: if `select_ci_scanners` gains a scanner, add it here too.
+const ALL_CI_SCANNERS: &[ScannerType] = &[
+    ScannerType::ThreatModel,
+    ScannerType::Sast,
+    ScannerType::SupplyChain,
+    ScannerType::ApiScan,
+    ScannerType::IacScan,
+    ScannerType::Report,
+];
+
+pub async fn run(full: bool, report_only: bool) -> Result<()> {
     let root = std::env::current_dir()?;
-    let metadata = crate::ci::extract_ci_metadata_from_current_env()?;
-    let changed_files = changed_files_from_git(&root, &metadata.base_ref, &metadata.head_ref)
-        .map_err(|err| {
-            anyhow::anyhow!(git_diff_error_with_guidance(
-                metadata.platform,
-                &err.to_string()
-            ))
-        })?;
-
-    if changed_files.is_empty() {
-        bail!(missing_history_guidance(metadata.platform));
-    }
-
-    let impact_files = select_impact_files(&root, &changed_files, 200)?;
-    let context = CiContext {
-        platform: metadata.platform,
-        base_ref: metadata.base_ref,
-        head_ref: metadata.head_ref,
-        changed_files,
-        impact_files,
-        commit_sha: metadata.commit_sha,
-        pr_or_mr_number: metadata.pr_or_mr_number,
-    };
-
     let project_config = load_or_init_project_config(&root)?;
     // Resolved before the scan runs: a typo'd threshold should fail fast, not
-    // burn provider budget on a scan whose result we can't gate correctly.
+    // burn provider budget on a scan whose result we can't gate correctly. In
+    // report-only mode the threshold no longer gates the exit code, but it is
+    // still resolved and displayed so the policy stays documented in the report.
     let env = std::env::vars().collect::<HashMap<_, _>>();
     let fail_threshold = resolve_fail_threshold(&env, &project_config)?;
 
-    print_startup_summary(&context, fail_threshold);
+    let context = if full {
+        // Whole-repo scan: skip the changed-files/impact-files diff entirely,
+        // and do not require an MR. Push pipelines are accepted only when the
+        // caller opted into report-only mode (the staging job); a `--full` run
+        // outside report-only still needs MR/PR metadata.
+        detect_full_scan_ci_context_from_env(&env, report_only)?
+    } else {
+        // MR/PR incremental scan: the original flow. Changed-files detection
+        // and impact expansion run here; an empty diff still bails with guidance.
+        let metadata = crate::ci::extract_ci_metadata_from_current_env()?;
+        let changed_files =
+            changed_files_from_git(&root, &metadata.base_ref, &metadata.head_ref).map_err(
+                |err| {
+                    anyhow::anyhow!(git_diff_error_with_guidance(
+                        metadata.platform,
+                        &err.to_string()
+                    ))
+                },
+            )?;
+
+        if changed_files.is_empty() {
+            bail!(missing_history_guidance(metadata.platform));
+        }
+
+        let impact_files = select_impact_files(&root, &changed_files, 200)?;
+        CiContext {
+            platform: metadata.platform,
+            base_ref: metadata.base_ref,
+            head_ref: metadata.head_ref,
+            changed_files,
+            impact_files,
+            commit_sha: metadata.commit_sha,
+            pr_or_mr_number: metadata.pr_or_mr_number,
+        }
+    };
+
+    print_startup_summary(&context, fail_threshold, full, report_only);
 
     let provider = load_provider().await?;
     // The config may be attacker-supplied (untrusted PR in CI); a malicious
     // target_path must not redirect scan output outside the checkout.
     let target_path = project_config.resolve_target_within(&root)?;
-    let scanners = select_ci_scanners(&context.changed_files);
-    let focus_context = build_ci_focus_context(&context);
 
-    let events =
-        run_headless_scan_with_provider(provider, &target_path, scanners, Some(focus_context))
-            .await?;
+    let (scanners, focus_context) = if full {
+        // Full scan: every scanner type, no focus context (the whole repo is in
+        // scope). A None focus context lets each scanner navigate as usual.
+        (ALL_CI_SCANNERS.to_vec(), None)
+    } else {
+        (
+            select_ci_scanners(&context.changed_files),
+            Some(build_ci_focus_context(&context)),
+        )
+    };
+
+    let events = run_headless_scan_with_provider(
+        provider,
+        &target_path,
+        scanners,
+        focus_context,
+        report_only,
+    )
+    .await?;
     let findings = collect_findings(&events);
-    let artifacts = write_ci_artifacts(&root, &context, &findings, fail_threshold)?;
+
+    if report_only {
+        // Report-only mode never fails the pipeline on findings. On GitLab it
+        // files or updates one sticky triage issue and records the outcome note
+        // in the report. The triage step runs before writing artifacts so the
+        // note lands in ci-report.md on the first write.
+        let triage_note = if context.platform == CiPlatformKind::Gitlab {
+            Some(publish_triage_issue_best_effort(&context, &findings).await?)
+        } else {
+            None
+        };
+
+        let artifacts = write_ci_artifacts(
+            &root,
+            &context,
+            &findings,
+            fail_threshold,
+            triage_note.as_deref(),
+        )?;
+        println!(
+            "Wrote CI artifacts: {}, {}",
+            artifacts.markdown.display(),
+            artifacts.json.display()
+        );
+        println!("Report-only mode: the pipeline will not fail on findings.");
+        return Ok(());
+    }
+
+    // MR mode: the original behavior, byte-identical to before --full/--report-only.
+    let artifacts = write_ci_artifacts(&root, &context, &findings, fail_threshold, None)?;
     println!(
         "Wrote CI artifacts: {}, {}",
         artifacts.markdown.display(),
@@ -99,6 +170,7 @@ pub async fn refresh_architecture() -> Result<()> {
         &target_path,
         vec![ScannerType::FrameworkAnalysis],
         None,
+        false,
     )
     .await?;
 
@@ -155,6 +227,7 @@ pub async fn run_headless_scan_with_provider(
     project_root: &Path,
     mut scanners: Vec<ScannerType>,
     ci_focus_context: Option<String>,
+    report_only: bool,
 ) -> Result<Vec<ScanEvent>> {
     let state_writer = Arc::new(
         StateWriter::new(project_root).context("Failed to initialize .zentra/ directory")?,
@@ -227,23 +300,41 @@ pub async fn run_headless_scan_with_provider(
         crate::logging::warn("ci", format!("Scanners failed: {}", names.join(", ")));
     }
 
-    if let Some(message) = events.iter().find_map(|event| match event {
-        ScanEvent::Error { message, .. } => Some(message),
-        _ => None,
-    }) {
-        bail!("CI scan failed: {message}");
+    // Scanner/system error handling. MR mode (the default) is fail-closed: the
+    // first ScanEvent::Error bails the run. Report-only mode diverges by design
+    // — errors are still printed (above, and via the warn log) and noted, but
+    // they never fail the pipeline; whatever findings completed are still
+    // written to artifacts and triaged.
+    if !report_only {
+        if let Some(message) = events.iter().find_map(|event| match event {
+            ScanEvent::Error { message, .. } => Some(message),
+            _ => None,
+        }) {
+            bail!("CI scan failed: {message}");
+        }
     }
 
     Ok(events)
 }
 
-fn print_startup_summary(context: &CiContext, fail_threshold: Severity) {
+fn print_startup_summary(
+    context: &CiContext,
+    fail_threshold: Severity,
+    full: bool,
+    report_only: bool,
+) {
     println!("Zentra CI Security Scan");
     println!("Platform: {}", context.platform.as_str());
     println!(
         "Scope: PR/MR {}",
         context.pr_or_mr_number.as_deref().unwrap_or("unknown")
     );
+    if full {
+        println!("Mode: full repository scan (no diff)");
+    }
+    if report_only {
+        println!("Mode: report-only (pipeline will not fail on findings)");
+    }
     println!("Changed files: {}", context.changed_files.len());
     println!("Impacted files: {}", context.impact_files.len());
     println!("Fail threshold: {fail_threshold}");

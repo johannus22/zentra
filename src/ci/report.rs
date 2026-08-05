@@ -49,6 +49,7 @@ pub fn write_ci_artifacts(
     context: &CiContext,
     findings: &[Finding],
     fail_threshold: Severity,
+    triage_note: Option<&str>,
 ) -> Result<CiArtifactPaths> {
     let output_dir = project_root.join(".zentra");
     fs::create_dir_all(&output_dir)?;
@@ -58,7 +59,7 @@ pub fn write_ci_artifacts(
 
     fs::write(
         &markdown,
-        render_markdown_report(context, findings, fail_threshold),
+        render_markdown_report(context, findings, fail_threshold, triage_note),
     )?;
     fs::write(
         &json,
@@ -91,8 +92,13 @@ fn render_markdown_report(
     context: &CiContext,
     findings: &[Finding],
     fail_threshold: Severity,
+    triage_note: Option<&str>,
 ) -> String {
     let counts = severity_counts(findings);
+    let triage_line = triage_note
+        .filter(|note| !note.trim().is_empty())
+        .map(|note| format!("\nTriage ticket: {note}"))
+        .unwrap_or_default();
     let mut report = format!(
         "# Zentra CI Security Report\n\n## CI Summary\n\nPlatform: {}\nScope: PR/MR {}\nBase: {}\nHead: {}\nChanged files: {}\nImpact files: {}\nFail threshold: {}\n\n## Severity Summary\n\nCritical: {}\nHigh: {}\nMedium: {}\nLow: {}\nInfo: {}\n\n## Findings\n\n",
         context.platform.as_str(),
@@ -108,6 +114,12 @@ fn render_markdown_report(
         counts.low,
         counts.info,
     );
+
+    if !triage_line.is_empty() {
+        // The triage line documents the ticket outcome (or its absence). It is
+        // injected into the CI Summary so operators see it next to the policy.
+        report = report.replacen("## Severity Summary", &format!("{triage_line}\n\n## Severity Summary"), 1);
+    }
 
     if findings.is_empty() {
         report.push_str("No findings.\n");
