@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -8,8 +9,8 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::{orchestrator::OrchestratorAgent, ScanEvent, ScannerType};
 use crate::ci::{
     changed_files_from_git, git_diff_error_with_guidance, missing_history_guidance,
-    publish_comment_best_effort, select_impact_files, should_fail_ci, write_ci_artifacts,
-    CiContext,
+    publish_comment_best_effort, resolve_fail_threshold, select_impact_files, should_fail_ci,
+    write_ci_artifacts, CiContext,
 };
 use crate::config::{keychain, AuthMethod, GlobalConfig, ProjectConfig, ProviderProfile};
 use crate::provider::{
@@ -45,10 +46,15 @@ pub async fn run() -> Result<()> {
         pr_or_mr_number: metadata.pr_or_mr_number,
     };
 
-    print_startup_summary(&context);
+    let project_config = load_or_init_project_config(&root)?;
+    // Resolved before the scan runs: a typo'd threshold should fail fast, not
+    // burn provider budget on a scan whose result we can't gate correctly.
+    let env = std::env::vars().collect::<HashMap<_, _>>();
+    let fail_threshold = resolve_fail_threshold(&env, &project_config)?;
+
+    print_startup_summary(&context, fail_threshold);
 
     let provider = load_provider().await?;
-    let project_config = load_or_init_project_config(&root)?;
     // The config may be attacker-supplied (untrusted PR in CI); a malicious
     // target_path must not redirect scan output outside the checkout.
     let target_path = project_config.resolve_target_within(&root)?;
@@ -59,19 +65,19 @@ pub async fn run() -> Result<()> {
         run_headless_scan_with_provider(provider, &target_path, scanners, Some(focus_context))
             .await?;
     let findings = collect_findings(&events);
-    let artifacts = write_ci_artifacts(&root, &context, &findings)?;
+    let artifacts = write_ci_artifacts(&root, &context, &findings, fail_threshold)?;
     println!(
         "Wrote CI artifacts: {}, {}",
         artifacts.markdown.display(),
         artifacts.json.display()
     );
 
-    if let Err(err) = publish_comment_best_effort(&context, &findings).await {
+    if let Err(err) = publish_comment_best_effort(&context, &findings, fail_threshold).await {
         println!("CI comment skipped: {err}");
     }
 
-    if should_fail_ci(&findings, Severity::Critical) {
-        bail!("CI scan failed: critical findings detected");
+    if should_fail_ci(&findings, fail_threshold) {
+        bail!("CI scan failed: {fail_threshold}-or-higher findings detected");
     }
 
     Ok(())
@@ -231,7 +237,7 @@ pub async fn run_headless_scan_with_provider(
     Ok(events)
 }
 
-fn print_startup_summary(context: &CiContext) {
+fn print_startup_summary(context: &CiContext, fail_threshold: Severity) {
     println!("Zentra CI Security Scan");
     println!("Platform: {}", context.platform.as_str());
     println!(
@@ -240,7 +246,7 @@ fn print_startup_summary(context: &CiContext) {
     );
     println!("Changed files: {}", context.changed_files.len());
     println!("Impacted files: {}", context.impact_files.len());
-    println!("Fail threshold: Critical");
+    println!("Fail threshold: {fail_threshold}");
 }
 
 async fn load_provider() -> Result<Arc<dyn LLMProvider>> {

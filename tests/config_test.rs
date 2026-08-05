@@ -172,6 +172,7 @@ fn resolve_target_within_accepts_normal_relative_subpaths() {
             target_path: ok.to_string(),
             stack: "rust".into(),
             exclusions: vec![],
+            fail_threshold: None,
         };
         assert!(
             cfg.resolve_target_within(root).is_ok(),
@@ -198,6 +199,7 @@ fn resolve_target_within_rejects_escaping_paths() {
             target_path: bad.to_string(),
             stack: "rust".into(),
             exclusions: vec![],
+            fail_threshold: None,
         };
         assert!(
             cfg.resolve_target_within(root).is_err(),

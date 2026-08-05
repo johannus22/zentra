@@ -252,7 +252,7 @@ fn merge_group(findings: &[Finding], idxs: &[usize]) -> Finding {
     // Highest severity across the whole group (smallest order).
     primary.severity = idxs
         .iter()
-        .map(|&i| findings[i].severity.clone())
+        .map(|&i| findings[i].severity)
         .min_by_key(|s| s.order())
         .unwrap_or(primary.severity);
 
