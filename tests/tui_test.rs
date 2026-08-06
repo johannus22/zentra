@@ -114,13 +114,13 @@ fn ui_state_apply_tool_call_updates_activity() {
 
 #[test]
 fn pentest_setup_requires_authorization_confirmation() {
-    let config = build_pentest_config_from_setup_input("https://app.example.test", "no").unwrap();
+    let config = build_pentest_config_from_setup_input("https://app.example.test", "", "no").unwrap();
     assert!(config.is_none());
 }
 
 #[test]
 fn pentest_setup_accepts_yes_authorization_confirmation() {
-    let config = build_pentest_config_from_setup_input(" https://app.example.test ", " YES ")
+    let config = build_pentest_config_from_setup_input(" https://app.example.test ", "", " YES ")
         .unwrap()
         .expect("valid confirmation should build config");
 
@@ -129,13 +129,90 @@ fn pentest_setup_accepts_yes_authorization_confirmation() {
     assert_eq!(config.scope.allowed_hosts, vec!["app.example.test"]);
     assert_eq!(config.scope.allowed_paths, vec!["/"]);
     assert!(config.scope.excluded_paths.is_empty());
+    // No scope domains supplied → empty vec (behavior identical to before).
+    assert!(config.scope.allowed_domain_suffixes.is_empty());
     assert_eq!(config.auth.label(), "none");
 }
 
 #[test]
 fn pentest_setup_empty_url_returns_none() {
-    let config = build_pentest_config_from_setup_input("   ", "yes").unwrap();
+    let config = build_pentest_config_from_setup_input("   ", "", "yes").unwrap();
     assert!(config.is_none());
+}
+
+#[test]
+fn pentest_setup_scope_domains_split_trim_and_normalize() {
+    let config = build_pentest_config_from_setup_input(
+        "https://app.example.test",
+        "app.com, example.org",
+        "yes",
+    )
+    .unwrap()
+    .expect("valid confirmation should build config");
+
+    assert_eq!(
+        config.scope.allowed_domain_suffixes,
+        vec!["app.com".to_string(), "example.org".to_string()]
+    );
+}
+
+#[test]
+fn pentest_setup_scope_domains_empty_yields_empty_vec() {
+    let config = build_pentest_config_from_setup_input("https://app.example.test", "", "yes")
+        .unwrap()
+        .expect("valid confirmation should build config");
+    assert!(config.scope.allowed_domain_suffixes.is_empty());
+}
+
+#[test]
+fn pentest_setup_scope_domains_drop_empties_and_dedupe() {
+    // Embedded empties and surrounding whitespace are cleaned; a normalized
+    // duplicate collapses to one entry.
+    let config = build_pentest_config_from_setup_input(
+        "https://app.example.test",
+        "app.com,, example.org ",
+        "yes",
+    )
+    .unwrap()
+    .expect("valid confirmation should build config");
+    assert_eq!(
+        config.scope.allowed_domain_suffixes,
+        vec!["app.com".to_string(), "example.org".to_string()]
+    );
+
+    let config = build_pentest_config_from_setup_input(
+        "https://app.example.test",
+        "app.com, .App.COM.",
+        "yes",
+    )
+    .unwrap()
+    .expect("valid confirmation should build config");
+    assert_eq!(
+        config.scope.allowed_domain_suffixes,
+        vec!["app.com".to_string()]
+    );
+}
+
+#[test]
+fn pentest_setup_scope_domains_reject_invalid_entry() {
+    // An invalid entry fails the build before any config is produced.
+    let err = build_pentest_config_from_setup_input(
+        "https://app.example.test",
+        "app.com, *.app.com",
+        "yes",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("Invalid domain suffix"), "msg = {err}");
+
+    let err = build_pentest_config_from_setup_input(
+        "https://app.example.test",
+        "https://app.com",
+        "yes",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("Invalid domain suffix"), "msg = {err}");
 }
 
 #[test]
