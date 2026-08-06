@@ -126,10 +126,11 @@ fn pentest_setup_accepts_yes_authorization_confirmation() {
 
     assert_eq!(config.target_url, "https://app.example.test");
     assert!(config.authorized);
+    // Only the target host is in scope when no additional hosts are supplied.
     assert_eq!(config.scope.allowed_hosts, vec!["app.example.test"]);
     assert_eq!(config.scope.allowed_paths, vec!["/"]);
     assert!(config.scope.excluded_paths.is_empty());
-    // No scope domains supplied → empty vec (behavior identical to before).
+    // The TUI never populates domain suffixes — that stays a CLI-only feature.
     assert!(config.scope.allowed_domain_suffixes.is_empty());
     assert_eq!(config.auth.label(), "none");
 }
@@ -141,78 +142,115 @@ fn pentest_setup_empty_url_returns_none() {
 }
 
 #[test]
-fn pentest_setup_scope_domains_split_trim_and_normalize() {
+fn pentest_setup_scope_hosts_append_to_target_host_from_urls() {
     let config = build_pentest_config_from_setup_input(
-        "https://app.example.test",
-        "app.com, example.org",
+        "https://client-stg.app.com",
+        "https://auth-stg.app.com, https://admin-stg.app.com",
         "yes",
     )
     .unwrap()
     .expect("valid confirmation should build config");
 
+    // The target host stays first; parsed hosts are appended (exact match).
     assert_eq!(
-        config.scope.allowed_domain_suffixes,
-        vec!["app.com".to_string(), "example.org".to_string()]
+        config.scope.allowed_hosts,
+        vec![
+            "client-stg.app.com".to_string(),
+            "auth-stg.app.com".to_string(),
+            "admin-stg.app.com".to_string(),
+        ]
     );
-}
-
-#[test]
-fn pentest_setup_scope_domains_empty_yields_empty_vec() {
-    let config = build_pentest_config_from_setup_input("https://app.example.test", "", "yes")
-        .unwrap()
-        .expect("valid confirmation should build config");
+    // Suffixes stay empty — the TUI does not touch allowed_domain_suffixes.
     assert!(config.scope.allowed_domain_suffixes.is_empty());
 }
 
 #[test]
-fn pentest_setup_scope_domains_drop_empties_and_dedupe() {
-    // Embedded empties and surrounding whitespace are cleaned; a normalized
-    // duplicate collapses to one entry.
+fn pentest_setup_scope_hosts_accept_bare_hostnames() {
     let config = build_pentest_config_from_setup_input(
-        "https://app.example.test",
-        "app.com,, example.org ",
+        "https://client-stg.app.com",
+        "auth-stg.app.com, admin-stg.app.com",
         "yes",
     )
     .unwrap()
     .expect("valid confirmation should build config");
-    assert_eq!(
-        config.scope.allowed_domain_suffixes,
-        vec!["app.com".to_string(), "example.org".to_string()]
-    );
 
-    let config = build_pentest_config_from_setup_input(
-        "https://app.example.test",
-        "app.com, .App.COM.",
-        "yes",
-    )
-    .unwrap()
-    .expect("valid confirmation should build config");
     assert_eq!(
-        config.scope.allowed_domain_suffixes,
-        vec!["app.com".to_string()]
+        config.scope.allowed_hosts,
+        vec![
+            "client-stg.app.com".to_string(),
+            "auth-stg.app.com".to_string(),
+            "admin-stg.app.com".to_string(),
+        ]
     );
 }
 
 #[test]
-fn pentest_setup_scope_domains_reject_invalid_entry() {
-    // An invalid entry fails the build before any config is produced.
-    let err = build_pentest_config_from_setup_input(
-        "https://app.example.test",
-        "app.com, *.app.com",
+fn pentest_setup_scope_hosts_accept_mixed_urls_and_bare() {
+    let config = build_pentest_config_from_setup_input(
+        "https://client-stg.app.com",
+        "https://auth-stg.app.com, admin-stg.app.com",
         "yes",
     )
-    .unwrap_err()
-    .to_string();
-    assert!(err.contains("Invalid domain suffix"), "msg = {err}");
+    .unwrap()
+    .expect("valid confirmation should build config");
 
+    assert_eq!(
+        config.scope.allowed_hosts,
+        vec![
+            "client-stg.app.com".to_string(),
+            "auth-stg.app.com".to_string(),
+            "admin-stg.app.com".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn pentest_setup_scope_hosts_empty_yields_only_target_host() {
+    let config = build_pentest_config_from_setup_input("https://app.example.test", "", "yes")
+        .unwrap()
+        .expect("valid confirmation should build config");
+    assert_eq!(config.scope.allowed_hosts, vec!["app.example.test"]);
+}
+
+#[test]
+fn pentest_setup_scope_hosts_drop_empties_dedupe_and_lowercase() {
+    // Embedded empties and surrounding whitespace are cleaned; a bare duplicate
+    // in different case collides with the URL-extracted host.
+    let config = build_pentest_config_from_setup_input(
+        "https://app.example.test",
+        "auth-stg.app.com,, AUTH-STG.APP.COM ",
+        "yes",
+    )
+    .unwrap()
+    .expect("valid confirmation should build config");
+    assert_eq!(
+        config.scope.allowed_hosts,
+        vec!["app.example.test".to_string(), "auth-stg.app.com".to_string()]
+    );
+}
+
+#[test]
+fn pentest_setup_scope_hosts_reject_bare_entry_with_path() {
     let err = build_pentest_config_from_setup_input(
         "https://app.example.test",
-        "https://app.com",
+        "app.com/admin",
         "yes",
     )
     .unwrap_err()
     .to_string();
-    assert!(err.contains("Invalid domain suffix"), "msg = {err}");
+    assert!(err.contains("may not contain '/'"), "msg = {err}");
+}
+
+#[test]
+fn pentest_setup_scope_hosts_reject_unparseable_url() {
+    let err = build_pentest_config_from_setup_input(
+        "https://app.example.test",
+        "://no-scheme",
+        "yes",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("Invalid URL"), "msg = {err}");
 }
 
 #[test]
