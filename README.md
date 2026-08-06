@@ -308,6 +308,19 @@ Scope behavior:
 - Repeat `--exclude-path` for each path the run must not touch.
 - Path matching respects segment boundaries. So `/app` does not match `/application` by accident.
 
+#### Multi-portal apps and `--scope-domain`
+
+Some apps span several subdomains. The login page may sit on a sibling subdomain, and the login flow redirects there. By default, Zentra rejects that subdomain as out of scope. Use `--scope-domain` to allow a domain and all its subdomains:
+
+```bash
+zentra pentest --url https://client.app.com --authorized \
+  --scope-domain app.com
+```
+
+This puts `app.com`, `auth.app.com`, and any deeper subdomain in scope. The match checks a real dot boundary. So `evilapp.com` stays out of scope.
+
+A broad suffix scopes the whole domain. Pick the narrowest suffix that covers your portals. A public suffix like `co.uk` or shared hosting like `github.io` would put unrelated tenants in scope. Do not use those.
+
 ### Network reconnaissance
 
 Pentest mode requires `nmap`, for Stage 0 service discovery.
