@@ -73,6 +73,10 @@ pub enum Commands {
         /// Excluded path prefix. May be repeated.
         #[arg(long = "exclude-path")]
         exclude_paths: Vec<String>,
+        /// Also allow this domain and all its subdomains (multi-portal apps),
+        /// e.g. --scope-domain app.com. Repeatable.
+        #[arg(long = "scope-domain", value_name = "DOMAIN", action = clap::ArgAction::Append)]
+        scope_domains: Vec<String>,
         /// Confirm that you are authorized to test this target
         #[arg(long)]
         authorized: bool,
