@@ -166,6 +166,7 @@ async fn run() -> anyhow::Result<()> {
             no_nmap,
             whatweb,
             html_fingerprint,
+            capture_har,
         }) => {
             commands::pentest::run(
                 url,
@@ -181,6 +182,7 @@ async fn run() -> anyhow::Result<()> {
                 no_nmap,
                 whatweb,
                 html_fingerprint,
+                capture_har,
             )
             .await?
         }

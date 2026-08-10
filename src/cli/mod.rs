@@ -82,6 +82,10 @@ pub enum Commands {
         /// Reactively spawn escalation agents that chain confirmed High/Critical findings
         #[arg(long)]
         escalate: bool,
+        /// Record a HAR file (with request/response bodies) into the pentest output
+        /// directory. Off by default — HARs contain bodies that may include secrets.
+        #[arg(long = "capture-har")]
+        capture_har: bool,
         /// Disable nmap in Stage 0 recon (nmap runs by default)
         #[arg(long = "no-nmap")]
         no_nmap: bool,

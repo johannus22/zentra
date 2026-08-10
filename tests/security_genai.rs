@@ -49,6 +49,7 @@ fn pentest_config(url: &str) -> PentestConfig {
         stealth: false,
         stealth_delay_ms: 500,
         escalate: false,
+        capture_har: false,
     }
 }
 
