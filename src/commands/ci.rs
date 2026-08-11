@@ -138,9 +138,10 @@ pub async fn run(full: bool, report_only: bool) -> Result<()> {
     // MR mode: the original behavior, byte-identical to before --full/--report-only.
     let artifacts = write_ci_artifacts(&root, &context, &findings, fail_threshold, None)?;
     println!(
-        "Wrote CI artifacts: {}, {}",
+        "Wrote CI artifacts: {}, {}, {}",
         artifacts.markdown.display(),
-        artifacts.json.display()
+        artifacts.json.display(),
+        artifacts.sarif.display()
     );
 
     if let Err(err) = publish_comment_best_effort(&context, &findings, fail_threshold).await {
