@@ -27,6 +27,7 @@ pub struct ScannerAgent {
     pack: Option<Arc<String>>,
     cancel_token: CancellationToken,
     security: SecurityContext,
+    board: crate::agent::board::ObservationBoard,
 }
 
 /// Render the impact-set file list for both the initial prompt and blocked-call
@@ -141,6 +142,7 @@ impl ScannerAgent {
             pack: None,
             cancel_token,
             security: SecurityContext::disabled(),
+            board: crate::agent::board::ObservationBoard::new(),
         }
     }
 
@@ -170,6 +172,7 @@ impl ScannerAgent {
             pack: None,
             cancel_token,
             security: SecurityContext::disabled(),
+            board: crate::agent::board::ObservationBoard::new(),
         }
     }
 
@@ -193,6 +196,13 @@ impl ScannerAgent {
         self
     }
 
+    /// Attach the shared observation board. Scanners read observations from
+    /// earlier phases and post their own for later phases.
+    pub fn with_board(mut self, board: crate::agent::board::ObservationBoard) -> Self {
+        self.board = board;
+        self
+    }
+
     pub async fn run(self) -> Result<()> {
         let base_system = scanners::system_prompt(self.scanner_type);
         let mut effective_system: String = match &self.context {
@@ -207,6 +217,14 @@ For example, do not flag SQL injection if the ORM listed here auto-parameterises
         if let Some(ctx) = &self.focus_context {
             effective_system.push_str("\n\n## Scan Focus Context\n\n");
             effective_system.push_str(ctx);
+        }
+        // Inject cross-scanner observations from earlier phases. The board is
+        // read-only here: this clones the data out under the lock, so no lock
+        // is held across the await below.
+        let board_section = self.board.render_for_prompt(self.scanner_type.name());
+        if !board_section.is_empty() {
+            effective_system.push_str("\n\n");
+            effective_system.push_str(&board_section);
         }
         let system = effective_system.as_str();
         let all_tools = self.tool_registry.definitions();

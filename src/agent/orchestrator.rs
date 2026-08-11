@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::agent::checkpoint::Checkpoint;
 use crate::agent::scanner::ScannerAgent;
 use crate::agent::{ScanEvent, ScannerType};
 use crate::incremental::{is_arch_significant, reconcile, ChangeSet, ScanDelta};
@@ -56,6 +57,11 @@ pub struct OrchestratorAgent {
     /// The whole filtered repository, when pack mode is on. Every scanner opens
     /// with it instead of navigating, so it is shared behind one Arc.
     pack: Option<Arc<String>>,
+    /// Resume checkpoint. `None` means start fresh and write one as the scan
+    /// progresses (so a crash enables future resume). `Some(cp)` means skip
+    /// scanners that the checkpoint records as completed.
+    resume: Option<Checkpoint>,
+    board: crate::agent::board::ObservationBoard,
 }
 
 impl OrchestratorAgent {
@@ -76,6 +82,8 @@ impl OrchestratorAgent {
             pack: None,
             security: SecurityContext::disabled(),
             incremental: None,
+            resume: None,
+            board: crate::agent::board::ObservationBoard::new(),
         }
     }
 
@@ -102,16 +110,42 @@ impl OrchestratorAgent {
         self
     }
 
+    /// Set the resume checkpoint. Pass `None` for a fresh scan (the orchestrator
+    /// creates an empty checkpoint and writes to it as scanners complete). Pass
+    /// `Some(cp)` to skip scanners that the checkpoint records as completed.
+    pub fn with_resume(mut self, checkpoint: Option<Checkpoint>) -> Self {
+        self.resume = checkpoint;
+        self
+    }
+
     pub async fn run(mut self, scanners: &[ScannerType]) -> Result<RunSummary> {
         let mut failed: Vec<ScannerType> = Vec::new();
 
-        // Phase 0: FrameworkAnalysis — builds .zentra/architecture.md for all subsequent scanners
-        if scanners.contains(&ScannerType::FrameworkAnalysis) {
+        // Resolve the resume checkpoint. When `resume` is `None` (no --resume
+        // flag), create a fresh empty one and write it as scanners complete, so
+        // a crash enables a future resume. When `Some(cp)`, use the loaded
+        // checkpoint and skip completed scanners.
+        let zentra_dir = self.state_writer.project_root().join(".zentra");
+        let mut checkpoint = self.resume.take().unwrap_or_default();
+
+        // Record the scanner set for the current run in the checkpoint.
+        if checkpoint.scanner_set.is_empty() {
+            checkpoint.scanner_set = scanners.iter().map(|s| s.name().to_string()).collect();
+            checkpoint.save(&zentra_dir);
+        }
+
+        // Phase 0: FrameworkAnalysis — builds .zentra/architecture.md for all subsequent scanners.
+        // Skip on resume when the checkpoint marks "framework" and the architecture file exists.
+        let skip_framework = checkpoint.is_completed(ScannerType::FrameworkAnalysis.name())
+            && self.state_writer.architecture_exists();
+        if !skip_framework && scanners.contains(&ScannerType::FrameworkAnalysis) {
             if self
                 .run_llm_scanner(ScannerType::FrameworkAnalysis, None)
                 .await
-                .is_err()
+                .is_ok()
             {
+                checkpoint.mark_completed(&zentra_dir, ScannerType::FrameworkAnalysis.name());
+            } else {
                 failed.push(ScannerType::FrameworkAnalysis);
             }
 
@@ -120,9 +154,20 @@ impl OrchestratorAgent {
             if self.state_writer.read_architecture().is_empty() {
                 let _ = self.state_writer.write_architecture(
                     "# Framework Architecture Analysis\n\nAnalysis incomplete. \
-Delete this file and re-run the scan to retry.",
+                    Delete this file and re-run the scan to retry.",
                 );
             }
+        }
+
+        // After Phase 0, post a summary observation for later scanners.
+        let arch = self.state_writer.read_architecture();
+        if !arch.is_empty() {
+            self.board.post(crate::agent::board::Observation {
+                scanner: "framework".to_string(),
+                category: "architecture".to_string(),
+                text: "Framework analysis completed. See .zentra/architecture.md for details."
+                    .to_string(),
+            });
         }
 
         // Read produced architecture; inject into every LLM scanner that follows
@@ -135,24 +180,50 @@ Delete this file and re-run the scan to retry.",
 
         // Phase 1: ThreatModel — sequential. On incremental, skip unless
         // architecturally-significant files changed (carried forward otherwise).
-        let run_threat_model = scanners.contains(&ScannerType::ThreatModel)
+        let skip_threat_model = checkpoint.is_completed(ScannerType::ThreatModel.name());
+        let run_threat_model = !skip_threat_model
+            && scanners.contains(&ScannerType::ThreatModel)
             && match &self.incremental {
                 Some(ctx) => is_arch_significant(&ctx.change_set.changed),
                 None => true,
             };
-        if run_threat_model
-            && self
+        if run_threat_model {
+            if self
                 .run_llm_scanner(ScannerType::ThreatModel, context_opt.as_deref())
                 .await
-                .is_err()
+                .is_ok()
             {
+                checkpoint.mark_completed(&zentra_dir, ScannerType::ThreatModel.name());
+            } else {
                 failed.push(ScannerType::ThreatModel);
             }
+        }
 
-        // Phase 2: parallel scanners (SAST, SCA, API, IaC)
+        // After the threat model completes, post its findings as observations
+        // for later scanners (SAST, API, IaC, Report).
+        let raw = self.state_writer.read_findings_raw().unwrap_or_default();
+        let threat_findings = crate::state::parse_findings(&raw)
+            .into_iter()
+            .filter(|f| f.scanner == "threat_model")
+            .collect::<Vec<_>>();
+        for f in &threat_findings {
+            self.board.post(crate::agent::board::Observation {
+                scanner: "threat_model".to_string(),
+                category: "threat".to_string(),
+                text: format!(
+                    "{}: {}",
+                    f.title,
+                    f.description.chars().take(200).collect::<String>()
+                ),
+            });
+        }
+
+        // Phase 2: parallel scanners (SAST, SCA, API, IaC).
+        // Skip scanners that the checkpoint records as completed.
         let parallel: Vec<ScannerType> = PARALLEL_SCANNERS
             .iter()
             .filter(|s| scanners.contains(s))
+            .filter(|s| !checkpoint.is_completed(s.name()))
             .copied()
             .collect();
 
@@ -169,6 +240,7 @@ Delete this file and re-run the scan to retry.",
                 let token = cancel_token.clone();
                 let security = self.security.clone();
                 let pack = self.pack.clone();
+                let board = self.board.clone();
                 let incremental_scope = self
                     .incremental
                     .as_ref()
@@ -189,6 +261,7 @@ Delete this file and re-run the scan to retry.",
                         .with_security(security)
                         .with_incremental_scope(incremental_scope)
                         .with_pack(pack)
+                        .with_board(board)
                         .run()
                         .await
                     }),
@@ -196,7 +269,9 @@ Delete this file and re-run the scan to retry.",
             }
             for (scanner_type, handle) in handles {
                 match handle.await {
-                    Ok(Ok(())) => {}
+                    Ok(Ok(())) => {
+                        checkpoint.mark_completed(&zentra_dir, scanner_type.name());
+                    }
                     Ok(Err(_)) => {
                         failed.push(scanner_type);
                     }
@@ -222,6 +297,22 @@ Delete this file and re-run the scan to retry.",
             }
         }
 
+        // After Phase 2, post all findings so the report scanner can see the
+        // full picture across every scanner.
+        let raw = self.state_writer.read_findings_raw().unwrap_or_default();
+        let all_findings = crate::state::parse_findings(&raw);
+        for f in &all_findings {
+            self.board.post(crate::agent::board::Observation {
+                scanner: f.scanner.clone(),
+                category: "finding".to_string(),
+                text: format!(
+                    "{}: {}",
+                    f.title,
+                    f.description.chars().take(200).collect::<String>()
+                ),
+            });
+        }
+
         // Incremental reconciliation: merge fresh findings (just written by the
         // focused scanners) with the prior set, before correlation/report read them.
         let mut delta = None;
@@ -240,6 +331,7 @@ Delete this file and re-run the scan to retry.",
 
         // Phase 2.5: correlate/dedup findings before the report consumes them.
         // Best-effort — never fatal, and never drops findings on failure.
+        // Never skipped on resume: it may need to process findings from re-run scanners.
         if scanners.contains(&ScannerType::Report) {
             let raw = self.state_writer.read_findings_raw().unwrap_or_default();
             let parsed = crate::state::parse_findings(&raw);
@@ -253,6 +345,7 @@ Delete this file and re-run the scan to retry.",
         // consumes findings that carry a verdict. After correlation on purpose:
         // screening a duplicate twice would pay for the same issue twice.
         // Best-effort and annotate-only, like 2.5.
+        // Never skipped on resume: it may need to process findings from re-run scanners.
         if scanners.contains(&ScannerType::Report) {
             let raw = self.state_writer.read_findings_raw().unwrap_or_default();
             let parsed = crate::state::parse_findings(&raw);
@@ -268,14 +361,19 @@ Delete this file and re-run the scan to retry.",
         }
 
         // Phase 3: Report — sequential, runs last
-        if scanners.contains(&ScannerType::Report)
-            && self
+        if !checkpoint.is_completed(ScannerType::Report.name())
+            && scanners.contains(&ScannerType::Report)
+        {
+            if self
                 .run_llm_scanner(ScannerType::Report, context_opt.as_deref())
                 .await
-                .is_err()
+                .is_ok()
             {
+                checkpoint.mark_completed(&zentra_dir, ScannerType::Report.name());
+            } else {
                 failed.push(ScannerType::Report);
             }
+        }
 
         // Coverage ledger, written last so it reflects every scanner. Reports
         // only — a thin scan never fails the run here, it just stops looking
@@ -292,6 +390,12 @@ Delete this file and re-run the scan to retry.",
             ))
         {
             crate::logging::warn("orchestrator", format!("failed to write coverage.md: {e}"));
+        }
+
+        // A complete scan leaves no checkpoint behind. A scan with failures
+        // leaves the checkpoint so the operator can resume the missing scanners.
+        if failed.is_empty() {
+            Checkpoint::clear(&zentra_dir);
         }
 
         Ok(RunSummary {
@@ -318,6 +422,7 @@ Delete this file and re-run the scan to retry.",
         )
         .with_security(self.security.clone())
         .with_pack(self.pack.clone())
+        .with_board(self.board.clone())
         .run()
         .await
     }

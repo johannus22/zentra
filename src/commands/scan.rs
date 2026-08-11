@@ -48,6 +48,7 @@ pub async fn run(
     full: bool,
     pack: bool,
     dry_run: bool,
+    resume: bool,
 ) -> Result<()> {
     let scanners = resolve_scanners(only.as_deref())?;
     let mut provider_override = provider_override;
@@ -57,6 +58,7 @@ pub async fn run(
             scanners.clone(),
             full,
             PackOptions { pack, dry_run },
+            resume,
         )
         .await?
         {
@@ -80,6 +82,7 @@ pub async fn run_with_scanners(scanners: Vec<ScannerType>) -> Result<()> {
             scanners.clone(),
             false,
             PackOptions::default(),
+            false,
         )
         .await?
         {
@@ -108,6 +111,7 @@ async fn run_once(
     scanners: Vec<ScannerType>,
     full: bool,
     pack_options: PackOptions,
+    resume: bool,
 ) -> Result<ScanOutcome> {
     let global = GlobalConfig::load()?;
     let profile_name = provider_override
@@ -200,6 +204,16 @@ async fn run_once(
 
     let target_root = Path::new(&project_config.target_path).to_path_buf();
     let zentra_dir = target_root.join(".zentra");
+
+    // Resume: load the checkpoint when --resume is set, so the orchestrator can
+    // skip scanners that completed successfully in a prior (crashed) run.
+    // A fresh (non-resume) scan clears any stale checkpoint so it starts clean.
+    let resume_checkpoint = if resume {
+        Some(crate::agent::checkpoint::Checkpoint::load(&zentra_dir))
+    } else {
+        crate::agent::checkpoint::Checkpoint::clear(&zentra_dir);
+        None
+    };
 
     // Decide full vs incremental from the prior manifest + current env.
     let prior_manifest = ScanManifest::load(&zentra_dir);
@@ -346,7 +360,8 @@ async fn run_once(
         )
         .with_security(security_ctx)
         .with_focus_context(focus_context)
-        .with_pack(pack);
+        .with_pack(pack)
+        .with_resume(resume_checkpoint);
         if let Some((prior, cs)) = incremental {
             orch = orch.with_incremental(prior, cs);
         }
