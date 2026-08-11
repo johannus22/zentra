@@ -48,6 +48,10 @@ pub enum Commands {
         /// calling the provider
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// Resume a prior scan: skip scanners that completed successfully.
+        /// Reads .zentra/checkpoint.json.
+        #[arg(long)]
+        resume: bool,
     },
     /// Run dynamic browser pentest against an authorized target
     Pentest {
@@ -86,6 +90,11 @@ pub enum Commands {
         /// directory. Off by default — HARs contain bodies that may include secrets.
         #[arg(long = "capture-har")]
         capture_har: bool,
+        /// Resume a prior pentest: skip stages that completed successfully.
+        /// The checkpoint lives in the pentest output directory. A completed
+        /// pentest clears it automatically.
+        #[arg(long)]
+        resume: bool,
         /// Disable nmap in Stage 0 recon (nmap runs by default)
         #[arg(long = "no-nmap")]
         no_nmap: bool,
@@ -204,6 +213,24 @@ mod tests {
     fn parses_scan_defaults() {
         let cli = Cli::try_parse_from(["zentra", "scan"]).unwrap();
         assert!(matches!(cli.command, Some(Commands::Scan { .. })));
+    }
+
+    #[test]
+    fn parses_scan_resume_defaults_false() {
+        let cli = Cli::try_parse_from(["zentra", "scan"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Scan { resume: false, .. })
+        ));
+    }
+
+    #[test]
+    fn parses_scan_resume_flag() {
+        let cli = Cli::try_parse_from(["zentra", "scan", "--resume"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Scan { resume: true, .. })
+        ));
     }
 
     #[test]
