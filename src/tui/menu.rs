@@ -36,24 +36,37 @@ pub fn clip_with_ellipsis(s: &str, max_width: usize) -> String {
 }
 
 const ACTION_RUN_FULL_SCAN: usize = 0;
-const ACTION_CLONE_AND_SCAN: usize = 1;
-const ACTION_RUN_PENTEST: usize = 2;
-const ACTION_SELECT_SCANNERS: usize = 3;
-const ACTION_VIEW_RESULTS: usize = 4;
-const ACTION_SETTINGS: usize = 5;
-const ACTION_EXIT: usize = 6;
+const ACTION_RESUME_SCAN: usize = 1;
+const ACTION_CLONE_AND_SCAN: usize = 2;
+const ACTION_RUN_PENTEST: usize = 3;
+const ACTION_SELECT_SCANNERS: usize = 4;
+const ACTION_VIEW_RESULTS: usize = 5;
+const ACTION_SETTINGS: usize = 6;
+const ACTION_EXIT: usize = 7;
 
-/// Highest selectable action index in the main menu (7 items: 0-6).
-const MAX_MENU_ACTION: usize = 6;
+/// Highest selectable action index in the main menu (8 items: 0-7).
+const MAX_MENU_ACTION: usize = 7;
 
 /// Menu input poll interval. Matches the scan UI's 25ms input ticker so
 /// navigation feels equally responsive (the dirty-flag redraw gating keeps
 /// idle CPU low regardless).
 const MENU_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 
+/// Whether a resumable scan checkpoint exists in `.zentra/checkpoint.json`.
+/// The menu uses this to enable the "Resume Last Scan" item. A missing or
+/// empty checkpoint means no prior run is resumable, so the item stays dim.
+fn checkpoint_available() -> bool {
+    std::fs::read_to_string(".zentra/checkpoint.json")
+        .ok()
+        .and_then(|s| serde_json::from_str::<crate::agent::checkpoint::Checkpoint>(&s).ok())
+        .map(|cp| !cp.completed.is_empty())
+        .unwrap_or(false)
+}
+
 pub fn main_menu_actions() -> &'static [&'static str] {
     &[
         "Run Full Scan (this directory)",
+        "Resume Last Scan",
         "Clone Repo & Scan",
         "Run Pentest",
         "Select Scanners",
@@ -100,6 +113,7 @@ pub fn provider_selector_footer_hint(state: &MenuState) -> &'static str {
 #[derive(Debug, Clone)]
 pub enum MenuAction {
     RunScan(Vec<ScannerType>),
+    ResumeScan,
     RunPentest,
     CloneAndScan(String), // repo URL — from RepoInput screen
     ViewLastResults,
@@ -966,6 +980,7 @@ impl MenuState {
             {
                 self.provider_configured
             }
+            i if i == ACTION_RESUME_SCAN => checkpoint_available(),
             _ => true,
         }
     }
@@ -1516,6 +1531,12 @@ fn run_menu_loop(
                                         ScannerType::IacScan,
                                         ScannerType::Report,
                                     ]));
+                                }
+                                ACTION_RESUME_SCAN => {
+                                    if checkpoint_available() {
+                                        return Ok(MenuAction::ResumeScan);
+                                    }
+                                    // No checkpoint — stay in menu, do nothing.
                                 }
                                 ACTION_CLONE_AND_SCAN => {
                                     state.last_error = None;
