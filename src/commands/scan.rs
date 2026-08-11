@@ -39,7 +39,6 @@ fn scanners_widest_system_prompt(scanners: &[ScannerType]) -> String {
         .map(|s| crate::scanners::system_prompt(*s))
         .max_by_key(|prompt| prompt.len())
         .unwrap_or_default()
-        .to_string()
 }
 
 pub async fn run(
