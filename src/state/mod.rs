@@ -1,5 +1,6 @@
 pub mod cvss;
 pub mod finding;
+pub mod sarif;
 pub use finding::{Finding, Severity};
 
 use anyhow::Result;
@@ -79,6 +80,14 @@ impl StateWriter {
             .join(format!("{}-report.md", date));
         fs::write(path, content)?;
         Ok(())
+    }
+
+    /// Write a SARIF 2.1.0 report to `.zentra/reports/findings.sarif`. The
+    /// output is deterministic. Return the path of the written file.
+    pub fn write_sarif(&self, findings: &[Finding]) -> Result<PathBuf> {
+        let path = self.zentra_dir.join("reports").join("findings.sarif");
+        fs::write(&path, crate::state::sarif::render_sarif(findings))?;
+        Ok(path)
     }
 
     /// Replace the entire findings file with the given set, then re-sort by

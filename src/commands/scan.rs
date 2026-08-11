@@ -404,6 +404,15 @@ async fn run_once(
             };
             let _ = manifest.save(&zentra_dir);
 
+            // Write a deterministic SARIF report from the findings the scan
+            // produced. This is a post-step, not an LLM scanner task.
+            let findings_raw = std::fs::read_to_string(zentra_dir.join("detailed-findings.md"))
+                .unwrap_or_default();
+            let findings = crate::state::parse_findings(&findings_raw);
+            if let Ok(path) = write_sarif_to_dir(&zentra_dir, &findings) {
+                println!("  SARIF: {}", path.display());
+            }
+
             if !failed.is_empty() {
                 let names: Vec<&str> = failed.iter().map(|s| s.name()).collect();
                 println!(
@@ -536,6 +545,20 @@ fn resolve_scanners(only: Option<&str>) -> Result<Vec<ScannerType>> {
             ScannerType::Report,
         ],
     })
+}
+
+/// Write a SARIF 2.1.0 report to `<zentra_dir>/reports/findings.sarif`. The
+/// `reports` subdirectory is created if it is absent. Return the written path.
+fn write_sarif_to_dir(
+    zentra_dir: &Path,
+    findings: &[crate::state::Finding],
+) -> Result<std::path::PathBuf> {
+    use std::fs;
+    let reports_dir = zentra_dir.join("reports");
+    fs::create_dir_all(&reports_dir)?;
+    let path = reports_dir.join("findings.sarif");
+    fs::write(&path, crate::state::sarif::render_sarif(findings))?;
+    Ok(path)
 }
 
 fn git_head_commit(root: &Path) -> Option<String> {
