@@ -6,6 +6,13 @@ const CHARS_PER_TOKEN: usize = 4;
 const BUDGET_FRACTION_PCT: usize = 85;
 /// Deterministic marker prefixing a compacted (stubbed) tool result.
 const ELISION_MARKER: &str = "[elided]";
+/// Maximum chars a single tool result may occupy in the message history.
+/// Larger results are truncated with a notice before they enter the history.
+pub const MAX_TOOL_RESULT_CHARS: usize = 20_000;
+/// Chars preserved from the head of a compacted tool result.
+const COMPACT_HEAD_CHARS: usize = 500;
+/// Chars preserved from the tail of a compacted tool result.
+const COMPACT_TAIL_CHARS: usize = 500;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -46,6 +53,42 @@ pub fn input_budget(context_window: u32, max_output: u32) -> usize {
     usable * BUDGET_FRACTION_PCT / 100
 }
 
+/// Truncate a tool result to `MAX_TOOL_RESULT_CHARS`. If the content exceeds
+/// the limit, append a notice with the original char count. No-op for content
+/// under the limit. Call this at dispatch time, before the result enters the
+/// message history, so one large `read_file` or `grep_code` cannot eat the
+/// whole budget.
+pub fn bound_tool_result(content: &str) -> String {
+    if content.chars().count() <= MAX_TOOL_RESULT_CHARS {
+        return content.to_string();
+    }
+    let total = content.chars().count();
+    let truncated: String = content.chars().take(MAX_TOOL_RESULT_CHARS).collect();
+    format!(
+        "{truncated}\n\n[... output truncated: original was {total} chars, showing first {MAX_TOOL_RESULT_CHARS} ...]"
+    )
+}
+
+/// Compact a tool result into a short summary. The result keeps the head and
+/// tail excerpts when the content is long enough to be worth excerpting, or
+/// elides short content entirely. The output always starts with
+/// `ELISION_MARKER`, so a second compaction pass on the same content is a
+/// no-op (the main loop skips results already prefixed with the marker).
+fn compact_content(name: &str, content: &str) -> String {
+    let total = content.chars().count();
+    if total <= COMPACT_HEAD_CHARS + COMPACT_TAIL_CHARS {
+        // Too short to meaningfully compact. Elide entirely.
+        return format!(
+            "{ELISION_MARKER} {name} result ({total} chars) removed to fit context. Re-run the tool if you need it again."
+        );
+    }
+    let head: String = content.chars().take(COMPACT_HEAD_CHARS).collect();
+    let tail: String = content.chars().skip(total - COMPACT_TAIL_CHARS).collect();
+    format!(
+        "{ELISION_MARKER} {name} result (originally {total} chars). Excerpt:\n--- head ---\n{head}\n--- tail ---\n{tail}\n--- end excerpt ---\nRe-run the tool for full content."
+    )
+}
+
 /// While the estimate exceeds `budget` and a not-yet-stubbed ToolResult exists,
 /// stub the OLDEST one (deterministic marker + original char count) and
 /// re-estimate. Returns Fit with the number stubbed this call, or Irreducible
@@ -70,10 +113,8 @@ pub fn compact_to_budget(
                 // original tool result. This is safe: injection scanning happens at
                 // append time (in the scanner loop), not at send time, so no injection
                 // signal is lost by stubbing here.
-                *content = format!(
-                    "{ELISION_MARKER} {name} result ({} chars) removed to fit context — re-run the tool if you need it again.",
-                    content.len()
-                );
+                let compacted = compact_content(name, content);
+                *content = compacted;
                 stubbed += 1;
             }
             _ => {
@@ -116,14 +157,15 @@ mod tests {
 
     #[test]
     fn compacts_oldest_first_until_fit() {
-        // Three ~4000-char results (~1000 tokens each). Budget 1500 tokens
-        // forces stubbing the two oldest, leaving the newest verbatim.
+        // Three ~4000-char results (~1000 tokens each). The compacted form
+        // keeps ~1150 chars (head + tail excerpts), so a 2000-token budget
+        // forces stubbing the two oldest while leaving the newest verbatim.
         let mut msgs = vec![
             tr("list_files", &"a".repeat(4000)),
             tr("grep_code", &"b".repeat(4000)),
             tr("read_file", &"c".repeat(4000)),
         ];
-        let outcome = compact_to_budget(&mut msgs, "", &[], 1500);
+        let outcome = compact_to_budget(&mut msgs, "", &[], 2000);
         assert!(matches!(outcome, Outcome::Fit { stubbed } if stubbed == 2));
         assert!(matches!(&msgs[0], AgentMessage::ToolResult { content, .. } if content.starts_with("[elided]")));
         assert!(matches!(&msgs[1], AgentMessage::ToolResult { content, .. } if content.starts_with("[elided]")));
@@ -167,5 +209,79 @@ mod tests {
         assert!(matches!(first, Outcome::Fit { .. }));
         assert!(matches!(second, Outcome::Fit { stubbed: 0 }));
         assert_eq!(after_first, after_second);
+    }
+
+    #[test]
+    fn bound_tool_result_is_noop_under_limit() {
+        let content = "x".repeat(MAX_TOOL_RESULT_CHARS);
+        let bounded = bound_tool_result(&content);
+        assert_eq!(bounded, content);
+    }
+
+    #[test]
+    fn bound_tool_result_truncates_over_limit() {
+        // One char over the limit triggers truncation.
+        let original = "y".repeat(MAX_TOOL_RESULT_CHARS + 1000);
+        let bounded = bound_tool_result(&original);
+        assert!(bounded.len() < original.len());
+        // Truncated body is exactly MAX_TOOL_RESULT_CHARS of the original,
+        // followed by the two-newline separator and the notice.
+        let body: String = original.chars().take(MAX_TOOL_RESULT_CHARS).collect();
+        assert!(bounded.starts_with(&body));
+        assert!(bounded.contains("output truncated"));
+        assert!(bounded.contains(&format!("original was {} chars", MAX_TOOL_RESULT_CHARS + 1000)));
+        assert!(bounded.contains(&format!("showing first {MAX_TOOL_RESULT_CHARS}")));
+    }
+
+    #[test]
+    fn bound_tool_result_handles_empty_string() {
+        assert_eq!(bound_tool_result(""), "");
+    }
+
+    #[test]
+    fn compact_content_short_elides_entirely() {
+        // Below COMPACT_HEAD_CHARS + COMPACT_TAIL_CHARS (1000). Full elision.
+        let short = "abc".repeat(10); // 30 chars
+        let compacted = compact_content("read_file", &short);
+        assert!(compacted.starts_with(ELISION_MARKER));
+        assert!(compacted.contains("30 chars"));
+        // No excerpt markers for short content.
+        assert!(!compacted.contains("--- head ---"));
+        assert!(!compacted.contains("--- tail ---"));
+    }
+
+    #[test]
+    fn compact_content_long_includes_head_and_tail() {
+        // 2000 chars: well above the 1000-char excerpt threshold.
+        let mut payload = String::new();
+        payload.push_str("HEADMARK");
+        payload.push_str(&"a".repeat(492)); // 500 chars total head sentinel region
+        payload.push_str(&"m".repeat(1000)); // middle that should be dropped
+        payload.push_str(&"b".repeat(492));
+        payload.push_str("TAILMARK"); // 500 chars total tail sentinel region; total 2000
+        assert_eq!(payload.chars().count(), 2000);
+
+        let compacted = compact_content("read_file", &payload);
+        assert!(compacted.starts_with(ELISION_MARKER));
+        assert!(compacted.contains("originally 2000 chars"));
+        assert!(compacted.contains("--- head ---"));
+        assert!(compacted.contains("--- tail ---"));
+        // Head excerpt includes the head sentinel.
+        assert!(compacted.contains("HEADMARK"));
+        // Tail excerpt includes the tail sentinel.
+        assert!(compacted.contains("TAILMARK"));
+        // The dropped middle must not appear.
+        assert!(!compacted.contains('m'));
+    }
+
+    #[test]
+    fn compact_content_result_starts_with_elision_marker() {
+        // Both branches (short and long) must prefix ELISION_MARKER so the
+        // main loop's `!content.starts_with(ELISION_MARKER)` check treats an
+        // already-compacted result as not eligible for re-compaction.
+        let short = compact_content("grep_code", "tiny");
+        let long = compact_content("grep_code", &"z".repeat(2000));
+        assert!(short.starts_with(ELISION_MARKER));
+        assert!(long.starts_with(ELISION_MARKER));
     }
 }
