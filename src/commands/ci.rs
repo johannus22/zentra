@@ -67,9 +67,10 @@ pub async fn run() -> Result<()> {
     let findings = collect_findings(&events);
     let artifacts = write_ci_artifacts(&root, &context, &findings, fail_threshold)?;
     println!(
-        "Wrote CI artifacts: {}, {}",
+        "Wrote CI artifacts: {}, {}, {}",
         artifacts.markdown.display(),
-        artifacts.json.display()
+        artifacts.json.display(),
+        artifacts.sarif.display()
     );
 
     if let Err(err) = publish_comment_best_effort(&context, &findings, fail_threshold).await {

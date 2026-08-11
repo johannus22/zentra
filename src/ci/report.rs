@@ -11,6 +11,7 @@ use crate::state::{Finding, Severity};
 pub struct CiArtifactPaths {
     pub markdown: PathBuf,
     pub json: PathBuf,
+    pub sarif: PathBuf,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
@@ -55,6 +56,7 @@ pub fn write_ci_artifacts(
 
     let markdown = output_dir.join("ci-report.md");
     let json = output_dir.join("ci-report.json");
+    let sarif = output_dir.join("ci-report.sarif");
 
     fs::write(
         &markdown,
@@ -69,8 +71,9 @@ pub fn write_ci_artifacts(
             findings,
         })?,
     )?;
+    fs::write(&sarif, crate::state::sarif::render_sarif(findings))?;
 
-    Ok(CiArtifactPaths { markdown, json })
+    Ok(CiArtifactPaths { markdown, json, sarif })
 }
 
 pub fn severity_counts(findings: &[Finding]) -> SeverityCounts {
