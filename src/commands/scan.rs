@@ -208,7 +208,10 @@ async fn run_once(
     // skip scanners that completed successfully in a prior (crashed) run.
     // A fresh (non-resume) scan clears any stale checkpoint so it starts clean.
     let resume_checkpoint = if resume {
-        Some(crate::agent::checkpoint::Checkpoint::load(&zentra_dir))
+        Some(
+            crate::agent::checkpoint::Checkpoint::load_strict(&zentra_dir)
+                .context("Cannot resume: checkpoint.json is missing or corrupt")?,
+        )
     } else {
         crate::agent::checkpoint::Checkpoint::clear(&zentra_dir);
         None
@@ -223,7 +226,9 @@ async fn run_once(
     let decision = decide_mode(ModeInputs {
         // Pack mode sends the whole repository, so an incremental baseline has
         // nothing to narrow. The two modes are mutually exclusive by definition.
-        forced_full: full || pack_options.pack,
+        // Resume replays completed scanner state. It must never enter the
+        // incremental reconciliation path.
+        forced_full: full || pack_options.pack || resume,
         is_git_repo: is_git,
         current_engine_version: engine_version,
         current_model_id: &model_id,

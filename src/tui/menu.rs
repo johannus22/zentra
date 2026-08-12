@@ -53,14 +53,10 @@ const MAX_MENU_ACTION: usize = 7;
 const MENU_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 
 /// Whether a resumable scan checkpoint exists in `.zentra/checkpoint.json`.
-/// The menu uses this to enable the "Resume Last Scan" item. A missing or
-/// empty checkpoint means no prior run is resumable, so the item stays dim.
+/// The menu uses this to enable the "Resume Last Scan" item. An empty but
+/// valid checkpoint is a resumable scan with no completed scanners.
 fn checkpoint_available() -> bool {
-    std::fs::read_to_string(".zentra/checkpoint.json")
-        .ok()
-        .and_then(|s| serde_json::from_str::<crate::agent::checkpoint::Checkpoint>(&s).ok())
-        .map(|cp| !cp.completed.is_empty())
-        .unwrap_or(false)
+    crate::agent::checkpoint::Checkpoint::load_strict(std::path::Path::new(".zentra")).is_ok()
 }
 
 pub fn main_menu_actions() -> &'static [&'static str] {
