@@ -7,6 +7,8 @@ pub mod config;
 pub mod incremental;
 pub mod logging;
 pub mod pentest;
+#[path = "pentest/sandbox/mod.rs"]
+pub mod sandbox;
 pub mod provider;
 pub mod scanners;
 pub mod security;
