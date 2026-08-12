@@ -306,7 +306,7 @@ async fn run_once(
         });
 
     let state_writer = Arc::new(
-        StateWriter::open(&target_root, false)
+        StateWriter::open(&target_root, resume)
             .context("Failed to initialize .zentra/ directory")?,
     );
     let tool_registry = Arc::new(ToolRegistry::new());

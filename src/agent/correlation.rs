@@ -17,6 +17,8 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::provider::{AgentMessage, LLMProvider, ToolDefinition};
 use crate::state::Finding;
 
@@ -26,7 +28,11 @@ const MAX_DESC_LEN: usize = 300;
 const TITLE_JACCARD_THRESHOLD: f32 = 0.5;
 
 /// Correlate findings across scanners, merging duplicates and recording corroboration.
-pub async fn correlate(provider: &Arc<dyn LLMProvider>, findings: Vec<Finding>) -> Vec<Finding> {
+pub async fn correlate(
+    provider: &Arc<dyn LLMProvider>,
+    findings: Vec<Finding>,
+    cancel_token: Option<&CancellationToken>,
+) -> Vec<Finding> {
     if findings.len() < 2 {
         return findings;
     }
@@ -38,7 +44,7 @@ pub async fn correlate(provider: &Arc<dyn LLMProvider>, findings: Vec<Finding>) 
     }
 
     // Phase B: LLM semantic clustering for what remains.
-    match llm_clusters(provider, &pre).await {
+    match llm_clusters(provider, &pre, cancel_token).await {
         Some(clusters) => apply_clusters(pre, clusters),
         None => pre, // LLM failed / returned nothing usable — keep the pre-pass result.
     }
@@ -108,6 +114,7 @@ fn title_jaccard(a: &str, b: &str) -> f32 {
 async fn llm_clusters(
     provider: &Arc<dyn LLMProvider>,
     findings: &[Finding],
+    cancel_token: Option<&CancellationToken>,
 ) -> Option<Vec<Vec<usize>>> {
     let tool = ToolDefinition {
         name: "report_clusters".to_string(),
@@ -160,7 +167,7 @@ Call report_clusters with groups of indices that describe the same underlying vu
 
     let messages = vec![AgentMessage::User(user)];
     let resp = match provider
-        .complete_with_tools(system, &messages, std::slice::from_ref(&tool), 1024, None)
+        .complete_with_tools(system, &messages, std::slice::from_ref(&tool), 1024, cancel_token)
         .await
     {
         Ok(r) => r,
