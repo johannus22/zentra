@@ -729,8 +729,8 @@ fn menu_state_navigate_wraps() {
         String::new(),
         String::new(),
     );
-    // 7 items: RunFull(0), Clone(1), RunPentest(2), SelectScanners(3),
-    // ViewResults(4), Settings(5), Exit(6)
+    // 8 items: RunFull(0), Resume(1), Clone(2), RunPentest(3), SelectScanners(4),
+    // ViewResults(5), Settings(6), Exit(7)
     state.next();
     assert_eq!(state.selected_idx, 1);
     state.next(); // 2
@@ -740,10 +740,12 @@ fn menu_state_navigate_wraps() {
     assert_eq!(state.selected_idx, 5);
     state.next(); // 6
     assert_eq!(state.selected_idx, 6);
+    state.next(); // 7
+    assert_eq!(state.selected_idx, 7);
     state.next(); // clamp at max
-    assert_eq!(state.selected_idx, 6);
+    assert_eq!(state.selected_idx, 7);
     state.prev();
-    assert_eq!(state.selected_idx, 5);
+    assert_eq!(state.selected_idx, 6);
 }
 
 #[test]
@@ -758,12 +760,13 @@ fn menu_state_disabled_items_when_unconfigured() {
         String::new(),
     ); // no provider, no project
     assert!(!state.is_item_enabled(0)); // Run Full Scan
-    assert!(!state.is_item_enabled(1)); // Clone Repo & Scan
-    assert!(state.is_item_enabled(2)); // Run Pentest
-    assert!(!state.is_item_enabled(3)); // Select Scanners
-    assert!(state.is_item_enabled(4)); // View Last Results
-    assert!(state.is_item_enabled(5)); // Settings
-    assert!(state.is_item_enabled(6)); // Exit
+    assert!(!state.is_item_enabled(1)); // Resume Last Scan (no checkpoint)
+    assert!(!state.is_item_enabled(2)); // Clone Repo & Scan
+    assert!(state.is_item_enabled(3)); // Run Pentest
+    assert!(!state.is_item_enabled(4)); // Select Scanners
+    assert!(state.is_item_enabled(5)); // View Last Results
+    assert!(state.is_item_enabled(6)); // Settings
+    assert!(state.is_item_enabled(7)); // Exit
 }
 
 #[test]
@@ -1039,20 +1042,21 @@ fn menu_state_navigate_new_max_is_9() {
         String::new(),
         String::new(),
     );
-    for _ in 0..6 {
+    for _ in 0..7 {
         state.next();
     }
-    assert_eq!(state.selected_idx, 6);
+    assert_eq!(state.selected_idx, 7);
     state.next(); // clamp
-    assert_eq!(state.selected_idx, 6);
+    assert_eq!(state.selected_idx, 7);
 }
 
 #[test]
 fn menu_state_main_menu_has_clone_action() {
     let actions = main_menu_actions();
     assert_eq!(actions[0], "Run Full Scan (this directory)");
-    assert_eq!(actions[1], "Clone Repo & Scan");
-    assert_eq!(actions[2], "Run Pentest");
+    assert_eq!(actions[1], "Resume Last Scan");
+    assert_eq!(actions[2], "Clone Repo & Scan");
+    assert_eq!(actions[3], "Run Pentest");
 }
 
 #[test]
@@ -1081,12 +1085,13 @@ fn settings_form_save_persists_and_clears_output_dir() {
 }
 
 #[test]
-fn menu_state_main_menu_has_seven_actions() {
-    assert_eq!(main_menu_actions().len(), 7);
+fn menu_state_main_menu_has_eight_actions() {
+    assert_eq!(main_menu_actions().len(), 8);
     assert_eq!(
         main_menu_actions(),
         &[
             "Run Full Scan (this directory)",
+            "Resume Last Scan",
             "Clone Repo & Scan",
             "Run Pentest",
             "Select Scanners",

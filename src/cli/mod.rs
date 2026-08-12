@@ -100,6 +100,11 @@ pub enum Commands {
         /// directory. Off by default — HARs contain bodies that may include secrets.
         #[arg(long = "capture-har")]
         capture_har: bool,
+        /// Resume a prior pentest: skip stages that completed successfully.
+        /// The checkpoint lives in the pentest output directory. A completed
+        /// pentest clears it automatically.
+        #[arg(long)]
+        resume: bool,
         /// Disable nmap in Stage 0 recon (nmap runs by default)
         #[arg(long = "no-nmap")]
         no_nmap: bool,

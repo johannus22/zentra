@@ -101,6 +101,10 @@ async fn run() -> anyhow::Result<()> {
                     commands::scan::run_with_scanners(scanners).await?;
                     // loop continues so scan UI q/Esc returns here
                 }
+                MenuAction::ResumeScan => {
+                    commands::scan::run(None, None, false, false, false, true).await?;
+                    // loop continues so scan UI q/Esc returns here
+                }
                 MenuAction::CloneAndScan(url) => {
                     if let Err(e) = commands::clone::run_clone_and_scan(url).await {
                         zentra_cli::logging::error("menu", format!("clone-and-scan failed: {e:#}"));
@@ -112,7 +116,7 @@ async fn run() -> anyhow::Result<()> {
                     if let Some(result) =
                         zentra_cli::tui::pentest_setup::run_pentest_setup().await?
                     {
-                        commands::pentest::run_config(result.config, result.auth).await?;
+                        commands::pentest::run_config(result.config, result.auth, false).await?;
                     }
                 }
                 MenuAction::ViewLastResults => {
@@ -171,6 +175,7 @@ async fn run() -> anyhow::Result<()> {
             whatweb,
             html_fingerprint,
             capture_har,
+            resume,
         }) => {
             commands::pentest::run(
                 url,
@@ -187,6 +192,7 @@ async fn run() -> anyhow::Result<()> {
                 whatweb,
                 html_fingerprint,
                 capture_har,
+                resume,
             )
             .await?
         }
