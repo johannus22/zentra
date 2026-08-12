@@ -1520,6 +1520,122 @@ async fn orchestrator_incremental_carries_and_reconciles() {
 }
 
 #[tokio::test]
+async fn orchestrator_replays_retained_findings_for_skipped_scanner() {
+    use zentra_cli::agent::checkpoint::Checkpoint;
+    use zentra_cli::state::{Finding, Severity, StateWriter};
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let writer = Arc::new(StateWriter::open(dir.path(), true).unwrap());
+    let finding = Finding {
+        scanner: "sast".into(),
+        severity: Severity::High,
+        title: "Retained finding".into(),
+        description: "d".into(),
+        location: Some("src/main.rs:1".into()),
+        recommendation: "r".into(),
+        corroborated_by: vec![],
+        cwe: None,
+        secondary_cwe: vec![],
+        cvss_vector: None,
+        cvss_score: None,
+        owasp: None,
+        confidence: None,
+        screening: None,
+    };
+    writer.write_finding(&finding).unwrap();
+
+    let mut checkpoint = Checkpoint::default();
+    checkpoint.completed.insert("sast".into());
+    let provider = Arc::new(test_support::NoopProvider);
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let (tx, mut rx) = mpsc::channel(32);
+
+    OrchestratorAgent::new(
+        provider,
+        registry,
+        writer,
+        tx,
+        CancellationToken::new(),
+    )
+    .with_resume(Some(checkpoint))
+    .run(&[ScannerType::Sast])
+    .await
+    .unwrap();
+
+    let mut events = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        events.push(event);
+    }
+    assert!(matches!(events.first(), Some(ScanEvent::ScannerStarted(ScannerType::Sast))));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ScanEvent::FindingAdded(f) if f.title == "Retained finding"
+    )));
+    assert!(matches!(events.last(), Some(ScanEvent::ScannerCompleted(ScannerType::Sast))));
+}
+
+#[tokio::test]
+async fn orchestrator_reruns_report_when_a_prior_scanner_reruns_on_resume() {
+    use zentra_cli::agent::checkpoint::Checkpoint;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("scan failure"))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let writer = Arc::new(StateWriter::open(dir.path(), true).unwrap());
+    writer
+        .write_finding(&Finding {
+            scanner: "report".into(),
+            severity: Severity::Info,
+            title: "Stale report finding".into(),
+            description: "stale".into(),
+            location: None,
+            recommendation: "refresh".into(),
+            corroborated_by: vec![],
+            cwe: None,
+            secondary_cwe: vec![],
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
+            confidence: None,
+            screening: None,
+        })
+        .unwrap();
+
+    let mut checkpoint = Checkpoint::default();
+    checkpoint.completed.insert("report".into());
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
+        OpenAICompatProvider::new(server.uri(), "gpt-4o".into(), "key".into()),
+    );
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let (tx, _rx) = mpsc::channel(32);
+
+    let summary = OrchestratorAgent::new(
+        provider,
+        registry,
+        writer.clone(),
+        tx,
+        CancellationToken::new(),
+    )
+    .with_resume(Some(checkpoint))
+    .run(&[ScannerType::Sast, ScannerType::Report])
+    .await
+    .unwrap();
+
+    assert!(summary.failed.contains(&ScannerType::Sast));
+    assert!(summary.failed.contains(&ScannerType::Report));
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    assert!(!writer.read_findings_raw().unwrap().contains("Stale report finding"));
+
+    let persisted = Checkpoint::load(&dir.path().join(".zentra"));
+    assert!(!persisted.completed.contains("report"));
+}
+
+#[tokio::test]
 async fn orchestrator_scopes_sast_but_not_supply_chain_on_incremental_run() {
     use zentra_cli::incremental::ChangeSet;
 

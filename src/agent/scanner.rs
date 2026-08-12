@@ -249,7 +249,12 @@ For example, do not flag SQL injection if the ORM listed here auto-parameterises
             .await
             .ok();
 
+        let mut completed_normally = false;
+        let mut prompt_guard_aborted = false;
         'react: for _iter in 0..MAX_ITERATIONS {
+            if self.cancel_token.is_cancelled() {
+                break 'react;
+            }
             // Guard: never send a request that would overflow the model's
             // context window. Compact oldest tool results to fit; if even the
             // minimal request is too large, abort this scanner visibly rather
@@ -317,6 +322,7 @@ For example, do not flag SQL injection if the ORM listed here auto-parameterises
 
             if resp.tool_calls.is_empty() {
                 // Agent signalled it's done (no more tool calls)
+                completed_normally = true;
                 break;
             }
 
@@ -461,6 +467,7 @@ For example, do not flag SQL injection if the ORM listed here auto-parameterises
                     })
                     .await
                     .ok();
+                prompt_guard_aborted = true;
                 break;
             }
         }
@@ -469,6 +476,28 @@ For example, do not flag SQL injection if the ORM listed here auto-parameterises
             .send(ScanEvent::ScannerCompleted(self.scanner_type))
             .await
             .ok();
+
+        if self.cancel_token.is_cancelled() {
+            return Err(anyhow::anyhow!("scanner cancelled"));
+        }
+        if prompt_guard_aborted {
+            return Err(anyhow::anyhow!(
+                "scanner aborted after repeated prompt-injection attempts"
+            ));
+        }
+        if !completed_normally {
+            let message = format!(
+                "scanner exhausted the maximum of {MAX_ITERATIONS} iterations"
+            );
+            self.tx
+                .send(ScanEvent::Error {
+                    scanner: self.scanner_type,
+                    message: message.clone(),
+                })
+                .await
+                .ok();
+            return Err(anyhow::anyhow!(message));
+        }
         Ok(())
     }
 }

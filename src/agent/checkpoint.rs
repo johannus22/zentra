@@ -29,6 +29,19 @@ impl Checkpoint {
         }
     }
 
+    /// Load an explicitly requested resume checkpoint.
+    ///
+    /// Unlike the best-effort loader used by the legacy pentest path, resume
+    /// for a static scan must not turn a missing or corrupt file into a fresh
+    /// scan.
+    pub fn load_strict(zentra_dir: &Path) -> anyhow::Result<Self> {
+        let path = zentra_dir.join("checkpoint.json");
+        let contents = std::fs::read_to_string(&path)
+            .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display()))?;
+        serde_json::from_str(&contents)
+            .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", path.display()))
+    }
+
     /// Save to `.zentra/checkpoint.json`. Best-effort: errors are logged, not fatal.
     pub fn save(&self, zentra_dir: &Path) {
         let path = zentra_dir.join("checkpoint.json");
@@ -87,6 +100,25 @@ mod tests {
         let cp = Checkpoint::load(&dir);
         assert!(cp.completed.is_empty());
         assert!(cp.updated_at.is_empty());
+    }
+
+    #[test]
+    fn strict_load_rejects_missing_and_corrupt_files() {
+        let tmp = TempDir::new().unwrap();
+        let dir = zentra_dir(&tmp);
+        assert!(Checkpoint::load_strict(&dir).is_err());
+
+        std::fs::write(dir.join("checkpoint.json"), "not valid json {{{").unwrap();
+        assert!(Checkpoint::load_strict(&dir).is_err());
+    }
+
+    #[test]
+    fn strict_load_accepts_empty_checkpoint() {
+        let tmp = TempDir::new().unwrap();
+        let dir = zentra_dir(&tmp);
+        std::fs::write(dir.join("checkpoint.json"), "{}").unwrap();
+        let checkpoint = Checkpoint::load_strict(&dir).unwrap();
+        assert!(checkpoint.completed.is_empty());
     }
 
     #[test]

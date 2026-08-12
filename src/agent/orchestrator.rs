@@ -121,6 +121,11 @@ impl OrchestratorAgent {
     pub async fn run(mut self, scanners: &[ScannerType]) -> Result<RunSummary> {
         let mut failed: Vec<ScannerType> = Vec::new();
 
+        if self.resume.is_some() && self.incremental.is_some() {
+            anyhow::bail!("--resume cannot be combined with incremental scanning");
+        }
+        let is_resume = self.resume.is_some();
+
         // Resolve the resume checkpoint. When `resume` is `None` (no --resume
         // flag), create a fresh empty one and write it as scanners complete, so
         // a crash enables a future resume. When `Some(cp)`, use the loaded
@@ -134,31 +139,130 @@ impl OrchestratorAgent {
             checkpoint.save(&zentra_dir);
         }
 
-        // On resume, strip findings from scanners that are about to re-run,
-        // so they don't append duplicates on top of their prior partial output.
-        // Scanners marked completed in the checkpoint keep their findings.
-        if !checkpoint.completed.is_empty() {
-            let raw = self.state_writer.read_findings_raw().unwrap_or_default();
-            let all = crate::state::parse_findings(&raw);
-            let kept: Vec<&Finding> = all
-                .iter()
-                .filter(|f| checkpoint.is_completed(&f.scanner))
-                .collect();
-            if kept.len() != all.len() {
-                let kept: Vec<Finding> = kept.into_iter().cloned().collect();
-                let _ = self.state_writer.rewrite_findings(&kept);
-            }
-        }
-
         // Phase 0: FrameworkAnalysis — builds .zentra/architecture.md for all subsequent scanners.
         // Skip on resume when the checkpoint marks "framework" and the architecture file exists.
         let skip_framework = checkpoint.is_completed(ScannerType::FrameworkAnalysis.name())
             && self.state_writer.architecture_exists();
+
+        // A completed report is stale when any requested scanner before it will
+        // run again. Invalidate it before replaying skipped events so the report
+        // is regenerated from the current findings.
+        let rerunning_pre_report = [
+            ScannerType::FrameworkAnalysis,
+            ScannerType::ThreatModel,
+            ScannerType::Sast,
+            ScannerType::SupplyChain,
+            ScannerType::ApiScan,
+            ScannerType::IacScan,
+        ]
+        .iter()
+        .any(|&scanner| {
+            scanners.contains(&scanner)
+                && match scanner {
+                    ScannerType::FrameworkAnalysis => !skip_framework,
+                    _ => !checkpoint.is_completed(scanner.name()),
+                }
+        });
+        if scanners.contains(&ScannerType::Report)
+            && rerunning_pre_report
+            && checkpoint.completed.remove(ScannerType::Report.name())
+        {
+            checkpoint.updated_at = chrono::Utc::now().to_rfc3339();
+            checkpoint.save(&zentra_dir);
+        }
+
+        // On resume, remove findings for every scanner that will run again.
+        // An empty, valid checkpoint means no scanner completed, so it starts
+        // with a clean findings set rather than appending to stale output.
+        let raw = self.state_writer.read_findings_raw().unwrap_or_default();
+        let all_findings = crate::state::parse_findings(&raw);
+        let will_run = |scanner: ScannerType| match scanner {
+            ScannerType::FrameworkAnalysis => {
+                scanners.contains(&scanner) && !skip_framework
+            }
+            _ => scanners.contains(&scanner) && !checkpoint.is_completed(scanner.name()),
+        };
+        let kept: Vec<Finding> = if is_resume && checkpoint.completed.is_empty() {
+            Vec::new()
+        } else if is_resume {
+            all_findings
+                .iter()
+                .filter(|finding| {
+                    ![ScannerType::FrameworkAnalysis, ScannerType::ThreatModel,
+                        ScannerType::Sast, ScannerType::SupplyChain, ScannerType::ApiScan,
+                        ScannerType::IacScan, ScannerType::Report]
+                        .iter()
+                        .any(|&scanner| scanner.name() == finding.scanner && will_run(scanner))
+                })
+                .cloned()
+                .collect()
+        } else {
+            all_findings.clone()
+        };
+        if (is_resume && checkpoint.completed.is_empty()) || kept.len() != all_findings.len() {
+            let _ = self.state_writer.rewrite_findings(&kept);
+        }
+
+        // Replay skipped scanners through the same event channel as active
+        // scanners. This keeps the TUI's terminal state and finding counters
+        // complete during a resume.
+        let skipped = [
+            (
+                ScannerType::FrameworkAnalysis,
+                scanners.contains(&ScannerType::FrameworkAnalysis) && skip_framework,
+            ),
+            (
+                ScannerType::ThreatModel,
+                scanners.contains(&ScannerType::ThreatModel)
+                    && checkpoint.is_completed(ScannerType::ThreatModel.name()),
+            ),
+            (
+                ScannerType::Sast,
+                scanners.contains(&ScannerType::Sast)
+                    && checkpoint.is_completed(ScannerType::Sast.name()),
+            ),
+            (
+                ScannerType::SupplyChain,
+                scanners.contains(&ScannerType::SupplyChain)
+                    && checkpoint.is_completed(ScannerType::SupplyChain.name()),
+            ),
+            (
+                ScannerType::ApiScan,
+                scanners.contains(&ScannerType::ApiScan)
+                    && checkpoint.is_completed(ScannerType::ApiScan.name()),
+            ),
+            (
+                ScannerType::IacScan,
+                scanners.contains(&ScannerType::IacScan)
+                    && checkpoint.is_completed(ScannerType::IacScan.name()),
+            ),
+            (
+                ScannerType::Report,
+                scanners.contains(&ScannerType::Report)
+                    && checkpoint.is_completed(ScannerType::Report.name()),
+            ),
+        ];
+        for (scanner, is_skipped) in skipped {
+            if !is_skipped {
+                continue;
+            }
+            self.tx.send(ScanEvent::ScannerStarted(scanner)).await.ok();
+            for finding in &kept {
+                if finding.scanner == scanner.name() {
+                    self.tx
+                        .send(ScanEvent::FindingAdded(finding.clone()))
+                        .await
+                        .ok();
+                }
+            }
+            self.tx.send(ScanEvent::ScannerCompleted(scanner)).await.ok();
+        }
+
         if !skip_framework && scanners.contains(&ScannerType::FrameworkAnalysis) {
             if self
                 .run_llm_scanner(ScannerType::FrameworkAnalysis, None)
                 .await
-                .is_ok()
+                .is_ok() && !self.cancel_token.is_cancelled()
             {
                 checkpoint.mark_completed(&zentra_dir, ScannerType::FrameworkAnalysis.name());
             } else {
@@ -207,7 +311,7 @@ impl OrchestratorAgent {
             if self
                 .run_llm_scanner(ScannerType::ThreatModel, context_opt.as_deref())
                 .await
-                .is_ok()
+                .is_ok() && !self.cancel_token.is_cancelled()
             {
                 checkpoint.mark_completed(&zentra_dir, ScannerType::ThreatModel.name());
             } else {
@@ -286,7 +390,11 @@ impl OrchestratorAgent {
             for (scanner_type, handle) in handles {
                 match handle.await {
                     Ok(Ok(())) => {
-                        checkpoint.mark_completed(&zentra_dir, scanner_type.name());
+                        if !self.cancel_token.is_cancelled() {
+                            checkpoint.mark_completed(&zentra_dir, scanner_type.name());
+                        } else {
+                            failed.push(scanner_type);
+                        }
                     }
                     Ok(Err(_)) => {
                         failed.push(scanner_type);
@@ -332,17 +440,19 @@ impl OrchestratorAgent {
         // Incremental reconciliation: merge fresh findings (just written by the
         // focused scanners) with the prior set, before correlation/report read them.
         let mut delta = None;
-        if let Some(ctx) = self.incremental.take() {
-            let raw = self.state_writer.read_findings_raw().unwrap_or_default();
-            let fresh = crate::state::parse_findings(&raw);
-            let (merged, d) = reconcile(ctx.prior, fresh, &ctx.change_set);
-            if let Err(e) = self.state_writer.rewrite_findings(&merged) {
-                crate::logging::warn(
-                    "orchestrator",
-                    format!("incremental reconcile: failed to rewrite findings: {e}"),
-                );
+        if !is_resume {
+            if let Some(ctx) = self.incremental.take() {
+                let raw = self.state_writer.read_findings_raw().unwrap_or_default();
+                let fresh = crate::state::parse_findings(&raw);
+                let (merged, d) = reconcile(ctx.prior, fresh, &ctx.change_set);
+                if let Err(e) = self.state_writer.rewrite_findings(&merged) {
+                    crate::logging::warn(
+                        "orchestrator",
+                        format!("incremental reconcile: failed to rewrite findings: {e}"),
+                    );
+                }
+                delta = Some(d);
             }
-            delta = Some(d);
         }
 
         if self.cancel_token.is_cancelled() {
@@ -410,7 +520,7 @@ impl OrchestratorAgent {
             if self
                 .run_llm_scanner(ScannerType::Report, context_opt.as_deref())
                 .await
-                .is_ok()
+                .is_ok() && !self.cancel_token.is_cancelled()
             {
                 checkpoint.mark_completed(&zentra_dir, ScannerType::Report.name());
             } else {
@@ -437,7 +547,7 @@ impl OrchestratorAgent {
 
         // A complete scan leaves no checkpoint behind. A scan with failures
         // leaves the checkpoint so the operator can resume the missing scanners.
-        if failed.is_empty() {
+        if failed.is_empty() && !self.cancel_token.is_cancelled() {
             Checkpoint::clear(&zentra_dir);
         }
 
