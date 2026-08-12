@@ -21,6 +21,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::provider::{AgentMessage, LLMProvider, ToolDefinition};
 use crate::state::finding::Screening;
 use crate::state::Finding;
@@ -44,6 +46,7 @@ pub async fn screen(
     provider: &Arc<dyn LLMProvider>,
     project_root: &std::path::Path,
     findings: Vec<Finding>,
+    cancel_token: Option<&CancellationToken>,
 ) -> Vec<Finding> {
     if findings.is_empty() {
         return findings;
@@ -52,7 +55,7 @@ pub async fn screen(
     let mut verdicts: BTreeMap<usize, (Screening, Option<u8>)> = BTreeMap::new();
     for (batch_index, batch) in findings.chunks(BATCH_SIZE).enumerate() {
         let offset = batch_index * BATCH_SIZE;
-        if let Some(batch_verdicts) = screen_batch(provider, project_root, batch).await {
+        if let Some(batch_verdicts) = screen_batch(provider, project_root, batch, cancel_token).await {
             for (local_index, verdict) in batch_verdicts {
                 if local_index < batch.len() {
                     verdicts.insert(offset + local_index, verdict);
@@ -89,6 +92,7 @@ async fn screen_batch(
     provider: &Arc<dyn LLMProvider>,
     project_root: &std::path::Path,
     batch: &[Finding],
+    cancel_token: Option<&CancellationToken>,
 ) -> Option<Vec<(usize, (Screening, Option<u8>))>> {
     let tool = ToolDefinition {
         name: "report_screening".to_string(),
@@ -134,7 +138,7 @@ async fn screen_batch(
     let messages = vec![AgentMessage::User(user)];
 
     let response = match provider
-        .complete_with_tools(SYSTEM_PROMPT, &messages, std::slice::from_ref(&tool), 2048, None)
+        .complete_with_tools(SYSTEM_PROMPT, &messages, std::slice::from_ref(&tool), 2048, cancel_token)
         .await
     {
         Ok(response) => response,
