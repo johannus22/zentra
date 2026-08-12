@@ -134,6 +134,22 @@ impl OrchestratorAgent {
             checkpoint.save(&zentra_dir);
         }
 
+        // On resume, strip findings from scanners that are about to re-run,
+        // so they don't append duplicates on top of their prior partial output.
+        // Scanners marked completed in the checkpoint keep their findings.
+        if !checkpoint.completed.is_empty() {
+            let raw = self.state_writer.read_findings_raw().unwrap_or_default();
+            let all = crate::state::parse_findings(&raw);
+            let kept: Vec<&Finding> = all
+                .iter()
+                .filter(|f| checkpoint.is_completed(&f.scanner))
+                .collect();
+            if kept.len() != all.len() {
+                let kept: Vec<Finding> = kept.into_iter().cloned().collect();
+                let _ = self.state_writer.rewrite_findings(&kept);
+            }
+        }
+
         // Phase 0: FrameworkAnalysis — builds .zentra/architecture.md for all subsequent scanners.
         // Skip on resume when the checkpoint marks "framework" and the architecture file exists.
         let skip_framework = checkpoint.is_completed(ScannerType::FrameworkAnalysis.name())
@@ -329,6 +345,14 @@ impl OrchestratorAgent {
             delta = Some(d);
         }
 
+        if self.cancel_token.is_cancelled() {
+            return Ok(RunSummary {
+                failed,
+                delta,
+                coverage: crate::agent::coverage::CoverageSummary::default(),
+            });
+        }
+
         // Phase 2.5: correlate/dedup findings before the report consumes them.
         // Best-effort — never fatal, and never drops findings on failure.
         // Never skipped on resume: it may need to process findings from re-run scanners.
@@ -336,9 +360,19 @@ impl OrchestratorAgent {
             let raw = self.state_writer.read_findings_raw().unwrap_or_default();
             let parsed = crate::state::parse_findings(&raw);
             if parsed.len() > 1 {
-                let merged = crate::agent::correlation::correlate(&self.provider, parsed).await;
+                let merged =
+                    crate::agent::correlation::correlate(&self.provider, parsed, Some(&self.cancel_token))
+                        .await;
                 let _ = self.state_writer.rewrite_findings(&merged);
             }
+        }
+
+        if self.cancel_token.is_cancelled() {
+            return Ok(RunSummary {
+                failed,
+                delta,
+                coverage: crate::agent::coverage::CoverageSummary::default(),
+            });
         }
 
         // Phase 2.6: screen the deduplicated set for reachability, so the report
@@ -354,10 +388,19 @@ impl OrchestratorAgent {
                     &self.provider,
                     self.state_writer.project_root(),
                     parsed,
+                    Some(&self.cancel_token),
                 )
                 .await;
                 let _ = self.state_writer.rewrite_findings(&screened);
             }
+        }
+
+        if self.cancel_token.is_cancelled() {
+            return Ok(RunSummary {
+                failed,
+                delta,
+                coverage: crate::agent::coverage::CoverageSummary::default(),
+            });
         }
 
         // Phase 3: Report — sequential, runs last

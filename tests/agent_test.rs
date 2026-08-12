@@ -1292,7 +1292,7 @@ async fn correlate_merges_semantic_duplicates_via_llm() {
         },
     ];
 
-    let out = zentra_cli::agent::correlation::correlate(&provider, findings).await;
+    let out = zentra_cli::agent::correlation::correlate(&provider, findings, None).await;
     assert_eq!(out.len(), 1, "the two findings should collapse into one");
     // Primary prefers the member with a concrete location (sast).
     assert_eq!(out[0].scanner, "sast");
@@ -1398,7 +1398,7 @@ async fn correlate_preserves_findings_on_llm_failure() {
         },
     ];
 
-    let out = zentra_cli::agent::correlation::correlate(&provider, findings).await;
+    let out = zentra_cli::agent::correlation::correlate(&provider, findings, None).await;
     assert_eq!(
         out.len(),
         2,
@@ -2065,7 +2065,7 @@ async fn screening_pass_annotates_findings_from_the_provider_verdict() {
         screening_finding("Fixture SQLi", Some("db.rs:1")),
     ];
 
-    let out = zentra_cli::agent::screening::screen(&provider, dir.path(), findings).await;
+    let out = zentra_cli::agent::screening::screen(&provider, dir.path(), findings, None).await;
 
     assert_eq!(out.len(), 2);
     assert_eq!(
@@ -2094,7 +2094,7 @@ async fn screening_pass_returns_findings_unchanged_when_the_provider_fails() {
     );
     let findings = vec![screening_finding("Critical thing", Some("db.rs:1"))];
 
-    let out = zentra_cli::agent::screening::screen(&provider, dir.path(), findings).await;
+    let out = zentra_cli::agent::screening::screen(&provider, dir.path(), findings, None).await;
 
     assert_eq!(out.len(), 1, "a rate limit must never drop a finding");
     assert_eq!(out[0].screening, None, "unscreened, not silently confirmed");
@@ -2119,7 +2119,7 @@ async fn screening_pass_survives_a_response_with_no_tool_call() {
     );
     let findings = vec![screening_finding("Thing", None)];
 
-    let out = zentra_cli::agent::screening::screen(&provider, dir.path(), findings).await;
+    let out = zentra_cli::agent::screening::screen(&provider, dir.path(), findings, None).await;
 
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].screening, None);
@@ -2154,7 +2154,7 @@ async fn screening_pass_handles_more_findings_than_one_batch() {
         .map(|i| screening_finding(&format!("Finding {i}"), None))
         .collect();
 
-    let out = zentra_cli::agent::screening::screen(&provider, dir.path(), findings).await;
+    let out = zentra_cli::agent::screening::screen(&provider, dir.path(), findings, None).await;
 
     assert_eq!(out.len(), 10, "batching must not lose a finding");
     // Local index 0 of each batch maps to global 0 and 8.
