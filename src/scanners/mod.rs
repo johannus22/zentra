@@ -8,8 +8,8 @@ pub mod threat_model;
 
 use crate::agent::ScannerType;
 
-pub fn system_prompt(scanner: ScannerType) -> &'static str {
-    match scanner {
+pub fn system_prompt(scanner: ScannerType) -> String {
+    let base: &str = match scanner {
         ScannerType::FrameworkAnalysis => framework_analysis::system_prompt(),
         ScannerType::ThreatModel => threat_model::system_prompt(),
         ScannerType::Sast => sast::system_prompt(),
@@ -17,7 +17,12 @@ pub fn system_prompt(scanner: ScannerType) -> &'static str {
         ScannerType::ApiScan => api_scan::system_prompt(),
         ScannerType::IacScan => iac_scan::system_prompt(),
         ScannerType::Report => report::system_prompt(),
+    };
+    let skills = crate::skills::load_for_scanner(scanner.name());
+    if skills.is_empty() {
+        return base.to_string();
     }
+    format!("{}\n\n{}", base, crate::skills::render_section(&skills))
 }
 
 pub fn allowed_tools(scanner: ScannerType) -> &'static [&'static str] {

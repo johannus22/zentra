@@ -411,10 +411,14 @@ For example, do not flag SQL injection if the ORM listed here auto-parameterises
                     });
                 }
 
+                // Bound the result size so one large read_file or grep_code
+                // output cannot eat the whole context budget. Applied after
+                // the prompt guard so the guard scans the full content.
+                let bounded = context_budget::bound_tool_result(&wrapped);
                 messages.push(AgentMessage::ToolResult {
                     id: tc.id.clone(),
                     name: tc.name.clone(),
-                    content: wrapped,
+                    content: bounded,
                 });
             }
 
