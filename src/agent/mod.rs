@@ -1,3 +1,5 @@
+pub mod board;
+pub mod checkpoint;
 pub mod context_budget;
 pub mod correlation;
 pub mod coverage;

@@ -58,6 +58,10 @@ pub enum Commands {
         /// calling the provider
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// Resume a prior scan: skip scanners that completed successfully.
+        /// Reads .zentra/checkpoint.json.
+        #[arg(long)]
+        resume: bool,
     },
     /// Run dynamic browser pentest against an authorized target
     Pentest {
@@ -255,6 +259,24 @@ mod tests {
     fn parses_scan_defaults() {
         let cli = Cli::try_parse_from(["zentra", "scan"]).unwrap();
         assert!(matches!(cli.command, Some(Commands::Scan { .. })));
+    }
+
+    #[test]
+    fn parses_scan_resume_defaults_false() {
+        let cli = Cli::try_parse_from(["zentra", "scan"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Scan { resume: false, .. })
+        ));
+    }
+
+    #[test]
+    fn parses_scan_resume_flag() {
+        let cli = Cli::try_parse_from(["zentra", "scan", "--resume"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Scan { resume: true, .. })
+        ));
     }
 
     #[test]

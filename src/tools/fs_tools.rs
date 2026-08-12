@@ -134,6 +134,11 @@ pub fn source_file_paths(root: &Path) -> Vec<String> {
         .filter_map(|entry| {
             let relative = entry.path().strip_prefix(root).ok()?;
             let normalized = relative.to_string_lossy().replace('\\', "/");
+            // Exclude zentra's own output directory — its JSON/TOML/MD artifacts
+            // are not source files the scanner should have opened.
+            if normalized.starts_with(".zentra/") {
+                return None;
+            }
             is_source_file(&normalized).then_some(normalized)
         })
         .collect();
