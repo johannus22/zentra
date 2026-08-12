@@ -39,14 +39,20 @@ fn engine_kinds_default_to_docker() {
 
 #[tokio::test]
 async fn detect_returns_not_installed_when_docker_missing() {
-    let _lock = PATH_LOCK.lock().unwrap();
     let empty = TempDir::new().unwrap();
-    let old_path = std::env::var_os("PATH");
-    std::env::set_var("PATH", empty.path());
+    let old_path = {
+        let _lock = PATH_LOCK.lock().unwrap();
+        let old_path = std::env::var_os("PATH");
+        std::env::set_var("PATH", empty.path());
+        old_path
+    };
     let result = detect().await;
-    match old_path {
-        Some(path) => std::env::set_var("PATH", path),
-        None => std::env::remove_var("PATH"),
+    {
+        let _lock = PATH_LOCK.lock().unwrap();
+        match old_path {
+            Some(path) => std::env::set_var("PATH", path),
+            None => std::env::remove_var("PATH"),
+        }
     }
 
     assert!(matches!(result, Err(SandboxError::NotInstalled { .. })));
