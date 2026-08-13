@@ -290,22 +290,25 @@ Zentra includes an authorized dynamic pentest mode for live web targets:
 zentra pentest --url https://target.example --authorized
 ```
 
-Pentest mode is separate from static code scanning. Use it for controlled, authorized testing of a running application. It writes its own evidence and reports under `.zentra/pentest/`.
+Pentest mode is separate from static code scanning. Use it for controlled,
+authorized testing of a running application. Docker is required.
 
 Only run this mode against systems you own, or have explicit permission to test. The `--authorized` flag is required, so an accidental scan fails closed.
 
 ### What pentest mode does
 
-A pentest run combines network reconnaissance, browser-driven exploration, scoped probing, evidence capture, and report generation. It does the following:
+A pentest run uses three sandbox agents and report generation. It does the following:
 
 1. Validates the target URL and explicit authorization.
 2. Builds an in-scope target model, from the allowed hosts and paths.
-3. Runs Stage 0 network reconnaissance with `nmap`.
-4. Starts browser-capable agents, for application reconnaissance and probing.
-5. Captures evidence and findings as the run progresses.
-6. Writes pentest reports and an executive summary under `.zentra/pentest/`.
+3. Checks Docker and the pinned sandbox toolchain.
+4. Runs Recon, Exploit, and Validator agents in the sandbox.
+5. Captures evidence and validated findings as the run progresses.
+6. Writes pentest reports and an executive summary in the resolved output directory.
 
-Pentest mode may read previous static findings from `.zentra/detailed-findings.md`, to prioritize dynamic validation. In project mode (with `.zentra/config.json`), pentest findings sit alongside scan output. In standalone mode, pentest output stays separate, in the configured base directory.
+Pentest mode may read previous static findings from `.zentra/detailed-findings.md`.
+In project mode, output is under `.zentra/pentest/`. In standalone mode, output
+uses the configured base directory.
 
 ### Scope controls
 
@@ -339,37 +342,10 @@ This puts `app.com`, `auth.app.com`, and any deeper subdomain in scope. The matc
 
 A broad suffix scopes the whole domain. Pick the narrowest suffix that covers your portals. A public suffix like `co.uk` or shared hosting like `github.io` would put unrelated tenants in scope. Do not use those.
 
-### Network reconnaissance
-
-Pentest mode requires `nmap`, for Stage 0 service discovery.
-
-Default mode scans common and default ports:
-
-```bash
-zentra pentest --url https://target.example --authorized
-```
-
-Full TCP mode scans all TCP ports:
-
-```bash
-zentra pentest --url https://target.example --authorized --network-full-ports
-```
-
-If `nmap` is missing, Zentra reports install guidance. It does not silently skip network recon.
-
-### Stealth mode
-
-Use `--stealth` for lower-concurrency probing:
-
-```bash
-zentra pentest --url https://target.example --authorized --stealth
-```
-
-Stealth mode reduces request concurrency for directory brute force and probing. It does not make testing invisible. It is only a lower-noise mode.
-
 ### Authentication
 
-Pentest setup can run through the interactive TUI flow, when you launch from `zentra`. It can also run in blind or unauthenticated mode from the CLI. The pentest engine supports browser login details, bearer tokens, basic auth credentials, and cookies. It redacts sensitive values from logs and reports.
+The interactive setup accepts optional authentication fields. CLI mode runs
+without authentication fields. The command redacts sensitive values from logs.
 
 ### Pentest output
 
@@ -384,10 +360,8 @@ Standalone pentest mode does not create `.zentra/config.json`. It does not edit 
 
 Typical artifacts include:
 
-- Living log entries for stages and agent activity.
-- Captured evidence metadata.
+- Sandbox evidence and internal agent artifacts.
 - Finding reports, with severity, impact, reproduction steps, evidence paths, and remediation.
-- Network reconnaissance artifacts and summary data.
 - Executive summary markdown.
 
 ## Command reference
@@ -419,7 +393,6 @@ Zentra writes project-local output under `.zentra/`:
 .zentra/ci-report.md
 .zentra/ci-report.json
 .zentra/reports/
-.zentra/pentest/
 ```
 
 Do not commit secrets or scan state. The `init` command adds `.zentra/` to `.gitignore`.

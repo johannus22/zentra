@@ -19,7 +19,6 @@ anyhow = "1"
 base64 = "0.22"
 crossterm = "0.28"
 futures = "0.3"
-glob = "0.3"
 ratatui = "0.29"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -32,7 +31,6 @@ rand = "0.8"
 rayon = "1"
 regex = "1"
 reqwest = { version = "0.12", features = ["json"] }
-roxmltree = "0.20"
 rpassword = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -41,8 +39,6 @@ tempfile = "3"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 toml = "0.8"
-totp-rs = { version = "5", features = ["gen_secret", "serde_support"] }
-walkdir = "2"
 which = "6"
 zeroize = "1"
 
