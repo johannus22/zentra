@@ -79,4 +79,19 @@ const GITLAB_WORKFLOW: &str = r#"zentra_security_scan:
     paths:
       - .zentra/ci-report.md
       - .zentra/ci-report.json
+
+zentra_full_scan_staging:
+  stage: test
+  variables:
+    GIT_DEPTH: "0"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "staging"'
+  allow_failure: true
+  script:
+    - zentra ci --full --report-only
+  artifacts:
+    when: always
+    paths:
+      - .zentra/ci-report.md
+      - .zentra/ci-report.json
 "#;

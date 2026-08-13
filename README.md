@@ -157,6 +157,24 @@ Set `critical` to block on Critical findings only. This is more permissive than 
 
 Set `medium`, `low`, or `info` to block on lower-severity findings too. This is stricter than the default.
 
+### Staging triage tickets (GitLab)
+
+The GitLab CI workflow ships a second job for push-to-`staging` pipelines. The job runs a full repository scan. It never fails the pipeline. It files or updates one GitLab issue instead.
+
+The issue carries the labels `security` and `zentra-triage`. Zentra finds the existing issue by this label and by a hidden marker in the body. It updates that issue on each run. When no issue exists and findings are present, it creates a new one.
+
+Zentra assigns the issue to the owner of the GitLab token. Override this with `ZENTRA_TRIAGE_ASSIGNEE`. Set it to a GitLab username. Zentra looks up that user and assigns the issue to them.
+
+Provide a token through `ZENTRA_GITLAB_TOKEN`. Use a personal access token with the `api` scope. Add it as a masked CI/CD variable. The token owner becomes the assignee.
+
+When the token is absent, the scan still succeeds. Zentra prints setup guidance and leaves the findings in the pipeline artifacts. The artifacts live at `.zentra/ci-report.md` and `.zentra/ci-report.json`.
+
+The issue body keeps a "New since last run" section. Zentra computes it from finding fingerprints. It stores the fingerprints in a hidden comment inside the issue body. Each run compares the current fingerprints against the stored set. New findings appear in the section. This helps a reviewer see what changed since the last scan.
+
+The job uses `allow_failure: true`. The pipeline turns green even when findings exist. A human must verify each finding in the issue before the next release.
+
+The full scan job does not affect merge request pipelines. The merge request job still runs `zentra ci` and fails on findings at or above the threshold.
+
 ### Generate GitHub Actions workflow
 
 Run this command from the project you want to scan:

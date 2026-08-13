@@ -57,12 +57,44 @@ pub fn detect_ci_context_from_env(
     })
 }
 
+/// Build a `CiContext` for a full-repo scan, with no changed-file requirement.
+///
+/// `allow_push` lets the caller opt in to GitLab push pipelines (used by the
+/// `--full --report-only` staging job). When `allow_push` is false, only MR/PR
+/// pipelines are accepted — the same default as `detect_ci_context_from_env`.
+/// Changed and impact files are empty by design: a full scan does not diff.
+pub fn detect_full_scan_ci_context_from_env(
+    env: &HashMap<String, String>,
+    allow_push: bool,
+) -> Result<CiContext> {
+    let metadata = extract_ci_metadata_from_env_with_options(env, allow_push)?;
+
+    Ok(CiContext {
+        platform: metadata.platform,
+        base_ref: metadata.base_ref,
+        head_ref: metadata.head_ref,
+        changed_files: Vec::new(),
+        impact_files: Vec::new(),
+        commit_sha: metadata.commit_sha,
+        pr_or_mr_number: metadata.pr_or_mr_number,
+    })
+}
+
 pub(crate) fn extract_ci_metadata_from_current_env() -> Result<CiMetadata> {
     let env = std::env::vars().collect::<HashMap<_, _>>();
     extract_ci_metadata_from_env(&env)
 }
 
 pub(crate) fn extract_ci_metadata_from_env(env: &HashMap<String, String>) -> Result<CiMetadata> {
+    // Default path: MR/PR pipelines only. Push pipelines are only accepted when
+    // a caller explicitly opts in via `extract_ci_metadata_from_env_with_options`.
+    extract_ci_metadata_from_env_with_options(env, false)
+}
+
+fn extract_ci_metadata_from_env_with_options(
+    env: &HashMap<String, String>,
+    allow_push: bool,
+) -> Result<CiMetadata> {
     if env
         .get("GITHUB_ACTIONS")
         .is_some_and(|value| value == "true")
@@ -71,7 +103,7 @@ pub(crate) fn extract_ci_metadata_from_env(env: &HashMap<String, String>) -> Res
     }
 
     if env.get("GITLAB_CI").is_some_and(|value| value == "true") {
-        return extract_gitlab_metadata(env);
+        return extract_gitlab_metadata(env, allow_push);
     }
 
     bail!(PR_MR_ONLY_MESSAGE);
@@ -94,19 +126,36 @@ fn extract_github_metadata(env: &HashMap<String, String>) -> Result<CiMetadata> 
     })
 }
 
-fn extract_gitlab_metadata(env: &HashMap<String, String>) -> Result<CiMetadata> {
+fn extract_gitlab_metadata(
+    env: &HashMap<String, String>,
+    allow_push: bool,
+) -> Result<CiMetadata> {
     let mr_number = env.get("CI_MERGE_REQUEST_IID").cloned();
-    if mr_number.is_none() {
-        bail!(PR_MR_ONLY_MESSAGE);
+    if mr_number.is_some() {
+        return Ok(CiMetadata {
+            platform: CiPlatformKind::Gitlab,
+            base_ref: required(env, "CI_MERGE_REQUEST_TARGET_BRANCH_NAME")?,
+            head_ref: required(env, "CI_MERGE_REQUEST_SOURCE_BRANCH_NAME")?,
+            commit_sha: env.get("CI_COMMIT_SHA").cloned(),
+            pr_or_mr_number: mr_number,
+        });
     }
 
-    Ok(CiMetadata {
-        platform: CiPlatformKind::Gitlab,
-        base_ref: required(env, "CI_MERGE_REQUEST_TARGET_BRANCH_NAME")?,
-        head_ref: required(env, "CI_MERGE_REQUEST_SOURCE_BRANCH_NAME")?,
-        commit_sha: env.get("CI_COMMIT_SHA").cloned(),
-        pr_or_mr_number: mr_number,
-    })
+    // No MR metadata. Accept a push pipeline only when the caller opts in, and
+    // only for the GitLab platform — GitHub push is intentionally unsupported.
+    let pipeline_source = env.get("CI_PIPELINE_SOURCE").map(String::as_str);
+    if allow_push && matches!(pipeline_source, Some("push")) {
+        let branch = required(env, "CI_COMMIT_BRANCH")?;
+        return Ok(CiMetadata {
+            platform: CiPlatformKind::Gitlab,
+            base_ref: branch.clone(),
+            head_ref: branch,
+            commit_sha: env.get("CI_COMMIT_SHA").cloned(),
+            pr_or_mr_number: None,
+        });
+    }
+
+    bail!(PR_MR_ONLY_MESSAGE);
 }
 
 fn required(env: &HashMap<String, String>, name: &str) -> Result<String> {

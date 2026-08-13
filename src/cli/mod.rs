@@ -23,6 +23,16 @@ pub enum Commands {
         /// and comment — for refreshing the base-branch cache outside a pull request.
         #[arg(long = "refresh-architecture")]
         refresh_architecture: bool,
+        /// Scan the whole resolved target path instead of the PR/MR diff. Skips
+        /// changed-file detection. Pair with `--report-only` for a staging job.
+        #[arg(long)]
+        full: bool,
+        /// Never fail the pipeline on findings. Writes artifacts and files a
+        /// GitLab triage issue (on GitLab) instead of a sticky MR comment. The
+        /// fail threshold is still resolved and shown, but it does not gate the
+        /// exit code. Use with `--full` for push-to-staging pipelines.
+        #[arg(long = "report-only")]
+        report_only: bool,
     },
     /// Manage LLM provider configuration
     Config {
@@ -167,7 +177,8 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Commands::Ci {
-                refresh_architecture: false
+                refresh_architecture: false,
+                ..
             })
         ));
     }
@@ -178,7 +189,47 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Commands::Ci {
-                refresh_architecture: true
+                refresh_architecture: true,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn parses_ci_full_flag() {
+        let cli = Cli::try_parse_from(["zentra", "ci", "--full"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Ci {
+                full: true,
+                report_only: false,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn parses_ci_report_only_flag() {
+        let cli = Cli::try_parse_from(["zentra", "ci", "--report-only"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Ci {
+                full: false,
+                report_only: true,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn parses_ci_full_and_report_only_flags() {
+        let cli = Cli::try_parse_from(["zentra", "ci", "--full", "--report-only"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Ci {
+                full: true,
+                report_only: true,
+                ..
             })
         ));
     }

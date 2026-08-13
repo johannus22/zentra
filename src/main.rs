@@ -137,10 +137,13 @@ async fn run() -> anyhow::Result<()> {
         Some(cli::Commands::Init { ci }) => commands::init::run(ci).await?,
         Some(cli::Commands::Ci {
             refresh_architecture: true,
+            ..
         }) => commands::ci::refresh_architecture().await?,
         Some(cli::Commands::Ci {
             refresh_architecture: false,
-        }) => commands::ci::run().await?,
+            full,
+            report_only,
+        }) => commands::ci::run(full, report_only).await?,
         Some(cli::Commands::Config { action }) => match action {
             cli::ConfigAction::Setup => wizard::run_setup(None).await?,
             cli::ConfigAction::Add => wizard::run_setup(None).await?,
