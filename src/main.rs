@@ -81,7 +81,10 @@ async fn run() -> anyhow::Result<()> {
             if zentra_cli::tui::menu::tui_timing_enabled() {
                 zentra_cli::logging::warn(
                     "tui-timing",
-                    format!("menu re-entry reload: {} ms", reload_start.elapsed().as_millis()),
+                    format!(
+                        "menu re-entry reload: {} ms",
+                        reload_start.elapsed().as_millis()
+                    ),
                 );
             }
 
@@ -116,7 +119,13 @@ async fn run() -> anyhow::Result<()> {
                     if let Some(result) =
                         zentra_cli::tui::pentest_setup::run_pentest_setup().await?
                     {
-                        commands::pentest::run_config(result.config, result.auth, false).await?;
+                        commands::pentest::run_config(
+                            result.config,
+                            result.auth,
+                            false,
+                            result.sandbox,
+                        )
+                        .await?;
                     }
                 }
                 MenuAction::ViewLastResults => {
