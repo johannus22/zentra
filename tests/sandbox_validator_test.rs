@@ -50,6 +50,7 @@ async fn record_validation_emits_event_and_stores_outcomes() {
             "record_validation",
             &json!({
                 "candidate_title":"SQL error",
+                "category":"sqli",
                 "endpoint":"https://target.test/x",
                 "confirmed":true,
                 "impact":"Database error exposes attacker input",
@@ -70,6 +71,7 @@ async fn record_validation_emits_event_and_stores_outcomes() {
             "record_validation",
             &json!({
                 "candidate_title":"Debug endpoint",
+                "category":"misconfig",
                 "endpoint":"https://target.test/debug",
                 "confirmed":false,
                 "impact":"",
