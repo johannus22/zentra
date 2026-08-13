@@ -1,12 +1,10 @@
 pub mod audit_log;
 pub mod dual_provider;
-pub mod pentest_gate;
 pub mod prompt_guard;
 pub mod response_binding;
 pub mod tool_gate;
 
 pub use audit_log::{AuditEvent, AuditLog, VerifyResult};
-pub use pentest_gate::PentestGate;
 pub use prompt_guard::PromptGuard;
 pub use tool_gate::SecurityGate;
 
@@ -128,10 +126,6 @@ impl SecurityContext {
 
     pub fn gate(&self, scanner: crate::agent::ScannerType) -> SecurityGate {
         SecurityGate::new(scanner, self.config.tool_gate)
-    }
-
-    pub fn pentest_gate(&self, scope: crate::pentest::PentestScope) -> PentestGate {
-        PentestGate::new(scope, self.config.tool_gate)
     }
 
     pub fn prompt_guard(&self) -> PromptGuard {

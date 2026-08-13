@@ -63,7 +63,7 @@ pub enum Commands {
         #[arg(long)]
         resume: bool,
     },
-    /// Run dynamic browser pentest against an authorized target
+    /// Run a Docker-sandboxed pentest against an authorized target (Docker is required)
     Pentest {
         /// Target URL to pentest
         #[arg(long)]
@@ -84,39 +84,6 @@ pub enum Commands {
         /// Confirm that you are authorized to test this target
         #[arg(long)]
         authorized: bool,
-        /// Run the new sandboxed recon workflow (Docker required)
-        #[arg(long)]
-        sandbox: bool,
-        /// Skip Stage 0 network recon entirely (nmap, whatweb, HTML fingerprint) — recommended for edge-hosted targets (Vercel/Cloudflare)
-        #[arg(long = "skip-network")]
-        skip_network: bool,
-        /// Use low-concurrency requests to reduce IDS detection risk
-        #[arg(long)]
-        stealth: bool,
-        /// Base delay in ms for stealth-mode request pacing (actual sleep is jittered to [delay, delay*2)); has no effect unless --stealth is set
-        #[arg(long = "stealth-delay", default_value_t = 500)]
-        stealth_delay_ms: u64,
-        /// Reactively spawn escalation agents that chain confirmed High/Critical findings
-        #[arg(long)]
-        escalate: bool,
-        /// Record a HAR file (with request/response bodies) into the pentest output
-        /// directory. Off by default — HARs contain bodies that may include secrets.
-        #[arg(long = "capture-har")]
-        capture_har: bool,
-        /// Resume a prior pentest: skip stages that completed successfully.
-        /// The checkpoint lives in the pentest output directory. A completed
-        /// pentest clears it automatically.
-        #[arg(long)]
-        resume: bool,
-        /// Disable nmap in Stage 0 recon (nmap runs by default)
-        #[arg(long = "no-nmap")]
-        no_nmap: bool,
-        /// Run whatweb in Stage 0 recon (requires whatweb installed)
-        #[arg(long)]
-        whatweb: bool,
-        /// Fetch the target's homepage and detect technologies from headers/body in Stage 0 recon
-        #[arg(long = "html-fingerprint")]
-        html_fingerprint: bool,
     },
     /// Upgrade zentra to the latest release
     Update,
@@ -324,113 +291,15 @@ mod tests {
     }
 
     #[test]
-    fn parses_pentest_escalate_flag() {
+    fn pentest_removed_legacy_flags_are_rejected() {
         let cli = Cli::try_parse_from([
             "zentra",
             "pentest",
             "--url",
             "https://app.example.test",
             "--authorized",
-            "--escalate",
-        ])
-        .unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Pentest { escalate: true, .. })
-        ));
-    }
-
-    #[test]
-    fn pentest_escalate_defaults_false() {
-        let cli = Cli::try_parse_from([
-            "zentra",
-            "pentest",
-            "--url",
-            "https://app.example.test",
-            "--authorized",
-        ])
-        .unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Pentest {
-                escalate: false,
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn parses_pentest_no_nmap_flag() {
-        let cli = Cli::try_parse_from([
-            "zentra",
-            "pentest",
-            "--url",
-            "https://app.example.test",
-            "--authorized",
-            "--no-nmap",
-        ])
-        .unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Pentest { no_nmap: true, .. })
-        ));
-    }
-
-    #[test]
-    fn parses_pentest_whatweb_flag() {
-        let cli = Cli::try_parse_from([
-            "zentra",
-            "pentest",
-            "--url",
-            "https://app.example.test",
-            "--authorized",
-            "--whatweb",
-        ])
-        .unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Pentest { whatweb: true, .. })
-        ));
-    }
-
-    #[test]
-    fn parses_pentest_html_fingerprint_flag() {
-        let cli = Cli::try_parse_from([
-            "zentra",
-            "pentest",
-            "--url",
-            "https://app.example.test",
-            "--authorized",
-            "--html-fingerprint",
-        ])
-        .unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Pentest {
-                html_fingerprint: true,
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn pentest_recon_tool_flags_default_false() {
-        let cli = Cli::try_parse_from([
-            "zentra",
-            "pentest",
-            "--url",
-            "https://app.example.test",
-            "--authorized",
-        ])
-        .unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Pentest {
-                no_nmap: false,
-                whatweb: false,
-                html_fingerprint: false,
-                ..
-            })
-        ));
+            "--skip-network",
+        ]);
+        assert!(cli.is_err());
     }
 }

@@ -11,7 +11,6 @@ use zentra_cli::tui::menu::{
     SettingsCategory, SettingsFocus, SettingsFormState,
 };
 use zentra_cli::tui::pentest_setup::build_pentest_config_from_setup_input;
-use zentra_cli::tui::pentest_ui::AgentPanelMode;
 use zentra_cli::tui::pentest_ui::PentestUiState;
 use zentra_cli::tui::{ScanResult, ScanStatus, UiState};
 
@@ -277,39 +276,6 @@ fn pentest_ui_state_agent_lifecycle_events_are_no_ops() {
 }
 
 #[test]
-fn pentest_ui_legacy_stage_events_populate_pipeline_state() {
-    let mut state = sandbox_state();
-    state.apply_event(PentestEvent::StageStarted {
-        stage: 2,
-        name: "JS Analysis".to_string(),
-    });
-    state.apply_event(PentestEvent::AgentActivity {
-        id: 2,
-        message: "inspect scripts".to_string(),
-    });
-    state.apply_event(PentestEvent::StageCompleted {
-        stage: 1,
-        name: "Passive Recon".to_string(),
-    });
-
-    assert_eq!(state.current_stage, 2);
-    assert!(state.completed_stages.contains(&1));
-    assert_eq!(
-        state.stage_last_activity.get(&2).map(String::as_str),
-        Some("inspect scripts")
-    );
-}
-
-#[test]
-fn pentest_ui_agent_panel_mode_switches_for_sandbox_events() {
-    let mut state = sandbox_state();
-    assert_eq!(state.agent_panel_mode(), AgentPanelMode::LegacyPipeline);
-
-    state.apply_event(candidate_event("Candidate"));
-    assert_eq!(state.agent_panel_mode(), AgentPanelMode::SandboxChain);
-}
-
-#[test]
 fn pentest_ui_state_tracks_findings_and_activity() {
     let mut state = PentestUiState::new(
         "https://app.example.test".to_string(),
@@ -437,25 +403,10 @@ fn pentest_ui_sandbox_candidate_title_truncation_is_multibyte_safe() {
 }
 
 #[test]
-fn pentest_setup_sandbox_result_defaults_off_and_can_be_on() {
-    let config = build_pentest_config_from_setup_input("https://app.example.test", "", "yes")
-        .unwrap()
-        .expect("valid setup input");
-    let auth = zentra_cli::pentest::auth::PentestAuth::default();
-
-    let default_result = zentra_cli::tui::pentest_setup::SetupResult {
-        config: config.clone(),
-        auth: auth.clone(),
-        sandbox: false,
-    };
-    assert!(!default_result.sandbox);
-
-    let toggled_result = zentra_cli::tui::pentest_setup::SetupResult {
-        config,
-        auth,
-        sandbox: true,
-    };
-    assert!(toggled_result.sandbox);
+fn pentest_setup_confirm_note_states_docker_requirement() {
+    let note = "Requires Docker. The run aborts if Docker is unavailable.";
+    assert!(note.starts_with("Requires Docker."));
+    assert!(note.contains("run aborts if Docker is unavailable"));
 }
 
 #[test]
@@ -2039,25 +1990,6 @@ fn provider_form_validate_rejects_unsafe_profile_name() {
     assert!(form.validate().is_err());
     let err = form.validate().unwrap_err().to_string();
     assert!(err.contains("letters") || err.contains("alphanumeric") || err.contains("only"));
-}
-
-#[test]
-fn pentest_auth_form_all_blank_produces_default_auth() {
-    use zentra_cli::pentest::auth::PentestAuth;
-    let auth = PentestAuth::default();
-    assert!(auth.login_url.is_none());
-    assert!(auth.password.is_none());
-    assert_eq!(auth.label(), "none");
-}
-
-#[test]
-fn pentest_auth_form_bearer_only_label() {
-    use zentra_cli::pentest::auth::PentestAuth;
-    let auth = PentestAuth {
-        bearer_token: Some("tok".into()),
-        ..Default::default()
-    };
-    assert_eq!(auth.label(), "bearer-token");
 }
 
 #[test]

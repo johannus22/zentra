@@ -119,13 +119,7 @@ async fn run() -> anyhow::Result<()> {
                     if let Some(result) =
                         zentra_cli::tui::pentest_setup::run_pentest_setup().await?
                     {
-                        commands::pentest::run_config(
-                            result.config,
-                            result.auth,
-                            false,
-                            result.sandbox,
-                        )
-                        .await?;
+                        commands::pentest::run_config(result.config, result.auth).await?;
                     }
                 }
                 MenuAction::ViewLastResults => {
@@ -176,16 +170,6 @@ async fn run() -> anyhow::Result<()> {
             exclude_paths,
             scope_domains,
             authorized,
-            sandbox,
-            skip_network,
-            stealth,
-            stealth_delay_ms,
-            escalate,
-            no_nmap,
-            whatweb,
-            html_fingerprint,
-            capture_har,
-            resume,
         }) => {
             commands::pentest::run(
                 url,
@@ -194,16 +178,6 @@ async fn run() -> anyhow::Result<()> {
                 exclude_paths,
                 scope_domains,
                 authorized,
-                sandbox,
-                skip_network,
-                stealth,
-                stealth_delay_ms,
-                escalate,
-                no_nmap,
-                whatweb,
-                html_fingerprint,
-                capture_har,
-                resume,
             )
             .await?
         }

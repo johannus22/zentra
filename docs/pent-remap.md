@@ -44,18 +44,24 @@ A candidate becomes a `Finding` only when the Validator, in a fresh context, rep
 ## CLI changes
 
 ```
-zentra pentest --url <url> --authorized [--codebase <path>] [--engine <docker>]
+zentra pentest --url <url> --authorized [scope options]
 ```
 
 | Flag | Behavior |
 |------|----------|
-| `--codebase <path>` | Optional. Mounts `<path>` read-only into the sandbox. Live URL remains the test target. |
-| `--engine <name>` | Optional. Defaults to `docker`. Reserved for future engines. |
-| `--skip-network` | Drops nmap. Kept from v0.13. |
-| `--capture-har` | Browser HAR. Kept from v0.13. |
-| `--resume` | Resume an interrupted run. Kept from v0.13. |
+| `--allow-host <host>` | Adds an exact host to the allowlist. Repeatable. |
+| `--allow-path <path>` | Replaces the default path allowlist. Repeatable. |
+| `--exclude-path <path>` | Adds an excluded path prefix. Repeatable. |
+| `--scope-domain <domain>` | Adds a domain suffix and its subdomains to scope. Repeatable. |
 
-The flag list stays backward compatible. `--authorized` stays required.
+Legacy pipeline flags are removed. Docker is required. An unavailable Docker
+installation aborts the pentest before recon starts.
+
+## Migration status
+
+Slices 1–6 are complete. Slice 7 is complete: the command now invokes the
+sandbox workflow directly, and the legacy eight-stage host pipeline is removed.
+The CLI keeps only target, authorization, and scope controls.
 
 ## Slice plan
 

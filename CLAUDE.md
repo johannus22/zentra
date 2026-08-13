@@ -38,7 +38,7 @@ src/
 ├── scanners/            # system_prompt() + allowed_tools() dispatch per ScannerType
 ├── state/               # StateWriter (writes to .zentra/), Finding, Severity
 ├── tools/               # ToolRegistry (10 tools): fs_tools, git_tools, audit
-├── pentest/             # PentestOrchestrator, PentestAgent, tools, preflight, report
+├── pentest/             # Docker sandbox chain, scope, output, and report
 └── tui/                 # scan_ui, pentest_ui, pentest_setup, menu, results
 ```
 
@@ -92,7 +92,7 @@ Integration tests in `tests/` use `tempfile::TempDir` and `wiremock::MockServer`
 
 **CWD-dependent tests must be serialized** — Tests that call `std::env::set_current_dir()` must acquire the static `CWD_LOCK: Mutex<()>`, defined in `agent_test.rs`.
 
-**Regex patterns use `OnceLock`** — The `pentest/` fingerprinting, secret-pattern, and report modules each compile their regex once, via a `static RE: OnceLock<Regex>` per call site. Do not use bare `Regex::new()` in a hot path. Follow the existing `OnceLock` pattern instead.
+**Regex patterns use `OnceLock`** — Secret-pattern, logging, and report modules compile regex values once, via a `static RE: OnceLock<Regex>` per call site. Do not use bare `Regex::new()` in a hot path. Follow the existing `OnceLock` pattern instead.
 
 **`context_window()` falls through on unknown models** — `LLMProvider::context_window()` matches on a model name substring. Unknown models hit a default. Override this via `ProviderProfile::context_window: Option<u32>`.
 
