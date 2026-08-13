@@ -84,6 +84,9 @@ pub enum Commands {
         /// Confirm that you are authorized to test this target
         #[arg(long)]
         authorized: bool,
+        /// Run the new sandboxed recon workflow (Docker required)
+        #[arg(long)]
+        sandbox: bool,
         /// Skip Stage 0 network recon entirely (nmap, whatweb, HTML fingerprint) — recommended for edge-hosted targets (Vercel/Cloudflare)
         #[arg(long = "skip-network")]
         skip_network: bool,
