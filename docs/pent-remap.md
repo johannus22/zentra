@@ -9,8 +9,10 @@ tags:
 
 # Pentest Remap — Three-Agent Sandboxed Workflow
 
-> [!warning] Breaking change
+> [!warning] Breaking change — shipped
 > This design replaces the current in-process 8-stage pentest pipeline. The new workflow runs every pentest agent inside a Docker sandbox. Docker (or a compatible engine) becomes a hard requirement for `zentra pentest`.
+>
+> **Status (2026-08-13):** all 8 slices shipped. PRs #66 (Recon), #67 (Exploit), #68 (Validator), #69 (report + dedup + SARIF), #70 (TUI), #71 (migration + cleanup). Canonical post-slice summary: [[projects/zentra-cli/architecture/ADR-001-sandboxed-pentest|ADR-001]].
 
 ## Goal
 

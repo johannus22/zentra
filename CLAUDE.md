@@ -83,12 +83,19 @@ Integration tests in `tests/` use `tempfile::TempDir` and `wiremock::MockServer`
 - `auth_test.rs` — OAuth PKCE, token refresh
 - `config_test.rs` — GlobalConfig/ProjectConfig roundtrip, custom providers validation
 - `provider_test.rs` — endpoint validation, tool call parsing
-- `tui_test.rs` — `UiState::apply_event`, MenuState navigation, `PentestUiState`
-- `pentest_test.rs` — `PentestConfig` validation, scope matching, report writer, orchestrator events
+- `tui_test.rs` — `UiState::apply_event`, MenuState navigation, `PentestUiState`, sandbox chain state
+- `pentest_test.rs` — `PentestConfig` validation, `PentestScope` matching, output resolution, sandbox tool scope/allowlist
+- `sandbox_recon_test.rs`, `sandbox_exploit_test.rs`, `sandbox_validator_test.rs`, `sandbox_report_test.rs`, `sandbox_smoke_test.rs` — Docker-sandboxed pentest agents, tool registries, and report pipeline; use `FakeExecutor` so no Docker is required
 
 ## Gotchas
 
-**Exhaustive `ScanEvent` match** — After you add a new variant, grep every `match` block on `ScanEvent`. In `scan.rs`, add `ScanEvent::NewVariant { .. } => {}` as a no-op, if that site does not need it.
+**Exhaustive `ScanEvent` and `PentestEvent` matches** — After you add a new variant, grep every `match` block on both enums. In `scan.rs` / `commands/pentest.rs`, add `ScanEvent::NewVariant { .. } => {}` or `PentestEvent::NewVariant { .. } => {}` as no-ops if that site does not need it. The pentest event enum carries variants from the deleted legacy pipeline (`StageStarted`/`StageCompleted`/`PlanReady`/`EscalationSpawned`/`BrowserAction`/`CliCall`) — they're still emitted nowhere; a future cleanup slice should remove them with the match-arm updates.
+
+**Pentest requires Docker** — `zentra pentest` aborts with an actionable error if Docker is missing, unreachable, the image pull fails, or the sandbox health probe finds a missing tool. The abort happens before any target contact (no recon traffic).
+
+**Sandbox tool scope gate runs BEFORE exec** — every URL-bearing tool (`http_probe`, `http_request`, `dir_brute`, `run_payload`) checks `PentestScope::allows` before any `docker exec`. Out-of-scope returns a string error result, never reaches the container. `shell_exec` extracts http(s) args and scope-checks each.
+
+**Pentest executor abstraction** — `SandboxExecutor` is a `Send + Sync` async trait. `SandboxHandle` implements it (real `docker exec`). Tests construct a `FakeExecutor` via `with_executor(scope, executor, output_root, tx)` so the scope gate, allowlist, and dedup logic are unit-testable without Docker.
 
 **CWD-dependent tests must be serialized** — Tests that call `std::env::set_current_dir()` must acquire the static `CWD_LOCK: Mutex<()>`, defined in `agent_test.rs`.
 
