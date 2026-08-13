@@ -4,14 +4,15 @@ use zentra_cli::agent::{ScanEvent, ScannerType};
 use zentra_cli::config::{AuthMethod, GlobalConfig};
 use zentra_cli::pentest::{PentestEvent, PentestEvidence, PentestFinding, PentestSeverity};
 use zentra_cli::state::{Finding, Severity};
+use zentra_cli::tools::fs_tools::ReadOutcome;
 use zentra_cli::tui::menu::{
     centered_middle_column, main_menu_actions, provider_selector_footer_hint,
     scanner_selector_footer_hint, DetailMode, MenuScreen, MenuState, OAuthModalPhase,
     SettingsCategory, SettingsFocus, SettingsFormState,
 };
 use zentra_cli::tui::pentest_setup::build_pentest_config_from_setup_input;
+use zentra_cli::tui::pentest_ui::AgentPanelMode;
 use zentra_cli::tui::pentest_ui::PentestUiState;
-use zentra_cli::tools::fs_tools::ReadOutcome;
 use zentra_cli::tui::{ScanResult, ScanStatus, UiState};
 
 #[test]
@@ -114,7 +115,8 @@ fn ui_state_apply_tool_call_updates_activity() {
 
 #[test]
 fn pentest_setup_requires_authorization_confirmation() {
-    let config = build_pentest_config_from_setup_input("https://app.example.test", "", "no").unwrap();
+    let config =
+        build_pentest_config_from_setup_input("https://app.example.test", "", "no").unwrap();
     assert!(config.is_none());
 }
 
@@ -225,31 +227,28 @@ fn pentest_setup_scope_hosts_drop_empties_dedupe_and_lowercase() {
     .expect("valid confirmation should build config");
     assert_eq!(
         config.scope.allowed_hosts,
-        vec!["app.example.test".to_string(), "auth-stg.app.com".to_string()]
+        vec![
+            "app.example.test".to_string(),
+            "auth-stg.app.com".to_string()
+        ]
     );
 }
 
 #[test]
 fn pentest_setup_scope_hosts_reject_bare_entry_with_path() {
-    let err = build_pentest_config_from_setup_input(
-        "https://app.example.test",
-        "app.com/admin",
-        "yes",
-    )
-    .unwrap_err()
-    .to_string();
+    let err =
+        build_pentest_config_from_setup_input("https://app.example.test", "app.com/admin", "yes")
+            .unwrap_err()
+            .to_string();
     assert!(err.contains("may not contain '/'"), "msg = {err}");
 }
 
 #[test]
 fn pentest_setup_scope_hosts_reject_unparseable_url() {
-    let err = build_pentest_config_from_setup_input(
-        "https://app.example.test",
-        "://no-scheme",
-        "yes",
-    )
-    .unwrap_err()
-    .to_string();
+    let err =
+        build_pentest_config_from_setup_input("https://app.example.test", "://no-scheme", "yes")
+            .unwrap_err()
+            .to_string();
     assert!(err.contains("Invalid URL"), "msg = {err}");
 }
 
@@ -278,6 +277,39 @@ fn pentest_ui_state_agent_lifecycle_events_are_no_ops() {
 }
 
 #[test]
+fn pentest_ui_legacy_stage_events_populate_pipeline_state() {
+    let mut state = sandbox_state();
+    state.apply_event(PentestEvent::StageStarted {
+        stage: 2,
+        name: "JS Analysis".to_string(),
+    });
+    state.apply_event(PentestEvent::AgentActivity {
+        id: 2,
+        message: "inspect scripts".to_string(),
+    });
+    state.apply_event(PentestEvent::StageCompleted {
+        stage: 1,
+        name: "Passive Recon".to_string(),
+    });
+
+    assert_eq!(state.current_stage, 2);
+    assert!(state.completed_stages.contains(&1));
+    assert_eq!(
+        state.stage_last_activity.get(&2).map(String::as_str),
+        Some("inspect scripts")
+    );
+}
+
+#[test]
+fn pentest_ui_agent_panel_mode_switches_for_sandbox_events() {
+    let mut state = sandbox_state();
+    assert_eq!(state.agent_panel_mode(), AgentPanelMode::LegacyPipeline);
+
+    state.apply_event(candidate_event("Candidate"));
+    assert_eq!(state.agent_panel_mode(), AgentPanelMode::SandboxChain);
+}
+
+#[test]
 fn pentest_ui_state_tracks_findings_and_activity() {
     let mut state = PentestUiState::new(
         "https://app.example.test".to_string(),
@@ -302,6 +334,128 @@ fn pentest_ui_state_tracks_findings_and_activity() {
     assert_eq!(state.findings.len(), 1);
     assert_eq!(state.activity.len(), 1);
     assert!(state.activity[0].contains("navigate"));
+}
+
+fn sandbox_state() -> PentestUiState {
+    PentestUiState::new(
+        "https://app.example.test".to_string(),
+        "gpt-4o".to_string(),
+        "none".to_string(),
+        None,
+    )
+}
+
+fn candidate_event(title: &str) -> PentestEvent {
+    PentestEvent::ReconCandidateAdded {
+        title: title.to_string(),
+        category: "injection".to_string(),
+        endpoint: "/search".to_string(),
+        rationale: "Input reaches the query builder".to_string(),
+    }
+}
+
+#[test]
+fn pentest_ui_sandbox_recon_appends_candidate() {
+    let mut state = sandbox_state();
+    state.apply_event(candidate_event("Search injection"));
+
+    assert_eq!(state.sandbox_candidates.len(), 1);
+    assert_eq!(state.sandbox_candidates[0].title, "Search injection");
+    assert_eq!(state.sandbox_candidates[0].exploit_success, None);
+    assert_eq!(state.sandbox_candidates[0].validated, None);
+}
+
+#[test]
+fn pentest_ui_sandbox_exploit_marks_success_and_failure() {
+    let mut state = sandbox_state();
+    state.apply_event(candidate_event("Successful probe"));
+    state.apply_event(candidate_event("Failed probe"));
+
+    state.apply_event(PentestEvent::ExploitAttempted {
+        title: "Successful probe".to_string(),
+        endpoint: "/search".to_string(),
+        success: true,
+        evidence_path: "evidence/success.json".to_string(),
+    });
+    state.apply_event(PentestEvent::ExploitAttempted {
+        title: "Failed probe".to_string(),
+        endpoint: "/search".to_string(),
+        success: false,
+        evidence_path: "evidence/failure.json".to_string(),
+    });
+
+    assert_eq!(state.sandbox_candidates[0].exploit_success, Some(true));
+    assert_eq!(state.sandbox_candidates[1].exploit_success, Some(false));
+}
+
+#[test]
+fn pentest_ui_sandbox_validation_marks_confirmed() {
+    let mut state = sandbox_state();
+    state.apply_event(candidate_event("Confirmed issue"));
+    state.apply_event(PentestEvent::ValidationCompleted {
+        title: "Confirmed issue".to_string(),
+        endpoint: "/search".to_string(),
+        confirmed: true,
+    });
+
+    assert_eq!(state.sandbox_candidates[0].validated, Some(true));
+}
+
+#[test]
+fn pentest_ui_sandbox_validation_marks_rejected() {
+    let mut state = sandbox_state();
+    state.apply_event(candidate_event("Rejected issue"));
+    state.apply_event(PentestEvent::ValidationCompleted {
+        title: "Rejected issue".to_string(),
+        endpoint: "/search".to_string(),
+        confirmed: false,
+    });
+
+    assert_eq!(state.sandbox_candidates[0].validated, Some(false));
+}
+
+#[test]
+fn pentest_ui_sandbox_candidate_list_caps_at_200() {
+    let mut state = sandbox_state();
+    for index in 0..205 {
+        state.apply_event(candidate_event(&format!("Candidate {index}")));
+    }
+
+    assert_eq!(state.sandbox_candidates.len(), 200);
+    assert_eq!(state.sandbox_candidates[0].title, "Candidate 5");
+    assert_eq!(state.sandbox_candidates[199].title, "Candidate 204");
+}
+
+#[test]
+fn pentest_ui_sandbox_candidate_title_truncation_is_multibyte_safe() {
+    let mut state = sandbox_state();
+    let title = format!("{}€tail", "a".repeat(79));
+    state.apply_event(candidate_event(&title));
+
+    assert_eq!(state.sandbox_candidates[0].title.chars().count(), 80);
+    assert!(state.sandbox_candidates[0].title.ends_with('€'));
+}
+
+#[test]
+fn pentest_setup_sandbox_result_defaults_off_and_can_be_on() {
+    let config = build_pentest_config_from_setup_input("https://app.example.test", "", "yes")
+        .unwrap()
+        .expect("valid setup input");
+    let auth = zentra_cli::pentest::auth::PentestAuth::default();
+
+    let default_result = zentra_cli::tui::pentest_setup::SetupResult {
+        config: config.clone(),
+        auth: auth.clone(),
+        sandbox: false,
+    };
+    assert!(!default_result.sandbox);
+
+    let toggled_result = zentra_cli::tui::pentest_setup::SetupResult {
+        config,
+        auth,
+        sandbox: true,
+    };
+    assert!(toggled_result.sandbox);
 }
 
 #[test]
@@ -1312,7 +1466,9 @@ fn settings_provider_change_persists_via_hub() {
     state.settings_enter_detail();
     state.provider_idx = 1;
 
-    state.apply_provider_change_to("openai", &config_path).unwrap();
+    state
+        .apply_provider_change_to("openai", &config_path)
+        .unwrap();
 
     // The hub stays open and the active provider is refreshed in place.
     assert!(state.settings_open);
@@ -2188,7 +2344,13 @@ fn entering_clone_screen_sets_repo_input() {
 #[test]
 fn repo_input_edit_and_validate() {
     let mut state = MenuState::new(
-        true, true, vec![], String::new(), String::new(), String::new(), String::new(),
+        true,
+        true,
+        vec![],
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
     );
     state.open_repo_input();
     for c in "https://github.com/foo/bar.git".chars() {
@@ -2307,7 +2469,13 @@ fn uistate_mcp_status_updates_on_event() {
 #[test]
 fn error_span_toggle_and_dismiss() {
     let mut state = MenuState::new(
-        true, true, vec![], String::new(), String::new(), String::new(), String::new(),
+        true,
+        true,
+        vec![],
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
     );
     assert!(state.last_error.is_none());
 
@@ -2328,7 +2496,13 @@ fn error_span_toggle_and_dismiss() {
 #[test]
 fn toggle_error_is_noop_without_error() {
     let mut state = MenuState::new(
-        true, true, vec![], String::new(), String::new(), String::new(), String::new(),
+        true,
+        true,
+        vec![],
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
     );
     state.toggle_error_expanded();
     assert!(!state.error_expanded);
@@ -2463,10 +2637,12 @@ fn file_read_event_for_an_unknown_scanner_is_ignored() {
 // findings, and a green tick.
 
 fn banner_state(count: usize) -> UiState {
-    let scanners = [ScannerType::Sast,
+    let scanners = [
+        ScannerType::Sast,
         ScannerType::SupplyChain,
         ScannerType::ApiScan,
-        ScannerType::IacScan];
+        ScannerType::IacScan,
+    ];
     UiState::new(
         scanners[..count].to_vec(),
         "gpt-4o".to_string(),
@@ -2541,11 +2717,8 @@ fn abort_wins_over_a_failure_count() {
 #[test]
 fn banner_never_claims_success_when_everything_failed() {
     let theme = zentra_cli::tui::theme::Theme::default();
-    let (icon, _, verb) = zentra_cli::tui::scan_ui::completion_banner(
-        ScanResult::AllFailed { failed: 6 },
-        2,
-        &theme,
-    );
+    let (icon, _, verb) =
+        zentra_cli::tui::scan_ui::completion_banner(ScanResult::AllFailed { failed: 6 }, 2, &theme);
 
     assert_eq!(icon, "✗");
     assert_eq!(verb, "All 6 scanners failed");
@@ -2558,8 +2731,11 @@ fn banner_never_claims_success_when_everything_failed() {
 #[test]
 fn banner_warns_on_a_partial_failure() {
     let theme = zentra_cli::tui::theme::Theme::default();
-    let (icon, _, verb) =
-        zentra_cli::tui::scan_ui::completion_banner(ScanResult::PartialFailure { failed: 2 }, 75, &theme);
+    let (icon, _, verb) = zentra_cli::tui::scan_ui::completion_banner(
+        ScanResult::PartialFailure { failed: 2 },
+        75,
+        &theme,
+    );
 
     assert_eq!(icon, "⚠");
     assert_eq!(verb, "Done in 1m 15s · 2 failed");
@@ -2590,14 +2766,19 @@ fn banner_reports_an_abort() {
 
 #[test]
 fn hint_tells_the_operator_there_are_no_findings_to_browse() {
-    let all_failed =
-        zentra_cli::tui::scan_ui::completion_hint(ScanResult::AllFailed { failed: 6 });
-    assert!(all_failed.contains("no findings were produced"), "got: {all_failed}");
+    let all_failed = zentra_cli::tui::scan_ui::completion_hint(ScanResult::AllFailed { failed: 6 });
+    assert!(
+        all_failed.contains("no findings were produced"),
+        "got: {all_failed}"
+    );
     assert!(!all_failed.contains("browse findings"), "got: {all_failed}");
 
     let partial =
         zentra_cli::tui::scan_ui::completion_hint(ScanResult::PartialFailure { failed: 2 });
-    assert!(partial.contains("2 scanners produced no findings"), "got: {partial}");
+    assert!(
+        partial.contains("2 scanners produced no findings"),
+        "got: {partial}"
+    );
 
     let clean = zentra_cli::tui::scan_ui::completion_hint(ScanResult::Clean);
     assert_eq!(clean, "browse findings · q to exit");
