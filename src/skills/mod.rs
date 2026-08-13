@@ -13,6 +13,7 @@
 //! it, so projects can tune or disable the defaults without a rebuild.
 
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::config::global_zentra_dir;
@@ -22,6 +23,13 @@ use crate::config::global_zentra_dir;
 /// important), so the default places user skills after curated low-numbered
 /// packs.
 pub const DEFAULT_PRIORITY: u32 = 50;
+
+// Keep skill loading bounded because these files are user-controlled input and
+// their contents become part of an LLM prompt.
+const MAX_SKILL_DEPTH: usize = 8;
+const MAX_DISCOVERED_SKILL_FILES: usize = 256;
+const MAX_SKILL_FILE_BYTES: usize = 1024 * 1024;
+const MAX_TOTAL_SKILL_BYTES: usize = 4 * 1024 * 1024;
 
 /// Built-in skill files embedded at compile time. Each entry is a
 /// `(filename, contents)` pair. A disk file with the same filename overrides
@@ -114,9 +122,23 @@ fn load_from(
         upsert(&mut by_name, (*filename).to_string(), parse_skill(contents));
     }
 
-    // Lower precedence first so higher precedence overwrites by filename.
-    for dir in [global_dir, project_dir].into_iter().flatten() {
-        load_dir(dir, &mut by_name);
+    // Traverse the higher-precedence directory first so a large lower-
+    // precedence directory cannot consume the loader's bounds first. Apply
+    // the collected layers below in precedence order.
+    let mut limits = LoadLimits::default();
+    let mut project_skills = Vec::new();
+    let mut global_skills = Vec::new();
+    if let Some(dir) = project_dir {
+        load_dir(dir, &mut project_skills, &mut limits, 0);
+    }
+    if let Some(dir) = global_dir {
+        load_dir(dir, &mut global_skills, &mut limits, 0);
+    }
+    for (filename, skill) in global_skills {
+        upsert(&mut by_name, filename, skill);
+    }
+    for (filename, skill) in project_skills {
+        upsert(&mut by_name, filename, skill);
     }
 
     let mut skills: Vec<Skill> = by_name
@@ -138,24 +160,65 @@ fn upsert(by_name: &mut Vec<(String, Skill)>, filename: String, skill: Skill) {
     }
 }
 
-/// Recursively load every `.md` file under `dir` into `by_name`, keyed by file
-/// name so later loads override earlier ones. Missing directories are the
-/// common case and are silently ignored. Read errors are logged and skipped.
-fn load_dir(dir: &Path, by_name: &mut Vec<(String, Skill)>) {
+#[derive(Default)]
+struct LoadLimits {
+    discovered_files: usize,
+    loaded_bytes: usize,
+}
+
+impl LoadLimits {
+    fn discover_file(&mut self) -> bool {
+        if self.discovered_files >= MAX_DISCOVERED_SKILL_FILES {
+            return false;
+        }
+        self.discovered_files += 1;
+        true
+    }
+}
+
+/// Recursively load every `.md` file under `dir`, without following symlinks.
+/// The limits are shared by all disk skill directories for one load operation.
+fn load_dir(
+    dir: &Path,
+    skills: &mut Vec<(String, Skill)>,
+    limits: &mut LoadLimits,
+    depth: usize,
+) {
+    let Ok(root_type) = fs::symlink_metadata(dir).map(|metadata| metadata.file_type()) else {
+        // Missing directory is the common case — not an error.
+        return;
+    };
+    if !root_type.is_dir() || root_type.is_symlink() {
+        return;
+    }
     let Ok(entries) = fs::read_dir(dir) else {
         // Missing directory is the common case — not an error.
         return;
     };
     for entry in entries.flatten() {
+        if limits.discovered_files >= MAX_DISCOVERED_SKILL_FILES {
+            return;
+        }
         let path = entry.path();
-        let Ok(meta) = entry.metadata() else {
+        let Ok(file_type) = entry.file_type() else {
             continue;
         };
-        if meta.is_dir() {
-            load_dir(&path, by_name);
+        if file_type.is_dir() {
+            if depth < MAX_SKILL_DEPTH {
+                load_dir(&path, skills, limits, depth + 1);
+            }
             continue;
         }
-        if !meta.is_file() {
+        if !file_type.is_file() && !file_type.is_symlink() {
+            continue;
+        }
+        if !limits.discover_file() {
+            return;
+        }
+        // Check the entry type before opening it. This prevents normal symlink
+        // files from being loaded and also prevents symlink directories from
+        // being traversed.
+        if file_type.is_symlink() {
             continue;
         }
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
@@ -164,10 +227,10 @@ fn load_dir(dir: &Path, by_name: &mut Vec<(String, Skill)>) {
         let Some(filename) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        match fs::read_to_string(&path) {
+        match read_skill_file(&path, limits) {
             Ok(contents) => {
                 let skill = parse_skill(&contents);
-                upsert(by_name, filename.to_string(), skill);
+                upsert(skills, filename.to_string(), skill);
             }
             Err(e) => crate::logging::warn(
                 "skills",
@@ -175,6 +238,25 @@ fn load_dir(dir: &Path, by_name: &mut Vec<(String, Skill)>) {
             ),
         }
     }
+}
+
+/// Read one skill with both the per-file and aggregate byte limits applied.
+fn read_skill_file(path: &Path, limits: &mut LoadLimits) -> Result<String, String> {
+    let remaining = MAX_TOTAL_SKILL_BYTES.saturating_sub(limits.loaded_bytes);
+    if remaining == 0 {
+        return Err("total skill byte limit reached".to_string());
+    }
+    let read_limit = MAX_SKILL_FILE_BYTES.min(remaining);
+    let file = fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    file.take(read_limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > read_limit {
+        return Err("skill file exceeds the size limit".to_string());
+    }
+    limits.loaded_bytes += bytes.len();
+    String::from_utf8(bytes).map_err(|_| "skill file is not valid UTF-8".to_string())
 }
 
 /// Parse a skill file's contents into a [`Skill`]. Frontmatter is optional and
@@ -435,6 +517,144 @@ mod tests {
             skills.iter().all(|s| s.name != "XSS Detection Patterns"),
             "builtin should be replaced: {skills:?}"
         );
+    }
+
+    #[test]
+    fn recursive_loading_preserves_global_then_project_precedence() {
+        let tmp = tempfile::tempdir().unwrap();
+        let global_dir = tmp.path().join("global");
+        let project_dir = tmp.path().join("project").join("nested");
+        fs::create_dir_all(&global_dir).unwrap();
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(
+            global_dir.join("shared.md"),
+            "---\nscanner: sast\nname: Global\n---\nglobal\n",
+        )
+        .unwrap();
+        fs::write(
+            project_dir.join("shared.md"),
+            "---\nscanner: sast\nname: Project\n---\nproject\n",
+        )
+        .unwrap();
+
+        let skills = load_from(
+            Some(tmp.path().join("project").as_path()),
+            Some(global_dir.as_path()),
+            "sast",
+        );
+        let shared: Vec<&Skill> = skills
+            .iter()
+            .filter(|skill| skill.name == "Global" || skill.name == "Project")
+            .collect();
+        assert_eq!(shared.len(), 1);
+        assert_eq!(shared[0].name, "Project");
+        assert_eq!(shared[0].body, "project\n");
+    }
+
+    #[test]
+    fn recursive_loading_caps_depth() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        let mut deepest = root.clone();
+        for _ in 0..=MAX_SKILL_DEPTH {
+            deepest = deepest.join("nested");
+        }
+        fs::create_dir_all(&deepest).unwrap();
+        fs::write(
+            deepest.join("too-deep.md"),
+            "---\nscanner: sast\nname: Too deep\n---\nbody\n",
+        )
+        .unwrap();
+
+        let skills = load_from(Some(root.as_path()), None, "sast");
+        assert!(skills.iter().all(|skill| skill.name != "Too deep"));
+    }
+
+    #[test]
+    fn recursive_loading_caps_discovered_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        fs::create_dir_all(&root).unwrap();
+        for index in 0..(MAX_DISCOVERED_SKILL_FILES + 1) {
+            fs::write(
+                root.join(format!("skill-{index}.md")),
+                format!("---\nscanner: sast\nname: Skill {index}\n---\nbody\n"),
+            )
+            .unwrap();
+        }
+
+        let skills = load_from(Some(root.as_path()), None, "sast");
+        let user_skill_count = skills
+            .iter()
+            .filter(|skill| skill.name.starts_with("Skill "))
+            .count();
+        assert!(user_skill_count <= MAX_DISCOVERED_SKILL_FILES);
+    }
+
+    #[test]
+    fn recursive_loading_caps_individual_file_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        fs::create_dir_all(&root).unwrap();
+        let body = "x".repeat(MAX_SKILL_FILE_BYTES + 1);
+        fs::write(
+            root.join("too-large.md"),
+            format!("---\nscanner: sast\nname: Too large\n---\n{body}"),
+        )
+        .unwrap();
+
+        let skills = load_from(Some(root.as_path()), None, "sast");
+        assert!(skills.iter().all(|skill| skill.name != "Too large"));
+    }
+
+    #[test]
+    fn recursive_loading_caps_total_loaded_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        fs::create_dir_all(&root).unwrap();
+        let body = "x".repeat(MAX_SKILL_FILE_BYTES - 100);
+        for name in ["first.md", "second.md", "third.md", "fourth.md", "fifth.md"] {
+            fs::write(
+                root.join(name),
+                format!("---\nscanner: sast\nname: {name}\n---\n{body}"),
+            )
+            .unwrap();
+        }
+
+        let skills = load_from(Some(root.as_path()), None, "sast");
+        let loaded = skills
+            .iter()
+            .filter(|skill| skill.name.ends_with(".md"))
+            .count();
+        assert!(loaded < 5);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_loading_skips_symlink_files_and_directories() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("skills");
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(
+            outside.join("file.md"),
+            "---\nscanner: sast\nname: Linked file\n---\nbody\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("real.md"),
+            "---\nscanner: sast\nname: Real file\n---\nbody\n",
+        )
+        .unwrap();
+        symlink(outside.join("file.md"), root.join("linked.md")).unwrap();
+        symlink(&outside, root.join("linked-dir")).unwrap();
+
+        let skills = load_from(Some(root.as_path()), None, "sast");
+        assert!(skills.iter().any(|skill| skill.name == "Real file"));
+        assert!(skills.iter().all(|skill| skill.name != "Linked file"));
     }
 
     #[test]
