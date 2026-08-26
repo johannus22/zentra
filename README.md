@@ -1,6 +1,6 @@
 # Zentra CLI
 
-Zentra is an AI-powered application security CLI for developers. It scans a codebase for security risks. It runs specialized scanners for threat models, static analysis (SAST), supply chain risks, APIs, infrastructure as code, secrets, and reports. You can run Zentra locally, with an interactive terminal interface. You can also run Zentra in headless mode, in a CI pipeline.
+Zentra is an AI-powered application security CLI for developers. It scans a codebase for security risks with framework analysis, threat modeling, static analysis (SAST), supply-chain, API, and infrastructure-as-code scanners. You can run Zentra locally with an interactive terminal interface, or headlessly in CI.
 
 The binary is named `zentra`.
 
@@ -8,11 +8,13 @@ The binary is named `zentra`.
 
 - Interactive local scan dashboard powered by `ratatui`.
 - Headless CI mode for GitHub Actions and GitLab merge request pipelines.
-- LLM-backed scanner orchestration with Anthropic and OpenAI-compatible providers.
+- LLM-backed scanner orchestration with Anthropic, OpenAI-compatible, Claude CLI, and experimental Codex CLI providers.
 - Focused PR/MR scanning with changed-file impact analysis.
+- Incremental scans, resumable checkpoints, coverage reporting, and SARIF output.
 - Dynamic browser pentest mode for authorized targets.
-- Markdown and JSON output under `.zentra/`.
+- Markdown, JSON, and SARIF output under `.zentra/`.
 - Encrypted-at-rest credential storage (DPAPI on Windows, `0600` files on Unix).
+- Tamper-evident audit logs, prompt-injection defenses, and validated tool access.
 
 ## Installation
 
@@ -94,6 +96,19 @@ zentra scan --only supply-chain
 zentra scan --only api
 zentra scan --only iac
 ```
+
+By default, an eligible existing project uses an incremental baseline. Use
+`--full` to force a full scan, `--resume` to continue a failed or interrupted
+scan, or `--pack` to give each scanner a context-checked repository pack:
+
+```bash
+zentra scan --full
+zentra scan --resume
+zentra scan --pack --dry-run  # inspect size and token estimate; no provider call
+```
+
+`--resume` and incremental scanning cannot be combined. The resume checkpoint
+is stored at `.zentra/checkpoint.json`; a successful complete scan removes it.
 
 Run the TUI (terminal interface) menu:
 
@@ -378,8 +393,14 @@ zentra config show             # show active provider profile
 zentra config remove <name>    # remove provider profile
 zentra scan                    # local interactive scan
 zentra scan --only sast        # run one scanner family
+zentra scan --full             # force a complete scan
+zentra scan --resume           # resume incomplete scanners from a checkpoint
+zentra scan --pack --dry-run   # inspect packed-context size without an LLM call
 zentra ci                      # headless PR/MR CI scan
+zentra ci --refresh-architecture
+zentra ci --full --report-only # full scan without blocking a staging pipeline
 zentra pentest --url <url> --authorized
+zentra security verify-audit [session]
 ```
 
 ## Output files
@@ -390,9 +411,13 @@ Zentra writes project-local output under `.zentra/`:
 .zentra/config.json
 .zentra/detailed-findings.md
 .zentra/architecture.md
+.zentra/checkpoint.json
+.zentra/coverage.md
 .zentra/ci-report.md
 .zentra/ci-report.json
 .zentra/reports/
+.zentra/reports/findings.sarif
+.zentra/audit/
 ```
 
 Do not commit secrets or scan state. The `init` command adds `.zentra/` to `.gitignore`.
@@ -412,9 +437,10 @@ cargo run -- pentest --url https://target.test --authorized
 
 ## Security notes
 
-- Zentra stores API keys and OAuth tokens under `~/.zentra/keys/`. It encrypts them at rest, with DPAPI on Windows and `0600` permissions on Unix. Credentials saved by an older version keep working — this includes plaintext key files, and OAuth tokens in the OS keychain. Zentra migrates them the next time you save them. In automated environments, use a CI secret store, not project files.
+- Zentra stores provider credentials outside the project directory in its encrypted secret store. DPAPI protects the data-encryption key on Windows; Unix uses restrictive file permissions and the available keyring backend. In automated environments, use a CI secret store, not project files.
 - PR/MR comments are best-effort. Zentra still generates reports and logs if it cannot post a comment.
-- File tools block path traversal and cap file reads.
+- File tools block path traversal and cap file reads. Provider HTTP responses are size-capped and retry transient failures.
+- The default security envelope records a tamper-evident audit chain, gates tool calls, and marks untrusted tool output. Set `ZENTRA_SECURITY=hardened` to enforce response binding and abort-on-injection; use `ZENTRA_SECURITY=off` only for trusted local development. Verify an audit chain with `zentra security verify-audit [session]`.
 - Git history and dependency audit tools degrade gracefully when the required binaries or history are unavailable.
 
 ### Dependency audit
