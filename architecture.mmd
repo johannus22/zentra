@@ -1,0 +1,49 @@
+%% Zentra CLI - current high-level architecture
+%% Community Edition is public. Enterprise Edition consumes this crate as a library.
+graph TB
+    User["Developer or CI job"]
+
+    subgraph CE["Zentra CLI - Community Edition"]
+        Entry["Entry points: TUI, CLI, CI"]
+        Config["Configuration and credentials: profiles, encrypted secret store"]
+        Security["Security envelope: audit log, tool gate, prompt guard, response binding"]
+        Provider["Provider abstraction: Anthropic, OpenAI-compatible, Claude CLI, Codex CLI"]
+
+        subgraph Scan["Static scan orchestration"]
+            Framework["Phase 0: Framework analysis"]
+            Threat["Phase 1: Threat model"]
+            Parallel["Phase 2: SAST, supply chain, API, IaC - parallel"]
+            Report["Phase 3: Correlation and report"]
+            Framework --> Threat --> Parallel --> Report
+        end
+
+        Agent["Scanner agent: ReAct loop, knowledge packs, bounded tools"]
+        Tools["Repository and audit tools"]
+        Incremental["Incremental mode, checkpoint and coverage"]
+        State[("Project state: .zentra/ findings, architecture, reports, SARIF, audit")]
+        Pentest["Authorized Docker-sandboxed pentest"]
+    end
+
+    subgraph ENT["Enterprise Edition - private"]
+        Control["Control plane and isolated checkouts"]
+        Findings[("Findings database and history")]
+        Actions["Policies, tickets and remediation workflows"]
+        Dashboard["Governance, reporting and exports"]
+    end
+
+    User --> Entry
+    Entry --> Config
+    Entry --> Scan
+    Entry --> Pentest
+    Config --> Provider
+    Security --> Provider
+    Scan --> Agent
+    Agent --> Tools
+    Agent --> Provider
+    Agent --> Incremental
+    Agent --> State
+    Pentest --> State
+
+    Control -. "uses the public crate" .-> Scan
+    Control --> Findings --> Actions --> Dashboard
+    State -. "compatible finding data" .-> Findings
