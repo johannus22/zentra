@@ -222,7 +222,7 @@ pub fn install_panic_hook() {
 /// Scrub secrets from a string before it is written to disk. This is the
 /// safety net; the primary guarantee is that we only log failure text. Keeps
 /// key names where possible (helpful for debugging), replacing only the value.
-fn redact(input: &str) -> String {
+pub(crate) fn redact(input: &str) -> String {
     let mut out = input.to_string();
     for (re, replacement) in redaction_rules() {
         out = re.replace_all(&out, *replacement).into_owned();
