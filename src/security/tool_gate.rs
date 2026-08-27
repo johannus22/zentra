@@ -8,17 +8,50 @@ use std::time::Instant;
 /// returns an error string to the LLM and the scan continues. This keeps a false
 /// positive from killing an otherwise-valid scan while still denying the action.
 pub struct SecurityGate {
-    scanner: ScannerType,
+    profile: ToolProfile,
     rate_limiter: RateLimiter,
     state_machine: ToolStateMachine,
     arg_validator: ArgValidator,
     pub enabled: bool,
 }
 
+/// The capability set a gate applies to. Chat is deliberately not represented
+/// as a scanner: scanner allowlists include write and process tools which must
+/// never become available to the interactive read-only path.
+#[derive(Clone, Copy)]
+enum ToolProfile {
+    Scanner(ScannerType),
+    Chat,
+}
+
+/// The complete, closed read-only capability set for scan chat.
+pub const CHAT_ALLOWED_TOOLS: &[&str] = &[
+    "list_files",
+    "read_file",
+    "grep_code",
+    "git_log",
+    "git_diff",
+    "git_blame",
+    "git_status",
+];
+
 impl SecurityGate {
     pub fn new(scanner: ScannerType, enabled: bool) -> Self {
         Self {
-            scanner,
+            profile: ToolProfile::Scanner(scanner),
+            rate_limiter: RateLimiter::new(),
+            state_machine: ToolStateMachine::new(),
+            arg_validator: ArgValidator,
+            enabled,
+        }
+    }
+
+    /// Create the least-privilege gate used by the interactive scan chat.
+    /// This is separate from scanner policy so no fake `ScannerType` can inherit
+    /// scanner write or process capabilities.
+    pub fn chat(enabled: bool) -> Self {
+        Self {
+            profile: ToolProfile::Chat,
             rate_limiter: RateLimiter::new(),
             state_machine: ToolStateMachine::new(),
             arg_validator: ArgValidator,
@@ -39,13 +72,24 @@ impl SecurityGate {
     }
 
     fn check_allowlist(&self, tool: &str) -> Result<()> {
-        let allowed = scanners::allowed_tools(self.scanner);
-        if !allowed.contains(&tool) {
-            bail!(
-                "Tool '{}' is not permitted for scanner '{}'",
-                tool,
-                self.scanner.name()
-            );
+        match self.profile {
+            ToolProfile::Scanner(scanner) => {
+                let allowed = scanners::allowed_tools(scanner);
+                if !allowed.contains(&tool) {
+                    bail!(
+                        "Tool '{}' is not permitted for scanner '{}'",
+                        tool,
+                        scanner.name()
+                    );
+                }
+            }
+            ToolProfile::Chat if !CHAT_ALLOWED_TOOLS.contains(&tool) => {
+                bail!(
+                    "Tool '{}' is not permitted for the read-only chat profile",
+                    tool
+                );
+            }
+            ToolProfile::Chat => {}
         }
         Ok(())
     }
@@ -220,6 +264,7 @@ impl ArgValidator {
                     bail!("git_diff 'since' argument contains disallowed characters");
                 }
             }
+            "git_blame" => self.validate_path(args["file"].as_str().unwrap_or(""))?,
             "write_finding" => {
                 let title = args["title"].as_str().unwrap_or("");
                 if title.len() > 200 {
@@ -328,5 +373,42 @@ mod tests {
         let mut gate = SecurityGate::new(ScannerType::Sast, false);
         assert!(gate.check("browser_navigate", &json!({})).is_ok());
         assert!(gate.check("read_file", &json!({"path": ".env"})).is_ok());
+    }
+
+    #[test]
+    fn chat_gate_allows_exactly_the_read_only_profile() {
+        let mut gate = SecurityGate::chat(true);
+        for tool in CHAT_ALLOWED_TOOLS {
+            assert!(
+                gate.check(tool, &json!({})).is_ok(),
+                "{tool} should be allowed"
+            );
+        }
+        for tool in [
+            "run_audit",
+            "write_finding",
+            "write_report",
+            "write_architecture",
+            "shell_exec",
+        ] {
+            assert!(
+                gate.check(tool, &json!({})).is_err(),
+                "{tool} should be blocked"
+            );
+        }
+    }
+
+    #[test]
+    fn chat_gate_retains_path_and_git_ref_validation() {
+        let mut gate = SecurityGate::chat(true);
+        assert!(gate
+            .check("read_file", &json!({"path": "../outside.rs"}))
+            .is_err());
+        assert!(gate
+            .check("git_diff", &json!({"since": "HEAD;rm -rf /"}))
+            .is_err());
+        assert!(gate
+            .check("git_blame", &json!({"file": "../outside.rs", "line": 1}))
+            .is_err());
     }
 }

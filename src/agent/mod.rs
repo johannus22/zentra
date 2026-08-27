@@ -1,5 +1,7 @@
 pub mod board;
 pub mod chat;
+pub mod chat_agent;
+pub mod chat_coordinator;
 pub mod checkpoint;
 pub mod context_budget;
 pub mod correlation;

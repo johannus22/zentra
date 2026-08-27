@@ -128,6 +128,12 @@ impl SecurityContext {
         SecurityGate::new(scanner, self.config.tool_gate)
     }
 
+    /// Dedicated least-privilege policy for interactive chat. It never maps chat
+    /// to a scanner type, so scanner write/process capabilities cannot leak.
+    pub fn chat_gate(&self) -> SecurityGate {
+        SecurityGate::chat(self.config.tool_gate)
+    }
+
     pub fn prompt_guard(&self) -> PromptGuard {
         PromptGuard::new(self.config.prompt_guard)
     }

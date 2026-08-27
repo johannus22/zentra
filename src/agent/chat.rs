@@ -28,6 +28,7 @@ pub const MAX_CHAT_RECORD_BYTES: usize =
     MAX_FOCUS_PATHS * MAX_PATH_BYTES * 6 + MAX_CHAT_TEXT_BYTES * 6 + 8 * 1024;
 pub const MAX_CHAT_SESSION_FILES: usize = 20;
 pub const CHAT_RECORD_SCHEMA_VERSION: u16 = 1;
+pub const MAX_CHAT_TURNS: usize = 12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -436,6 +437,12 @@ pub enum PhaseBoundary {
     Finalized,
 }
 
+impl Default for PhaseBoundary {
+    fn default() -> Self {
+        Self::AfterFramework
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActionProposal {
@@ -530,6 +537,12 @@ pub enum ChatEvent {
     Proposal {
         proposal: ActionProposal,
     },
+    /// The operator confirmed a proposal and it was durably queued for the
+    /// next orchestration boundary. This is deliberately separate from
+    /// `Applied`, which remains owned by the phase loop.
+    Confirmed {
+        proposal_id: Uuid,
+    },
     Applied {
         proposal_id: Uuid,
         boundary: PhaseBoundary,
@@ -548,6 +561,158 @@ pub enum ChatEvent {
         #[serde(deserialize_with = "deserialize_lifecycle_message")]
         message: String,
     },
+}
+
+/// The bounded, serialisable view of a running scan that chat may receive.
+/// It intentionally contains summaries and normalized names only: scanner
+/// histories, raw source, credentials, and provider material never belong here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatSnapshot {
+    pub session_id: String,
+    pub boundary: PhaseBoundary,
+    pub selected_scanners: Vec<String>,
+    #[serde(default)]
+    pub scanner_status: Vec<ChatScannerStatus>,
+    #[serde(default)]
+    pub checkpoint_completed: Vec<String>,
+    #[serde(default)]
+    pub findings_summary: String,
+    #[serde(default)]
+    pub coverage_summary: String,
+    #[serde(default)]
+    pub architecture_context_hash: Option<String>,
+    #[serde(default)]
+    pub incremental_summary: Option<String>,
+    #[serde(default)]
+    pub incremental_paths: Vec<String>,
+    #[serde(default)]
+    pub focus_fragments: Vec<FocusFragment>,
+}
+
+impl Default for ChatSnapshot {
+    fn default() -> Self {
+        Self {
+            session_id: "chat-default".to_string(),
+            boundary: PhaseBoundary::default(),
+            selected_scanners: Vec::new(),
+            scanner_status: Vec::new(),
+            checkpoint_completed: Vec::new(),
+            findings_summary: String::new(),
+            coverage_summary: String::new(),
+            architecture_context_hash: None,
+            incremental_summary: None,
+            incremental_paths: Vec::new(),
+            focus_fragments: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatScannerStatus {
+    pub scanner: String,
+    pub status: ChatScannerState,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatScannerState {
+    NotStarted,
+    Running,
+    Completed,
+    Failed,
+}
+
+/// Redacted, compact conversational context passed between independent chat
+/// completions. It is not scanner history and is never checkpointed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatTurn {
+    pub request_id: Uuid,
+    pub request: String,
+    pub response: String,
+}
+
+impl ChatSnapshot {
+    /// Defensively cap caller-provided summaries before they enter the provider
+    /// context. Snapshot construction is outside this module, so this keeps an
+    /// accidentally verbose status producer from defeating chat's small budget.
+    pub fn bounded(mut self) -> Self {
+        const MAX_SUMMARY_CHARS: usize = 4096;
+        const MAX_NAMES: usize = 32;
+        const MAX_PATHS: usize = 20;
+        fn cap(value: &mut String, max: usize) {
+            if value.chars().count() > max {
+                *value = value.chars().take(max).collect();
+            }
+        }
+        self.selected_scanners.truncate(MAX_NAMES);
+        self.scanner_status.truncate(MAX_NAMES);
+        self.checkpoint_completed.truncate(MAX_NAMES);
+        self.incremental_paths.truncate(MAX_PATHS);
+        self.focus_fragments.truncate(MAX_FOCUS_FRAGMENTS);
+        cap(&mut self.findings_summary, MAX_SUMMARY_CHARS);
+        cap(&mut self.coverage_summary, MAX_SUMMARY_CHARS);
+        if let Some(summary) = &mut self.incremental_summary {
+            cap(summary, MAX_SUMMARY_CHARS);
+        }
+        for value in self
+            .selected_scanners
+            .iter_mut()
+            .chain(self.checkpoint_completed.iter_mut())
+            .chain(self.incremental_paths.iter_mut())
+        {
+            cap(value, MAX_PATH_BYTES);
+        }
+        for status in &mut self.scanner_status {
+            cap(&mut status.scanner, MAX_PATH_BYTES);
+        }
+        self
+    }
+
+    /// Validate and cap every externally assembled field before provider use.
+    /// Caps are bytes (not Unicode scalar values) and preserve UTF-8 boundaries.
+    pub fn try_bounded(mut self) -> Result<Self, ChatValidationError> {
+        validate_session_id(&self.session_id)?;
+        if let Some(hash) = &self.architecture_context_hash {
+            if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(ChatValidationError::InvalidPath);
+            }
+        }
+        fn cap(value: &mut String, max: usize) {
+            if value.len() > max {
+                let mut end = max;
+                while !value.is_char_boundary(end) {
+                    end -= 1;
+                }
+                value.truncate(end);
+            }
+            *value = crate::logging::redact(value);
+        }
+        self.selected_scanners.truncate(32);
+        self.scanner_status.truncate(32);
+        self.checkpoint_completed.truncate(32);
+        self.incremental_paths.truncate(20);
+        self.focus_fragments.truncate(MAX_FOCUS_FRAGMENTS);
+        cap(&mut self.findings_summary, 4096);
+        cap(&mut self.coverage_summary, 4096);
+        if let Some(summary) = &mut self.incremental_summary {
+            cap(summary, 4096);
+        }
+        for value in self
+            .selected_scanners
+            .iter_mut()
+            .chain(self.checkpoint_completed.iter_mut())
+            .chain(self.incremental_paths.iter_mut())
+        {
+            cap(value, MAX_PATH_BYTES);
+        }
+        for status in &mut self.scanner_status {
+            cap(&mut status.scanner, MAX_PATH_BYTES);
+        }
+        Ok(self)
+    }
 }
 
 impl ChatEvent {

@@ -4,6 +4,7 @@ pub mod git_tools;
 
 use crate::agent::{ScanEvent, ScannerType};
 use crate::provider::ToolDefinition;
+use crate::security::tool_gate::CHAT_ALLOWED_TOOLS;
 use crate::state::{Finding, Severity, StateWriter};
 use tokio::sync::mpsc;
 
@@ -243,6 +244,88 @@ data entry points, security middleware already present, and known safety guarant
         ]
     }
 
+    /// Definitions exposed to interactive scan chat. This intentionally filters
+    /// the registry's actual definitions instead of maintaining a second list:
+    /// a chat capability is unavailable until its implementation is registered.
+    pub fn chat_definitions(&self) -> Vec<ToolDefinition> {
+        let definitions = self.definitions();
+        CHAT_ALLOWED_TOOLS
+            .iter()
+            .filter_map(|name| definitions.iter().find(|tool| tool.name == *name).cloned())
+            .collect()
+    }
+
+    /// Run one chat read-only tool call. Chat callers must first pass the call
+    /// through `SecurityGate::chat`; this method is the registry boundary that
+    /// additionally makes unregistered and non-chat tools unavailable. It has
+    /// no `StateWriter`, event sender, or scanner identity, and deliberately
+    /// does not update scanner coverage.
+    pub async fn dispatch_chat(&self, name: &str, args: &serde_json::Value) -> String {
+        if !CHAT_ALLOWED_TOOLS.contains(&name) {
+            return format!(
+                "Chat tool '{}' is not permitted by the read-only profile",
+                name
+            );
+        }
+        if !self.definitions().iter().any(|tool| tool.name == name) {
+            return format!("Chat tool '{}' is not registered", name);
+        }
+        // Every name in CHAT_ALLOWED_TOOLS is handled above. Keep this explicit
+        // fallback in case a future profile entry is added without a registry
+        // implementation.
+        self.dispatch_read_only(name, args)
+            .map(|(body, _)| body)
+            .unwrap_or_else(|| format!("Chat tool '{}' is unavailable", name))
+    }
+
+    /// Execute the shared filesystem/git implementations without scanner
+    /// accounting. Scanner dispatch records coverage around this helper; chat
+    /// dispatch uses it directly so chat exploration cannot affect scan output.
+    fn dispatch_read_only(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> Option<(String, Option<fs_tools::ReadOutcome>)> {
+        match name {
+            "read_file" => {
+                let (body, outcome) =
+                    fs_tools::read_file_with_outcome(args["path"].as_str().unwrap_or(""));
+                Some((body, Some(outcome)))
+            }
+            "list_files" => Some((
+                fs_tools::list_files(
+                    args["dir"].as_str().unwrap_or("."),
+                    args["pattern"].as_str(),
+                ),
+                None,
+            )),
+            "grep_code" => Some((
+                fs_tools::grep_code(
+                    args["pattern"].as_str().unwrap_or(""),
+                    args["path"].as_str(),
+                ),
+                None,
+            )),
+            "git_log" => Some((
+                git_tools::git_log(args["n"].as_u64().unwrap_or(10) as u32),
+                None,
+            )),
+            "git_diff" => Some((
+                git_tools::git_diff(args["since"].as_str().unwrap_or("HEAD~1")),
+                None,
+            )),
+            "git_blame" => Some((
+                git_tools::git_blame(
+                    args["file"].as_str().unwrap_or(""),
+                    args["line"].as_u64().unwrap_or(1) as u32,
+                ),
+                None,
+            )),
+            "git_status" => Some((git_tools::git_status(), None)),
+            _ => None,
+        }
+    }
+
     pub async fn dispatch(
         &self,
         name: &str,
@@ -254,21 +337,27 @@ data entry points, security middleware already present, and known safety guarant
         match name {
             "read_file" => {
                 let path = args["path"].as_str().unwrap_or("");
-                let (body, outcome) = fs_tools::read_file_with_outcome(path);
-                self.record_read(scanner, path, outcome);
+                let (body, outcome) = self
+                    .dispatch_read_only(name, args)
+                    .expect("read_file is a registered read-only tool");
+                self.record_read(
+                    scanner,
+                    path,
+                    outcome.expect("read_file returns a coverage outcome"),
+                );
                 body
             }
             "list_files" => {
-                let dir = args["dir"].as_str().unwrap_or(".");
-                let pattern = args["pattern"].as_str();
                 self.record_listing(scanner);
-                fs_tools::list_files(dir, pattern)
+                self.dispatch_read_only(name, args)
+                    .expect("list_files is a registered read-only tool")
+                    .0
             }
             "grep_code" => {
-                let pattern = args["pattern"].as_str().unwrap_or("");
-                let path = args["path"].as_str();
                 self.record_search(scanner);
-                fs_tools::grep_code(pattern, path)
+                self.dispatch_read_only(name, args)
+                    .expect("grep_code is a registered read-only tool")
+                    .0
             }
             "write_finding" => {
                 let severity = parse_severity(args["severity"].as_str().unwrap_or("info"));
@@ -351,20 +440,11 @@ data entry points, security middleware already present, and known safety guarant
                 let tool = args["tool"].as_str().unwrap_or("npm");
                 audit::run_audit(tool)
             }
-            "git_log" => {
-                let n = args["n"].as_u64().unwrap_or(10) as u32;
-                git_tools::git_log(n)
+            "git_log" | "git_diff" | "git_blame" | "git_status" => {
+                self.dispatch_read_only(name, args)
+                    .expect("git tool is a registered read-only tool")
+                    .0
             }
-            "git_diff" => {
-                let since = args["since"].as_str().unwrap_or("HEAD~1");
-                git_tools::git_diff(since)
-            }
-            "git_blame" => {
-                let file = args["file"].as_str().unwrap_or("");
-                let line = args["line"].as_u64().unwrap_or(1) as u32;
-                git_tools::git_blame(file, line)
-            }
-            "git_status" => git_tools::git_status(),
             "write_architecture" => {
                 let content = args["content"].as_str().unwrap_or("");
                 match state_writer.write_architecture(content) {
@@ -384,5 +464,102 @@ fn parse_severity(s: &str) -> Severity {
         "medium" | "med" => Severity::Medium,
         "low" => Severity::Low,
         _ => Severity::Info,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::ScannerType;
+    use serde_json::json;
+
+    #[test]
+    fn chat_definitions_are_the_exact_read_only_profile() {
+        let registry = ToolRegistry::new();
+        let names: Vec<_> = registry
+            .chat_definitions()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert_eq!(names, CHAT_ALLOWED_TOOLS);
+    }
+
+    #[tokio::test]
+    async fn chat_dispatch_rejects_every_non_chat_registry_tool() {
+        let registry = ToolRegistry::new();
+        for tool in registry.definitions() {
+            if !CHAT_ALLOWED_TOOLS.contains(&tool.name.as_str()) {
+                let result = registry.dispatch_chat(&tool.name, &json!({})).await;
+                assert!(
+                    result.contains("not permitted"),
+                    "{} unexpectedly dispatched: {result}",
+                    tool.name
+                );
+            }
+        }
+        assert!(registry
+            .dispatch_chat("process_exec", &json!({}))
+            .await
+            .contains("not permitted"));
+    }
+
+    #[tokio::test]
+    async fn chat_dispatches_all_allowed_tools_without_scanner_dependencies() {
+        let registry = ToolRegistry::new();
+        for (name, args) in [
+            ("list_files", json!({"dir": "."})),
+            ("read_file", json!({"path": "Cargo.toml"})),
+            (
+                "grep_code",
+                json!({"pattern": "zentra", "path": "Cargo.toml"}),
+            ),
+            ("git_log", json!({"n": 1})),
+            ("git_diff", json!({"since": "HEAD~1"})),
+            ("git_blame", json!({"file": "Cargo.toml", "line": 1})),
+            ("git_status", json!({})),
+        ] {
+            let result = registry.dispatch_chat(name, &args).await;
+            assert!(
+                !result.contains("not permitted") && !result.contains("not registered"),
+                "{name} was not dispatched: {result}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_reads_leave_scanner_coverage_and_last_outcome_unchanged() {
+        let registry = ToolRegistry::new();
+        let temp = tempfile::TempDir::new().unwrap();
+        let writer = StateWriter::new(temp.path()).unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+
+        registry
+            .dispatch(
+                "read_file",
+                &json!({"path": "Cargo.toml"}),
+                &writer,
+                &tx,
+                ScannerType::Sast,
+            )
+            .await;
+        let coverage_before = registry.coverage_snapshot(10);
+        let outcome_before = registry.last_outcome_for(ScannerType::Sast, "Cargo.toml");
+
+        for (name, args) in [
+            ("read_file", json!({"path": "Cargo.toml"})),
+            ("list_files", json!({"dir": "."})),
+            (
+                "grep_code",
+                json!({"pattern": "zentra", "path": "Cargo.toml"}),
+            ),
+        ] {
+            registry.dispatch_chat(name, &args).await;
+        }
+
+        assert_eq!(registry.coverage_snapshot(10), coverage_before);
+        assert_eq!(
+            registry.last_outcome_for(ScannerType::Sast, "Cargo.toml"),
+            outcome_before
+        );
     }
 }
