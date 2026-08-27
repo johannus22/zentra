@@ -350,7 +350,7 @@ fn escape_html(s: &str) -> String {
 
 const CSS: &str = r#"
 :root {
-  /* Neutral/slate light document with a modest dark executive cover band. */
+  /* Neutral/slate light document with a calm, compact executive header. */
   --background: #f8fafc;       /* slate-50 */
   --background-subtle: #f1f5f9; /* slate-100 */
   --layer: #ffffff;
@@ -454,52 +454,52 @@ code {
 .exec-header {
   max-width: var(--max-content-width);
   margin: 0 auto;
-  padding: var(--space-10) var(--space-08) var(--space-08);
-  background: #0f172a; /* modest dark executive cover band */
-  color: #f8fafc;
-  border-bottom: 1px solid #1e293b;
+  padding: var(--space-06) var(--space-07);
+  background: var(--layer);
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .brand {
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   font-weight: 600;
-  letter-spacing: 0.2em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: #5eead4; /* restrained teal accent on dark band */
-  margin-bottom: var(--space-04);
+  color: var(--link-primary);
+  margin-bottom: var(--space-03);
 }
 
 .exec-header h1 {
-  font-size: clamp(2rem, 5vw, 3rem);
-  font-weight: 500;
-  line-height: 1.15;
-  margin-bottom: var(--space-07);
-  color: #f8fafc;
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1.25;
+  margin-bottom: var(--space-05);
+  color: var(--text-primary);
 }
 
 .meta-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: var(--space-06);
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: var(--space-04) var(--space-05);
 }
 
 .meta-item {
   display: flex;
   flex-direction: column;
-  gap: var(--space-02);
+  gap: var(--space-01);
 }
 
 .meta-label {
-  font-size: 0.6875rem;
+  font-size: 0.625rem;
   font-weight: 600;
-  letter-spacing: 0.08em;
-  color: #94a3b8;
+  letter-spacing: 0.07em;
+  color: var(--text-secondary);
   text-transform: uppercase;
 }
 
 .meta-value {
-  font-size: 0.9375rem;
-  color: #f1f5f9;
+  font-size: 0.875rem;
+  color: var(--text-primary);
   line-height: 1.4;
   word-break: break-word;
 }
@@ -508,6 +508,7 @@ code {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-04);
+  margin-top: var(--space-05);
 }
 
 .total-card,
@@ -837,15 +838,16 @@ code {
   .exec-header {
     margin-top: 0;
     padding-top: 0;
-    background: #0f172a;
-    color: #f8fafc;
+    background: #ffffff;
+    color: #0f172a;
+    border-bottom: 1px solid #e2e8f0;
   }
 
   .exec-header h1,
   .exec-header .brand,
   .exec-header .meta-value,
   .exec-header .meta-label {
-    color: #f8fafc;
+    color: #0f172a;
   }
 
   .report-footer {
