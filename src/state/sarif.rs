@@ -139,6 +139,8 @@ struct SarifResultProperties {
     screening: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     confidence: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    evidence: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -290,6 +292,7 @@ fn build_result(finding: &Finding) -> SarifResult {
         corroborated_by: finding.corroborated_by.clone(),
         screening: finding.screening.map(|s| s.to_string()),
         confidence: finding.confidence,
+        evidence: finding.evidence.clone(),
     };
 
     SarifResult {
@@ -387,6 +390,7 @@ mod tests {
             owasp: Some("A03:2021-Injection".to_string()),
             confidence: Some(85),
             screening: Some(Screening::Confirmed),
+            evidence: Some("reachable from the HTTP handler".to_string()),
         }
     }
 
@@ -444,6 +448,7 @@ mod tests {
         assert_eq!(props["recommendation"], "Use parameterized queries");
         assert_eq!(props["screening"], "confirmed");
         assert_eq!(props["confidence"], 85);
+        assert_eq!(props["evidence"], "reachable from the HTTP handler");
         assert_eq!(props["corroboratedBy"][0], "supply-chain");
 
         // The rule has a helpUri pointing at the CWE page.
@@ -457,6 +462,20 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .contains(&serde_json::Value::from("A03:2021-Injection"))
+        );
+    }
+
+    // 2b. A finding without evidence omits the property entirely (backward
+    //     compatible with consumers that predate the field).
+    #[test]
+    fn evidence_omitted_when_absent() {
+        let mut f = sample_finding();
+        f.evidence = None;
+        let json = write_sarif(&[f]);
+        let props = &json["runs"][0]["results"][0]["properties"];
+        assert!(
+            props.get("evidence").is_none(),
+            "evidence must be absent when the finding has none"
         );
     }
 

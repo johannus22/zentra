@@ -8,10 +8,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::{orchestrator::OrchestratorAgent, ScanEvent, ScannerType};
 use crate::ci::{
-    changed_files_from_git, detect_full_scan_ci_context_from_env,
-    git_diff_error_with_guidance, missing_history_guidance, publish_comment_best_effort,
-    publish_triage_issue_best_effort, resolve_fail_threshold, select_impact_files,
-    should_fail_ci, write_ci_artifacts, CiContext, CiPlatformKind,
+    changed_files_from_git, detect_full_scan_ci_context_from_env, git_diff_error_with_guidance,
+    missing_history_guidance, publish_comment_best_effort, publish_triage_issue_best_effort,
+    resolve_fail_threshold, select_impact_files, should_fail_ci, write_ci_artifacts, CiContext,
+    CiPlatformKind,
 };
 use crate::config::{keychain, AuthMethod, GlobalConfig, ProjectConfig, ProviderProfile};
 use crate::provider::{
@@ -54,15 +54,13 @@ pub async fn run(full: bool, report_only: bool) -> Result<()> {
         // MR/PR incremental scan: the original flow. Changed-files detection
         // and impact expansion run here; an empty diff still bails with guidance.
         let metadata = crate::ci::extract_ci_metadata_from_current_env()?;
-        let changed_files =
-            changed_files_from_git(&root, &metadata.base_ref, &metadata.head_ref).map_err(
-                |err| {
-                    anyhow::anyhow!(git_diff_error_with_guidance(
-                        metadata.platform,
-                        &err.to_string()
-                    ))
-                },
-            )?;
+        let changed_files = changed_files_from_git(&root, &metadata.base_ref, &metadata.head_ref)
+            .map_err(|err| {
+            anyhow::anyhow!(git_diff_error_with_guidance(
+                metadata.platform,
+                &err.to_string()
+            ))
+        })?;
 
         if changed_files.is_empty() {
             bail!(missing_history_guidance(metadata.platform));
@@ -127,9 +125,10 @@ pub async fn run(full: bool, report_only: bool) -> Result<()> {
             triage_note.as_deref(),
         )?;
         println!(
-            "Wrote CI artifacts: {}, {}",
+            "Wrote CI artifacts: {}, {}, {}",
             artifacts.markdown.display(),
-            artifacts.json.display()
+            artifacts.json.display(),
+            artifacts.html.display()
         );
         println!("Report-only mode: the pipeline will not fail on findings.");
         return Ok(());
@@ -138,10 +137,11 @@ pub async fn run(full: bool, report_only: bool) -> Result<()> {
     // MR mode: the original behavior, byte-identical to before --full/--report-only.
     let artifacts = write_ci_artifacts(&root, &context, &findings, fail_threshold, None)?;
     println!(
-        "Wrote CI artifacts: {}, {}, {}",
+        "Wrote CI artifacts: {}, {}, {}, {}",
         artifacts.markdown.display(),
         artifacts.json.display(),
-        artifacts.sarif.display()
+        artifacts.sarif.display(),
+        artifacts.html.display()
     );
 
     if let Err(err) = publish_comment_best_effort(&context, &findings, fail_threshold).await {

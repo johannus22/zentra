@@ -86,6 +86,7 @@ fn ui_state_apply_finding_added() {
         owasp: None,
         confidence: None,
         screening: None,
+        evidence: None,
     };
     state.apply_event(ScanEvent::FindingAdded(f));
     assert_eq!(state.findings.len(), 1);
@@ -762,6 +763,7 @@ fn ui_state_select_next_wraps() {
         owasp: None,
         confidence: None,
         screening: None,
+        evidence: None,
     };
     state.apply_event(ScanEvent::FindingAdded(f.clone()));
     state.apply_event(ScanEvent::FindingAdded(f));

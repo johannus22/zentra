@@ -52,7 +52,7 @@ pub async fn screen(
         return findings;
     }
 
-    let mut verdicts: BTreeMap<usize, (Screening, Option<u8>)> = BTreeMap::new();
+    let mut verdicts: BTreeMap<usize, (Screening, Option<u8>, Option<String>)> = BTreeMap::new();
     for (batch_index, batch) in findings.chunks(BATCH_SIZE).enumerate() {
         let offset = batch_index * BATCH_SIZE;
         if let Some(batch_verdicts) = screen_batch(provider, project_root, batch, cancel_token).await {
@@ -71,19 +71,36 @@ pub async fn screen(
 /// pass skipped or failed on keep `None`, which reads as "never screened".
 fn apply_verdicts(
     findings: Vec<Finding>,
-    verdicts: &BTreeMap<usize, (Screening, Option<u8>)>,
+    verdicts: &BTreeMap<usize, (Screening, Option<u8>, Option<String>)>,
 ) -> Vec<Finding> {
     findings
         .into_iter()
         .enumerate()
         .map(|(index, mut finding)| {
-            if let Some((verdict, confidence)) = verdicts.get(&index) {
+            if let Some((verdict, confidence, evidence)) = verdicts.get(&index) {
                 finding.screening = Some(*verdict);
                 finding.confidence = confidence.map(|c| c.min(100));
+                finding.evidence = evidence.clone();
             }
             finding
         })
         .collect()
+}
+
+/// Extract the evidence reason from a `report_screening` tool-call entry.
+///
+/// Pure and testable: takes the raw JSON entry and returns the trimmed `reason`
+/// string, or `None` when the field is missing, not a string, or blank. This is
+/// the only place screening reason text enters the [`Finding`], so the on-disk
+/// and SARIF exposure both flow through it.
+fn parse_evidence(entry: &serde_json::Value) -> Option<String> {
+    let reason = entry.get("reason")?.as_str()?;
+    let trimmed = reason.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 /// Screen one batch. Returns `(index_within_batch, verdict)` pairs, or `None` on
@@ -93,7 +110,7 @@ async fn screen_batch(
     project_root: &std::path::Path,
     batch: &[Finding],
     cancel_token: Option<&CancellationToken>,
-) -> Option<Vec<(usize, (Screening, Option<u8>))>> {
+) -> Option<Vec<(usize, (Screening, Option<u8>, Option<String>))>> {
     let tool = ToolDefinition {
         name: "report_screening".to_string(),
         description: "Report a reachability verdict for each finding you were given.".to_string(),
@@ -167,7 +184,8 @@ async fn screen_batch(
                     .get("confidence")
                     .and_then(|c| c.as_u64())
                     .map(|c| c.min(100) as u8);
-                Some((index, (verdict, confidence)))
+                let evidence = parse_evidence(entry);
+                Some((index, (verdict, confidence, evidence)))
             })
             .collect(),
     )
@@ -305,6 +323,7 @@ mod tests {
             owasp: None,
             confidence: None,
             screening: None,
+            evidence: None,
         }
     }
 
@@ -398,22 +417,70 @@ mod tests {
     fn apply_verdicts_sets_only_the_findings_it_judged() {
         let findings = vec![finding("A", Some("a.rs:1")), finding("B", Some("b.rs:1"))];
         let mut verdicts = BTreeMap::new();
-        verdicts.insert(0, (Screening::Confirmed, Some(90)));
+        verdicts.insert(0, (Screening::Confirmed, Some(90), Some("reachable".into())));
 
         let out = apply_verdicts(findings, &verdicts);
 
         assert_eq!(out[0].screening, Some(Screening::Confirmed));
         assert_eq!(out[0].confidence, Some(90));
+        assert_eq!(out[0].evidence.as_deref(), Some("reachable"));
         assert_eq!(out[1].screening, None, "unjudged findings stay unscreened");
         assert_eq!(out[1].confidence, None);
+        assert_eq!(out[1].evidence, None);
+    }
+
+    #[test]
+    fn apply_verdicts_captures_evidence() {
+        let findings = vec![finding("A", Some("a.rs:1"))];
+        let mut verdicts = BTreeMap::new();
+        verdicts.insert(0, (Screening::Disputed, Some(95), Some("dead code".into())));
+
+        let out = apply_verdicts(findings, &verdicts);
+        assert_eq!(out[0].screening, Some(Screening::Disputed));
+        assert_eq!(out[0].evidence.as_deref(), Some("dead code"));
+    }
+
+    #[test]
+    fn apply_verdicts_keeps_evidence_none_when_absent() {
+        let findings = vec![finding("A", Some("a.rs:1"))];
+        let mut verdicts = BTreeMap::new();
+        verdicts.insert(0, (Screening::Confirmed, Some(90), None));
+
+        let out = apply_verdicts(findings, &verdicts);
+        assert_eq!(out[0].screening, Some(Screening::Confirmed));
+        assert!(out[0].evidence.is_none());
+    }
+
+    #[test]
+    fn parse_evidence_reads_the_reason_field() {
+        let entry = serde_json::json!({
+            "index": 0,
+            "verdict": "confirmed",
+            "confidence": 90,
+            "reason": "  reachable from the HTTP handler  "
+        });
+        assert_eq!(parse_evidence(&entry).as_deref(), Some("reachable from the HTTP handler"));
+    }
+
+    #[test]
+    fn parse_evidence_is_none_when_reason_missing_or_blank() {
+        assert_eq!(parse_evidence(&serde_json::json!({"index": 0})), None);
+        assert_eq!(
+            parse_evidence(&serde_json::json!({"index": 0, "reason": "   "})),
+            None
+        );
+        assert_eq!(
+            parse_evidence(&serde_json::json!({"index": 0, "reason": 42})),
+            None
+        );
     }
 
     #[test]
     fn apply_verdicts_never_drops_a_finding() {
         let findings = vec![finding("A", Some("a.rs:1")), finding("B", Some("b.rs:1"))];
         let mut verdicts = BTreeMap::new();
-        verdicts.insert(0, (Screening::Disputed, Some(95)));
-        verdicts.insert(1, (Screening::Disputed, Some(99)));
+        verdicts.insert(0, (Screening::Disputed, Some(95), None));
+        verdicts.insert(1, (Screening::Disputed, Some(99), None));
 
         let out = apply_verdicts(findings, &verdicts);
 
@@ -426,7 +493,7 @@ mod tests {
     fn apply_verdicts_clamps_confidence() {
         let findings = vec![finding("A", Some("a.rs:1"))];
         let mut verdicts = BTreeMap::new();
-        verdicts.insert(0, (Screening::Confirmed, Some(200)));
+        verdicts.insert(0, (Screening::Confirmed, Some(200), None));
 
         let out = apply_verdicts(findings, &verdicts);
         assert_eq!(out[0].confidence, Some(100));
@@ -436,7 +503,7 @@ mod tests {
     fn apply_verdicts_ignores_an_out_of_range_index() {
         let findings = vec![finding("A", Some("a.rs:1"))];
         let mut verdicts = BTreeMap::new();
-        verdicts.insert(99, (Screening::Confirmed, Some(90)));
+        verdicts.insert(99, (Screening::Confirmed, Some(90), None));
 
         let out = apply_verdicts(findings, &verdicts);
         assert_eq!(out.len(), 1);
