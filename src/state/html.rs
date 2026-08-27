@@ -137,8 +137,8 @@ fn render_severity_summary(counts: &[usize; 5], total: usize) -> String {
             let count = counts[idx];
             format!(
                 r#"<div class="severity-card {class}">
-  <span class="severity-count">{count}</span>
-  <span class="severity-label">{label}</span>
+  <div class="severity-count-cell">{count}</div>
+  <div class="severity-label-cell">{label}</div>
 </div>"#
             )
         })
@@ -147,8 +147,8 @@ fn render_severity_summary(counts: &[usize; 5], total: usize) -> String {
     format!(
         r#"<div class="severity-summary">
   <div class="total-card">
-    <span class="severity-count">{total}</span>
-    <span class="severity-label">Total findings</span>
+    <div class="severity-count-cell">{total}</div>
+    <div class="severity-label-cell">Total findings</div>
   </div>
   {cards}
 </div>"#
@@ -350,37 +350,37 @@ fn escape_html(s: &str) -> String {
 
 const CSS: &str = r#"
 :root {
-  /* IBM Carbon-inspired color tokens. Default state is print-ready white paper. */
-  --background: #ffffff;
-  --background-subtle: #f4f4f4;
+  /* Neutral/slate light document with a modest dark executive cover band. */
+  --background: #f8fafc;       /* slate-50 */
+  --background-subtle: #f1f5f9; /* slate-100 */
   --layer: #ffffff;
-  --layer-hover: #f4f4f4;
-  --text-primary: #161616;
-  --text-secondary: #525252;
-  --text-placeholder: #a8a8a8;
+  --layer-hover: #f8fafc;
+  --text-primary: #0f172a;       /* slate-900 */
+  --text-secondary: #475569;     /* slate-600 */
+  --text-placeholder: #94a3b8;   /* slate-400 */
   --text-inverse: #ffffff;
-  --link-primary: #0f62fe;
-  --link-primary-hover: #0043ce;
-  --border-subtle: #e0e0e0;
-  --border-strong: #8d8d8d;
-  --border-inverse: #161616;
+  --link-primary: #0f766e;       /* teal-700: restrained non-Ory accent */
+  --link-primary-hover: #115e59; /* teal-800 */
+  --border-subtle: #e2e8f0;      /* slate-200 */
+  --border-strong: #94a3b8;      /* slate-400 */
+  --border-inverse: #0f172a;
 
-  /* Severity/status tokens */
-  --critical: #da1e28;
-  --critical-background: #fff1f1;
-  --high: #ff832b;
-  --high-background: #fff8e1;
-  --medium: #f1c21b;
-  --medium-background: #fcf4d6;
-  --low: #0f62fe;
-  --low-background: #edf5ff;
-  --info: #6f6f6f;
-  --info-background: #f4f4f4;
-  --confirmed: #198038;
-  --disputed: #da1e28;
-  --unclear: #f1c21b;
+  /* Severity/status tokens: solid, accessible colors for header/cell areas. */
+  --critical: #991b1b;           /* red-800 */
+  --high: #c2410c;               /* orange-700 */
+  --medium: #a16207;             /* yellow-700 */
+  --low: #1d4ed8;                /* blue-700 */
+  --info: #334155;               /* slate-700 */
+  --critical-light: #fee2e2;
+  --high-light: #ffedd5;
+  --medium-light: #fef3c7;
+  --low-light: #dbeafe;
+  --info-light: #f1f5f9;
+  --confirmed: #15803d;
+  --disputed: #991b1b;
+  --unclear: #a16207;
 
-  /* 2x grid rhythm: 8px mini-unit, 16px grid-unit */
+  /* Spacing: generous whitespace. */
   --space-01: 2px;
   --space-02: 4px;
   --space-03: 8px;
@@ -391,10 +391,11 @@ const CSS: &str = r#"
   --space-08: 40px;
   --space-09: 48px;
   --space-10: 64px;
+  --space-11: 80px;
 
-  /* Typography: IBM Plex-compatible stack with system fallbacks */
-  --font-sans: "IBM Plex Sans", "Helvetica Neue", Arial, "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-mono: "IBM Plex Mono", "Menlo", "DejaVu Sans Mono", "Consolas", "Liberation Mono", monospace;
+  /* Typography: Inter + JetBrains-compatible fallbacks. */
+  --font-sans: "Inter", "Helvetica Neue", Arial, "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "JetBrains Mono", "Menlo", "DejaVu Sans Mono", "Consolas", "Liberation Mono", monospace;
 
   /* Layout */
   --max-content-width: 1056px;
@@ -425,7 +426,7 @@ body {
   color: var(--text-primary);
   font-family: var(--font-sans);
   font-size: 16px;
-  line-height: 1.5;
+  line-height: 1.55;
   letter-spacing: 0.01em;
 }
 
@@ -453,52 +454,52 @@ code {
 .exec-header {
   max-width: var(--max-content-width);
   margin: 0 auto;
-  padding: var(--space-08) var(--space-06) var(--space-06);
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--layer);
+  padding: var(--space-10) var(--space-08) var(--space-08);
+  background: #0f172a; /* modest dark executive cover band */
+  color: #f8fafc;
+  border-bottom: 1px solid #1e293b;
 }
 
 .brand {
   font-size: 0.75rem;
   font-weight: 600;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: var(--link-primary);
-  margin-bottom: var(--space-03);
+  color: #5eead4; /* restrained teal accent on dark band */
+  margin-bottom: var(--space-04);
 }
 
 .exec-header h1 {
-  font-size: clamp(1.75rem, 4vw, 2.5rem);
-  font-weight: 400;
-  line-height: 1.2;
-  margin-bottom: var(--space-06);
-  color: var(--text-primary);
+  font-size: clamp(2rem, 5vw, 3rem);
+  font-weight: 500;
+  line-height: 1.15;
+  margin-bottom: var(--space-07);
+  color: #f8fafc;
 }
 
 .meta-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: var(--space-05);
-  margin-bottom: var(--space-06);
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-06);
 }
 
 .meta-item {
   display: flex;
   flex-direction: column;
-  gap: var(--space-01);
+  gap: var(--space-02);
 }
 
 .meta-label {
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  color: var(--text-secondary);
+  letter-spacing: 0.08em;
+  color: #94a3b8;
   text-transform: uppercase;
 }
 
 .meta-value {
-  font-size: 0.875rem;
-  color: var(--text-primary);
+  font-size: 0.9375rem;
+  color: #f1f5f9;
   line-height: 1.4;
   word-break: break-word;
 }
@@ -513,73 +514,72 @@ code {
 .severity-card {
   flex: 1 1 120px;
   min-width: 120px;
-  padding: var(--space-05);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
+  overflow: hidden;
   background: var(--layer);
 }
 
-.severity-card {
-  border-top: 3px solid var(--info);
-}
-
-.severity-card.critical { border-top-color: var(--critical); }
-.severity-card.high { border-top-color: var(--high); }
-.severity-card.medium { border-top-color: var(--medium); }
-.severity-card.low { border-top-color: var(--low); }
-.severity-card.info { border-top-color: var(--info); }
-
-.total-card {
-  border-top: 3px solid var(--text-primary);
-}
-
-.severity-count {
-  display: block;
+.severity-count-cell {
+  padding: var(--space-05) var(--space-05) var(--space-04);
   font-size: 1.75rem;
-  font-weight: 600;
+  font-weight: 700;
   line-height: 1.2;
-  color: var(--text-primary);
-  margin-bottom: var(--space-02);
+  color: var(--text-inverse);
+  text-align: center;
+  background: var(--info);
 }
 
-.severity-label {
-  display: block;
+.severity-label-cell {
+  padding: var(--space-03) var(--space-05);
   font-size: 0.75rem;
   font-weight: 600;
-  letter-spacing: 0.04em;
-  color: var(--text-secondary);
+  letter-spacing: 0.06em;
   text-transform: uppercase;
+  text-align: center;
+  color: var(--text-secondary);
+  background: var(--background);
+  border-top: 1px solid var(--border-subtle);
 }
+
+.total-card .severity-count-cell {
+  background: var(--text-primary);
+}
+
+.severity-card.critical .severity-count-cell { background: var(--critical); }
+.severity-card.high .severity-count-cell { background: var(--high); }
+.severity-card.medium .severity-count-cell { background: var(--medium); }
+.severity-card.low .severity-count-cell { background: var(--low); }
+.severity-card.info .severity-count-cell { background: var(--info); }
 
 .findings {
   max-width: var(--max-content-width);
   margin: 0 auto;
-  padding: var(--space-06);
+  padding: var(--space-08);
   display: flex;
   flex-direction: column;
-  gap: var(--space-06);
+  gap: var(--space-07);
   background: var(--layer);
 }
 
 .finding-card {
   background: var(--layer);
   border: 1px solid var(--border-subtle);
-  border-left: 3px solid var(--info);
   border-radius: var(--radius-md);
   overflow: hidden;
 }
 
-.finding-card.severity-critical { border-left-color: var(--critical); }
-.finding-card.severity-high { border-left-color: var(--high); }
-.finding-card.severity-medium { border-left-color: var(--medium); }
-.finding-card.severity-low { border-left-color: var(--low); }
-.finding-card.severity-info { border-left-color: var(--info); }
-
 .card-header {
-  padding: var(--space-05) var(--space-06);
+  padding: var(--space-06) var(--space-07);
   border-bottom: 1px solid var(--border-subtle);
   background: var(--layer-hover);
 }
+
+.finding-card.severity-critical .card-header { background: var(--critical); color: var(--text-inverse); }
+.finding-card.severity-high .card-header { background: var(--high); color: var(--text-inverse); }
+.finding-card.severity-medium .card-header { background: var(--medium); color: var(--text-inverse); }
+.finding-card.severity-low .card-header { background: var(--low); color: var(--text-inverse); }
+.finding-card.severity-info .card-header { background: var(--info); color: var(--text-inverse); }
 
 .card-title-row {
   display: flex;
@@ -592,7 +592,7 @@ code {
   font-size: 1.25rem;
   font-weight: 600;
   line-height: 1.3;
-  color: var(--text-primary);
+  color: inherit;
 }
 
 .severity-badge {
@@ -605,15 +605,10 @@ code {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   white-space: nowrap;
-  background: var(--info);
-  color: var(--text-inverse);
+  background: rgba(255, 255, 255, 0.18);
+  color: inherit;
+  border: 1px solid rgba(255, 255, 255, 0.35);
 }
-
-.severity-critical .severity-badge { background: var(--critical); }
-.severity-high .severity-badge { background: var(--high); color: var(--text-primary); }
-.severity-medium .severity-badge { background: var(--medium); color: var(--text-primary); }
-.severity-low .severity-badge { background: var(--low); }
-.severity-info .severity-badge { background: var(--info); }
 
 .card-subtitle {
   display: flex;
@@ -628,7 +623,8 @@ code {
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--text-secondary);
+  color: inherit;
+  opacity: 0.9;
 }
 
 .screening-badge {
@@ -641,23 +637,24 @@ code {
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  background: transparent;
-  border: 1px solid var(--border-strong);
-  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  color: inherit;
 }
 
-.screening-badge.confirmed { border-color: var(--confirmed); color: var(--confirmed); }
-.screening-badge.disputed { border-color: var(--disputed); color: var(--disputed); }
-.screening-badge.unclear { border-color: var(--unclear); color: var(--text-primary); }
+.screening-badge.confirmed { background: rgba(21, 128, 61, 0.18); border-color: rgba(21, 128, 61, 0.45); }
+.screening-badge.disputed { background: rgba(153, 27, 27, 0.18); border-color: rgba(153, 27, 27, 0.45); }
+.screening-badge.unclear { background: rgba(161, 98, 7, 0.18); border-color: rgba(161, 98, 7, 0.45); }
 
 .screening-badge .confidence {
   font-weight: 500;
   text-transform: none;
   letter-spacing: 0;
+  opacity: 0.85;
 }
 
 .card-body {
-  padding: var(--space-06);
+  padding: var(--space-07);
   display: flex;
   flex-direction: column;
   gap: var(--space-05);
@@ -670,16 +667,16 @@ code {
 }
 
 .field-label {
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   font-weight: 600;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.08em;
   color: var(--text-secondary);
   text-transform: uppercase;
 }
 
 .field-value {
   font-size: 0.9375rem;
-  line-height: 1.5;
+  line-height: 1.55;
   color: var(--text-primary);
 }
 
@@ -713,9 +710,9 @@ code {
 }
 
 .corroboration-tag {
-  background: #defbe6;
-  border-color: #198038;
-  color: #044317;
+  background: #dcfce7;
+  border-color: #15803d;
+  color: #14532d;
 }
 
 .cvss-score {
@@ -738,7 +735,7 @@ code {
 
 .empty-state {
   text-align: center;
-  padding: var(--space-09);
+  padding: var(--space-10);
   background: var(--layer);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-md);
@@ -752,7 +749,7 @@ code {
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  background: #defbe6;
+  background: #dcfce7;
   color: var(--confirmed);
   font-size: 1.5rem;
   font-weight: 600;
@@ -773,7 +770,7 @@ code {
 .report-footer {
   max-width: var(--max-content-width);
   margin: 0 auto;
-  padding: var(--space-05) var(--space-06);
+  padding: var(--space-05) var(--space-08);
   text-align: center;
   font-size: 0.75rem;
   color: var(--text-secondary);
@@ -781,7 +778,7 @@ code {
   background: var(--layer);
 }
 
-/* Screen enhancements: subtle paper-on-gray presentation. */
+/* Screen enhancements: subtle paper-on-slate-gray presentation. */
 @media screen {
   body {
     background: var(--background-subtle);
@@ -813,13 +810,13 @@ code {
     --background: #ffffff;
     --layer: #ffffff;
     --layer-hover: #f4f4f4;
-    --text-primary: #161616;
-    --text-secondary: #525252;
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
   }
 
   body {
     background: #ffffff;
-    color: #161616;
+    color: #0f172a;
     font-size: 11pt;
     line-height: 1.45;
   }
@@ -834,11 +831,21 @@ code {
     background: #ffffff;
     border: none;
     border-radius: 0;
+    color: #0f172a;
   }
 
   .exec-header {
     margin-top: 0;
     padding-top: 0;
+    background: #0f172a;
+    color: #f8fafc;
+  }
+
+  .exec-header h1,
+  .exec-header .brand,
+  .exec-header .meta-value,
+  .exec-header .meta-label {
+    color: #f8fafc;
   }
 
   .report-footer {
@@ -855,16 +862,17 @@ code {
   }
 
   .finding-card {
-    border: 1px solid #8d8d8d;
-    border-left: 3px solid var(--info);
+    border: 1px solid #94a3b8;
   }
 
-  .finding-card.severity-critical { border-left-color: var(--critical); }
-  .finding-card.severity-high { border-left-color: var(--high); }
-  .finding-card.severity-medium { border-left-color: var(--medium); }
-  .finding-card.severity-low { border-left-color: var(--low); }
-  .finding-card.severity-info { border-left-color: var(--info); }
+  .finding-card.severity-critical .card-header { background: var(--critical); color: #ffffff; }
+  .finding-card.severity-high .card-header { background: var(--high); color: #ffffff; }
+  .finding-card.severity-medium .card-header { background: var(--medium); color: #ffffff; }
+  .finding-card.severity-low .card-header { background: var(--low); color: #ffffff; }
+  .finding-card.severity-info .card-header { background: var(--info); color: #ffffff; }
 
+  .severity-count-cell,
+  .card-header,
   .severity-badge,
   .screening-badge,
   .tag {
@@ -873,28 +881,37 @@ code {
   }
 
   a {
-    color: #161616;
+    color: #0f172a;
     text-decoration: none;
-    border-bottom: 1px solid #8d8d8d;
+    border-bottom: 1px solid #94a3b8;
   }
 
   a[href^="http"]::after,
   a[href^="https"]::after {
     content: " (" attr(href) ")";
     font-size: 0.85em;
-    color: #525252;
+    color: #475569;
     word-break: break-all;
     border-bottom: none;
   }
 
   .card-header {
-    background: #f4f4f4;
+    background: #f1f5f9;
+  }
+
+  .finding-card.severity-critical .card-header,
+  .finding-card.severity-high .card-header,
+  .finding-card.severity-medium .card-header,
+  .finding-card.severity-low .card-header,
+  .finding-card.severity-info .card-header {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 
   .corroboration-tag {
-    background: #f4f4f4;
-    border-color: #8d8d8d;
-    color: #161616;
+    background: #f1f5f9;
+    border-color: #94a3b8;
+    color: #0f172a;
   }
 }
 "#;
@@ -967,10 +984,10 @@ mod tests {
     #[test]
     fn severity_summary_counts_are_correct() {
         let html = render_findings_html(&[sample_finding()]);
-        assert!(html.contains(r#"<span class="severity-label">Total findings</span>"#));
+        assert!(html.contains(r#"<div class="severity-label-cell">Total findings</div>"#));
         assert!(html.contains(r#"<div class="severity-card high">"#));
-        assert!(html.contains(r#"<span class="severity-label">High</span>"#));
-        assert!(html.contains(r#"<span class="severity-count">1</span>"#));
+        assert!(html.contains(r#"<div class="severity-label-cell">High</div>"#));
+        assert!(html.contains(r#"<div class="severity-count-cell">1</div>"#));
     }
 
     #[test]
@@ -1036,13 +1053,41 @@ mod tests {
     }
 
     #[test]
-    fn report_includes_carbon_print_rules() {
+    fn report_includes_slate_print_rules_and_fonts() {
         let html = render_findings_html(&[sample_finding()]);
         assert!(html.contains("@page"));
         assert!(html.contains("@media print"));
         assert!(html.contains("break-inside: avoid"));
-        assert!(html.contains("IBM Plex"));
-        assert!(html.contains("0f62fe"));
+        assert!(html.contains("Inter"));
+        assert!(html.contains("JetBrains Mono"));
+        assert!(html.contains("@media print"));
+    }
+
+    #[test]
+    fn finding_has_severity_colored_header_not_left_edge() {
+        let mut f = sample_finding();
+        f.severity = Severity::Critical;
+        let html = render_findings_html(&[f]);
+        // No severity-colored left border edge remains.
+        assert!(!html.contains("border-left: 3px"));
+        assert!(!html.contains("border-left-color"));
+        // Header area carries the severity background.
+        assert!(html.contains(
+            ".finding-card.severity-critical .card-header { background: var(--critical);"
+        ));
+    }
+
+    #[test]
+    fn severity_summary_count_sits_in_colored_cell() {
+        let mut f = sample_finding();
+        f.severity = Severity::High;
+        let html = render_findings_html(&[f]);
+        // Each metric count is inside a colored cell, not just a bare number or border.
+        assert!(html.contains(r#"<div class="severity-count-cell">1</div>"#));
+        assert!(
+            html.contains(".severity-card.high .severity-count-cell { background: var(--high);")
+        );
+        assert!(html.contains(r#"<div class="severity-label-cell">High</div>"#));
     }
 
     #[test]
