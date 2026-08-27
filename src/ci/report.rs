@@ -12,6 +12,7 @@ pub struct CiArtifactPaths {
     pub markdown: PathBuf,
     pub json: PathBuf,
     pub sarif: PathBuf,
+    pub html: PathBuf,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
@@ -58,6 +59,7 @@ pub fn write_ci_artifacts(
     let markdown = output_dir.join("ci-report.md");
     let json = output_dir.join("ci-report.json");
     let sarif = output_dir.join("ci-report.sarif");
+    let html = output_dir.join("ci-report.html");
 
     fs::write(
         &markdown,
@@ -73,8 +75,38 @@ pub fn write_ci_artifacts(
         })?,
     )?;
     fs::write(&sarif, crate::state::sarif::render_sarif(findings))?;
+    fs::write(&html, render_html_report(context, findings, fail_threshold))?;
 
-    Ok(CiArtifactPaths { markdown, json, sarif })
+    Ok(CiArtifactPaths {
+        markdown,
+        json,
+        sarif,
+        html,
+    })
+}
+
+fn render_html_report(
+    context: &CiContext,
+    findings: &[Finding],
+    fail_threshold: Severity,
+) -> String {
+    let title = "Zentra CI Security Report";
+    let meta = [
+        ("Platform", context.platform.as_str()),
+        (
+            "Scope",
+            &format!(
+                "PR/MR {}",
+                context.pr_or_mr_number.as_deref().unwrap_or("unknown")
+            ),
+        ),
+        ("Base ref", &context.base_ref),
+        ("Head ref", &context.head_ref),
+        ("Changed files", &context.changed_files.len().to_string()),
+        ("Impact files", &context.impact_files.len().to_string()),
+        ("Fail threshold", &fail_threshold.to_string()),
+    ];
+    crate::state::html::render_report_html(findings, title, &meta)
 }
 
 pub fn severity_counts(findings: &[Finding]) -> SeverityCounts {
@@ -121,7 +153,11 @@ fn render_markdown_report(
     if !triage_line.is_empty() {
         // The triage line documents the ticket outcome (or its absence). It is
         // injected into the CI Summary so operators see it next to the policy.
-        report = report.replacen("## Severity Summary", &format!("{triage_line}\n\n## Severity Summary"), 1);
+        report = report.replacen(
+            "## Severity Summary",
+            &format!("{triage_line}\n\n## Severity Summary"),
+            1,
+        );
     }
 
     if findings.is_empty() {

@@ -93,6 +93,7 @@ fn sample_finding(severity: Severity, title: &str) -> Finding {
         owasp: None,
         confidence: None,
         screening: None,
+        evidence: None,
     }
 }
 
@@ -130,7 +131,8 @@ fn writes_ci_markdown_and_json_artifacts_with_summary_shape() {
         sample_finding(Severity::High, "Missing authorization"),
     ];
 
-    let paths = write_ci_artifacts(dir.path(), &context, &findings, Severity::Critical, None).unwrap();
+    let paths =
+        write_ci_artifacts(dir.path(), &context, &findings, Severity::Critical, None).unwrap();
 
     assert_eq!(
         paths.markdown,
@@ -140,8 +142,17 @@ fn writes_ci_markdown_and_json_artifacts_with_summary_shape() {
         paths.json,
         dir.path().join(".zentra").join("ci-report.json")
     );
+    assert_eq!(paths.html, dir.path().join(".zentra").join("ci-report.html"));
 
     let markdown = std::fs::read_to_string(paths.markdown).unwrap();
+    let html = std::fs::read_to_string(paths.html).unwrap();
+    assert!(html.starts_with("<!DOCTYPE html>"));
+    assert!(html.contains("Zentra CI Security Report"));
+    assert!(html.contains("github"));
+    assert!(html.contains("feature/auth"));
+    assert!(html.contains("SQL injection"));
+    assert!(html.contains("Missing authorization"));
+    assert!(html.contains("src/auth.rs:42"));
     assert!(markdown.contains("# Zentra CI Security Report"));
     assert!(markdown.contains("Platform: github"));
     assert!(markdown.contains("Scope: PR/MR 77"));
@@ -903,6 +914,7 @@ fn triage_finding(severity: Severity, title: &str, location: &str) -> Finding {
         owasp: None,
         confidence: None,
         screening: None,
+        evidence: None,
     }
 }
 

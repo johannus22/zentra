@@ -44,6 +44,7 @@ fn state_writer_creates_findings_file() {
             owasp: None,
             confidence: None,
             screening: None,
+            evidence: None,
         })
         .unwrap();
 
@@ -57,6 +58,62 @@ fn state_writer_creates_findings_file() {
     );
     assert!(content.contains("CRITICAL"), "should contain severity");
     assert!(content.contains("src/db.rs:42"), "should contain location");
+}
+
+#[test]
+fn state_writer_writes_html_findings_report() {
+    let dir = TempDir::new().unwrap();
+    let writer = StateWriter::new(dir.path()).unwrap();
+
+    writer
+        .write_finding(&Finding {
+            scanner: "sast".to_string(),
+            severity: Severity::High,
+            title: "SQL Injection".to_string(),
+            description: "User input concatenated into SQL".to_string(),
+            location: Some("src/db.rs:42".to_string()),
+            recommendation: "Use parameterized queries.".to_string(),
+            corroborated_by: vec![],
+            cwe: None,
+            secondary_cwe: vec![],
+            cvss_vector: None,
+            cvss_score: None,
+            owasp: None,
+            confidence: None,
+            screening: None,
+            evidence: None,
+        })
+        .unwrap();
+
+    let raw =
+        std::fs::read_to_string(dir.path().join(".zentra").join("detailed-findings.md")).unwrap();
+    let findings = zentra_cli::state::parse_findings(&raw);
+
+    let path = dir
+        .path()
+        .join(".zentra")
+        .join("reports")
+        .join("findings.html");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        zentra_cli::state::html::render_report_html(
+            &findings,
+            "Zentra SAST Report",
+            &[("Project", "my-project"), ("Branch", "main")],
+        ),
+    )
+    .unwrap();
+    assert!(path.exists(), "findings.html should exist");
+
+    let html = std::fs::read_to_string(path).unwrap();
+    assert!(html.starts_with("<!DOCTYPE html>"));
+    assert!(html.contains("Zentra SAST Report"));
+    assert!(html.contains("my-project"));
+    assert!(html.contains("main"));
+    assert!(html.contains("SQL Injection"));
+    assert!(html.contains("src/db.rs:42"));
+    assert!(html.contains("Use parameterized queries"));
 }
 
 #[test]
@@ -81,6 +138,7 @@ fn state_writer_appends_multiple_findings() {
                 owasp: None,
                 confidence: None,
                 screening: None,
+                evidence: None,
             })
             .unwrap();
     }
@@ -131,6 +189,7 @@ fn concurrent_write_finding_never_drops_a_finding() {
                         owasp: None,
                         confidence: None,
                         screening: None,
+                        evidence: None,
                     })
                     .unwrap();
                 }
@@ -176,6 +235,7 @@ fn state_writer_sorts_findings_by_severity_in_markdown() {
             owasp: None,
             confidence: None,
             screening: None,
+            evidence: None,
         })
         .unwrap();
     writer
@@ -194,6 +254,7 @@ fn state_writer_sorts_findings_by_severity_in_markdown() {
             owasp: None,
             confidence: None,
             screening: None,
+            evidence: None,
         })
         .unwrap();
 
@@ -268,6 +329,7 @@ fn read_findings_raw_returns_written_findings() {
             owasp: None,
             confidence: None,
             screening: None,
+            evidence: None,
         })
         .unwrap();
 
@@ -1167,6 +1229,7 @@ fn finding_block_roundtrips_corroboration() {
             owasp: None,
             confidence: None,
             screening: None,
+            evidence: None,
         })
         .unwrap();
 
@@ -1214,6 +1277,7 @@ fn singleton_finding_markdown_has_no_corroboration_line() {
             owasp: None,
             confidence: None,
             screening: None,
+            evidence: None,
         })
         .unwrap();
     let raw = writer.read_findings_raw().unwrap();
@@ -1273,6 +1337,7 @@ async fn correlate_merges_semantic_duplicates_via_llm() {
             owasp: None,
             confidence: None,
             screening: None,
+            evidence: None,
         },
         Finding {
             scanner: "sast".to_string(),
@@ -1289,6 +1354,7 @@ async fn correlate_merges_semantic_duplicates_via_llm() {
             owasp: None,
             confidence: None,
             screening: None,
+            evidence: None,
         },
     ];
 
@@ -1379,6 +1445,7 @@ async fn correlate_preserves_findings_on_llm_failure() {
             owasp: None,
             confidence: None,
             screening: None,
+            evidence: None,
         },
         Finding {
             scanner: "sast".to_string(),
@@ -1395,6 +1462,7 @@ async fn correlate_preserves_findings_on_llm_failure() {
             owasp: None,
             confidence: None,
             screening: None,
+            evidence: None,
         },
     ];
 
@@ -1471,6 +1539,7 @@ async fn orchestrator_incremental_carries_and_reconciles() {
             owasp: None,
             confidence: None,
             screening: None,
+            evidence: None,
         })
         .unwrap();
 
@@ -1489,6 +1558,7 @@ async fn orchestrator_incremental_carries_and_reconciles() {
         owasp: None,
         confidence: None,
         screening: None,
+        evidence: None,
     }];
     let change_set = ChangeSet {
         changed: vec!["src/changed.rs".into()],
@@ -1541,6 +1611,7 @@ async fn orchestrator_replays_retained_findings_for_skipped_scanner() {
         owasp: None,
         confidence: None,
         screening: None,
+        evidence: None,
     };
     writer.write_finding(&finding).unwrap();
 
@@ -1603,6 +1674,7 @@ async fn orchestrator_reruns_report_when_a_prior_scanner_reruns_on_resume() {
             owasp: None,
             confidence: None,
             screening: None,
+            evidence: None,
         })
         .unwrap();
 
@@ -1742,6 +1814,7 @@ fn ordering_finding(sev: Severity, title: &str, loc: &str, scanner: &str) -> Fin
         owasp: None,
         confidence: None,
         screening: None,
+        evidence: None,
     }
 }
 
@@ -2074,6 +2147,7 @@ fn screening_finding(title: &str, location: Option<&str>) -> Finding {
         owasp: None,
         confidence: None,
         screening: None,
+        evidence: None,
     }
 }
 

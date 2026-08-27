@@ -1,5 +1,6 @@
 pub mod cvss;
 pub mod finding;
+pub mod html;
 pub mod sarif;
 pub use finding::{Finding, Severity};
 
@@ -244,12 +245,22 @@ fn format_finding_block(finding: &Finding, cwe_template: &str) -> String {
         (None, _) => String::new(),
     };
 
+    // The screening evidence is the pass's one-sentence reason, captured from
+    // the `report_screening` tool call. Emitted only when present so an
+    // unscreened or reason-less finding keeps byte-identical output.
+    let evidence_line = finding
+        .evidence
+        .as_deref()
+        .map(|e| format!("**Evidence:** {}\n", sanitize_field(e)))
+        .unwrap_or_default();
+
     format!(
-        "## [{}] {}\n**Scanner:** {}\n{}{}{}{}{}{}{}**Description:** {}\n**Recommendation:** {}\n\n---\n",
+        "## [{}] {}\n**Scanner:** {}\n{}{}{}{}{}{}{}{}**Description:** {}\n**Recommendation:** {}\n\n---\n",
         finding.severity,
         sanitize_field(&finding.title),
         sanitize_field(&finding.scanner),
         screening_line,
+        evidence_line,
         corroborated_line,
         cwe_line,
         secondary_line,
@@ -292,6 +303,7 @@ fn parse_finding_block(block: &str) -> Option<Finding> {
     let mut owasp = None;
     let mut confidence = None;
     let mut screening = None;
+    let mut evidence = None;
 
     for line in lines {
         if let Some(v) = line.strip_prefix("**Scanner:** ") {
@@ -340,6 +352,8 @@ fn parse_finding_block(block: &str) -> Option<Finding> {
                 .split_once('(')
                 .and_then(|(_, rest)| rest.split_once('%'))
                 .and_then(|(number, _)| number.trim().parse::<u8>().ok());
+        } else if let Some(v) = line.strip_prefix("**Evidence:** ") {
+            evidence = Some(v.trim().to_string());
         }
     }
 
@@ -365,6 +379,7 @@ fn parse_finding_block(block: &str) -> Option<Finding> {
         owasp,
         confidence,
         screening,
+        evidence,
     })
 }
 
@@ -439,6 +454,7 @@ mod enriched_tests {
             owasp: Some("A03:2021-Injection".into()),
             confidence: None,
             screening: None,
+            evidence: None,
         }
     }
 
@@ -484,6 +500,40 @@ mod enriched_tests {
         f.cvss_score = None;
         let block = format_finding_block(&f, DEFAULT_CWE_URL_TEMPLATE);
         assert!(!block.contains("**CVSS:**"));
+    }
+
+    #[test]
+    fn evidence_round_trips() {
+        let mut f = enriched();
+        f.evidence = Some("Reachable from an unauthenticated HTTP route".into());
+        let block = format_finding_block(&f, DEFAULT_CWE_URL_TEMPLATE);
+        assert!(block.contains("**Evidence:** Reachable from an unauthenticated HTTP route"));
+
+        let parsed = &parse_findings(&block)[0];
+        assert_eq!(
+            parsed.evidence.as_deref(),
+            Some("Reachable from an unauthenticated HTTP route")
+        );
+    }
+
+    #[test]
+    fn evidence_absent_when_none() {
+        let mut f = enriched();
+        f.evidence = None;
+        let block = format_finding_block(&f, DEFAULT_CWE_URL_TEMPLATE);
+        assert!(!block.contains("**Evidence:**"), "got: {block}");
+    }
+
+    #[test]
+    fn legacy_block_without_evidence_parses() {
+        // A block written before the evidence field existed must parse with
+        // `evidence == None` (backward compatible).
+        let legacy =
+            "## [LOW] Old finding\n**Scanner:** sast\n**Screening:** disputed (80% confidence)\n**Description:** d\n**Recommendation:** r\n\n---\n";
+        let f = &parse_findings(legacy)[0];
+        assert_eq!(f.screening, Some(crate::state::finding::Screening::Disputed));
+        assert_eq!(f.confidence, Some(80));
+        assert!(f.evidence.is_none(), "legacy blocks have no evidence");
     }
 
     // F1: scanned repo content flows verbatim into finding fields (the LLM quotes

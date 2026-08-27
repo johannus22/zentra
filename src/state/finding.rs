@@ -82,6 +82,12 @@ pub struct Finding {
     /// What the audit pass concluded. `None` means it never ran on this finding.
     #[serde(default)]
     pub screening: Option<Screening>,
+    /// Screening evidence: the one-sentence reason the audit pass gave for its
+    /// verdict, captured from the screening tool's `reason` argument. `None`
+    /// when the pass never ran or supplied no reason. Kept separate from
+    /// `screening` so a verdict can exist without a reason and vice versa.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
 }
 
 /// The audit pass verdict on one finding.

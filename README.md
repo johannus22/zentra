@@ -12,7 +12,7 @@ The binary is named `zentra`.
 - Focused PR/MR scanning with changed-file impact analysis.
 - Incremental scans, resumable checkpoints, coverage reporting, and SARIF output.
 - Dynamic browser pentest mode for authorized targets.
-- Markdown, JSON, and SARIF output under `.zentra/`.
+- Markdown, JSON, SARIF, and styled HTML output under `.zentra/`.
 - Encrypted-at-rest credential storage (DPAPI on Windows, `0600` files on Unix).
 - Tamper-evident audit logs, prompt-injection defenses, and validated tool access.
 
@@ -182,7 +182,7 @@ Zentra assigns the issue to the owner of the GitLab token. Override this with `Z
 
 Provide a token through `ZENTRA_GITLAB_TOKEN`. Use a personal access token with the `api` scope. Add it as a masked CI/CD variable. The token owner becomes the assignee.
 
-When the token is absent, the scan still succeeds. Zentra prints setup guidance and leaves the findings in the pipeline artifacts. The artifacts live at `.zentra/ci-report.md` and `.zentra/ci-report.json`.
+When the token is absent, the scan still succeeds. Zentra prints setup guidance and leaves the findings in the pipeline artifacts. The artifacts live at `.zentra/ci-report.md`, `.zentra/ci-report.json`, and `.zentra/ci-report.html`.
 
 The issue body keeps a "New since last run" section. Zentra computes it from finding fingerprints. It stores the fingerprints in a hidden comment inside the issue body. Each run compares the current fingerprints against the stored set. New findings appear in the section. This helps a reviewer see what changed since the last scan.
 
@@ -211,7 +211,7 @@ The generated workflow does the following:
 - Grants `contents: read` and `pull-requests: write`.
 - Installs the `zentra` binary via the release installer script.
 - Runs `zentra ci`.
-- Uploads `.zentra/ci-report.md` and `.zentra/ci-report.json` as artifacts.
+- Uploads `.zentra/ci-report.md`, `.zentra/ci-report.json`, and `.zentra/ci-report.html` as artifacts.
 
 `zentra ci` reads provider credentials from the environment variables below. This lets it run on a fresh runner, with no `~/.zentra/config.toml` file and no keychain. Set these variables under **Settings → Secrets and variables → Actions**:
 
@@ -246,7 +246,7 @@ The generated job does the following:
 - Runs for merge request pipelines.
 - Sets `GIT_DEPTH: "0"`, so diff detection can compare the base and head history.
 - Runs `zentra ci`.
-- Saves `.zentra/ci-report.md` and `.zentra/ci-report.json` as artifacts.
+- Saves `.zentra/ci-report.md`, `.zentra/ci-report.json`, and `.zentra/ci-report.html` as artifacts.
 
 Set your provider key in a GitLab CI/CD variable, for example:
 
@@ -263,6 +263,7 @@ CI mode writes:
 ```text
 .zentra/ci-report.md
 .zentra/ci-report.json
+.zentra/ci-report.html
 ```
 
 The reports include:
@@ -417,7 +418,9 @@ Zentra writes project-local output under `.zentra/`:
 .zentra/ci-report.json
 .zentra/reports/
 .zentra/reports/findings.sarif
+.zentra/reports/findings.html
 .zentra/audit/
+.zentra/ci-report.html
 ```
 
 Do not commit secrets or scan state. The `init` command adds `.zentra/` to `.gitignore`.

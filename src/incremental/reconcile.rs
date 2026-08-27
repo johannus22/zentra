@@ -205,6 +205,7 @@ mod tests {
             owasp: None,
             confidence: None,
             screening: None,
+            evidence: None,
         }
     }
 

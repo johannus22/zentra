@@ -30,7 +30,7 @@ Report structure:
 | Info | N |
 
 ## Top Findings
-[Top 5 findings by severity, with title, scanner, location, CWE, CVSS score, OWASP category, brief description, and recommended action]
+[Top 5 findings by severity, with title, scanner, location, CWE, CVSS score, OWASP category, screening verdict and evidence, brief description, and recommended action]
 
 ## Scanner Results
 [Per-scanner breakdown with finding counts and note any scanner that failed]
@@ -39,8 +39,15 @@ Report structure:
 [Top 3 actionable recommendations in priority order]
 
 ## All Findings
-[List every finding grouped by severity (Critical first), including each finding's CWE, CVSS score, and OWASP category when present]
+[List every finding grouped by severity (Critical first), including each finding's CWE, CVSS score, OWASP category, and screening verdict with its one-sentence evidence when present]
 ```
+
+Screening context:
+- Each finding may carry a screening verdict (confirmed / disputed / unclear) plus a confidence percentage and a one-sentence evidence reason.
+- Confirmed means the audit pass showed reachability from untrusted input with no mitigation.
+- Disputed means the pass could not show reachability or found a mitigation; a disputed Critical must still be reported, not silently downgraded.
+- Unclear means the pass could not decide either way.
+- In the Top Findings and All Findings sections, surface the verdict and the evidence reason so the reader can weigh a Disputed finding against its severity.
 
 Risk Grade:
 - A: No critical or high findings

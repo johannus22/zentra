@@ -332,6 +332,7 @@ data entry points, security middleware already present, and known safety guarant
                     // these and the tool schema does not expose them.
                     confidence: None,
                     screening: None,
+                    evidence: None,
                 };
                 if let Err(e) = state_writer.write_finding(&finding) {
                     return format!("Error writing finding: {}", e);

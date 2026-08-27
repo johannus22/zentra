@@ -387,8 +387,8 @@ async fn run_once(
         context_window,
         token_for_ui,
         profiles,
-        branch,
-        project_name,
+        branch.clone(),
+        project_name.clone(),
         provider_kind,
     )
     .await?;
@@ -430,6 +430,15 @@ async fn run_once(
             let findings = crate::state::parse_findings(&findings_raw);
             if let Ok(path) = write_sarif_to_dir(&zentra_dir, &findings) {
                 println!("  SARIF: {}", path.display());
+            }
+            if let Ok(path) = write_findings_html_to_dir(
+                &zentra_dir,
+                &findings,
+                &project_name,
+                &branch,
+                &model_id,
+            ) {
+                println!("  HTML:  {}", path.display());
             }
 
             if !failed.is_empty() {
@@ -577,6 +586,31 @@ fn write_sarif_to_dir(
     fs::create_dir_all(&reports_dir)?;
     let path = reports_dir.join("findings.sarif");
     fs::write(&path, crate::state::sarif::render_sarif(findings))?;
+    Ok(path)
+}
+
+/// Write a styled HTML report to `<zentra_dir>/reports/findings.html`. The
+/// `reports` subdirectory is created if it is absent. Return the written path.
+fn write_findings_html_to_dir(
+    zentra_dir: &Path,
+    findings: &[crate::state::Finding],
+    project_name: &str,
+    branch: &str,
+    model_id: &str,
+) -> Result<std::path::PathBuf> {
+    use std::fs;
+    let reports_dir = zentra_dir.join("reports");
+    fs::create_dir_all(&reports_dir)?;
+    let path = reports_dir.join("findings.html");
+    let meta = [
+        ("Project", project_name),
+        ("Branch", branch),
+        ("Model", model_id),
+    ];
+    fs::write(
+        &path,
+        crate::state::html::render_report_html(findings, "Zentra SAST Report", &meta),
+    )?;
     Ok(path)
 }
 
