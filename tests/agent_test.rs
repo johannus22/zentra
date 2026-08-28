@@ -1479,10 +1479,13 @@ async fn correlate_preserves_findings_on_llm_failure() {
 mod test_support {
     use anyhow::anyhow;
     use async_trait::async_trait;
+    use std::sync::Mutex;
     use tokio_util::sync::CancellationToken;
     use zentra_cli::provider::{
-        AgentMessage, CompletionRequest, CompletionResponse, LLMProvider, ToolDefinition,
+        AgentMessage, CompletionRequest, CompletionResponse, LLMProvider, TokenUsage, ToolCall,
+        ToolDefinition,
     };
+    use zentra_cli::{agent::ScannerType, scanners};
 
     #[derive(Default)]
     pub struct NoopProvider;
@@ -1512,6 +1515,350 @@ mod test_support {
             "noop"
         }
     }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum PipelineCall {
+        Scanner(ScannerType),
+        Correlation,
+        Screening,
+    }
+
+    /// A deterministic in-process provider for public orchestrator integration
+    /// tests. Scanner calls are recognized by their public system prompts; the
+    /// two final passes are recognized by their public tool contracts.
+    pub struct PipelineProvider {
+        sast_findings: Vec<serde_json::Value>,
+        calls: Mutex<Vec<PipelineCall>>,
+    }
+
+    impl PipelineProvider {
+        pub fn with_sast_findings(sast_findings: Vec<serde_json::Value>) -> Self {
+            Self {
+                sast_findings,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+
+        pub fn calls(&self) -> Vec<PipelineCall> {
+            self.calls
+                .lock()
+                .expect("pipeline call log poisoned")
+                .clone()
+        }
+
+        fn response(tool_calls: Vec<ToolCall>) -> CompletionResponse {
+            CompletionResponse {
+                content: "done".to_string(),
+                tool_calls,
+                usage: TokenUsage::default(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LLMProvider for PipelineProvider {
+        async fn complete(&self, _req: CompletionRequest) -> anyhow::Result<CompletionResponse> {
+            Err(anyhow!(
+                "PipelineProvider only supports agent-mode completions"
+            ))
+        }
+
+        async fn complete_with_tools(
+            &self,
+            system: &str,
+            messages: &[AgentMessage],
+            tools: &[ToolDefinition],
+            _max_tokens: u32,
+            _cancel_token: Option<&CancellationToken>,
+        ) -> anyhow::Result<CompletionResponse> {
+            let scanner = [
+                ScannerType::FrameworkAnalysis,
+                ScannerType::ThreatModel,
+                ScannerType::Sast,
+                ScannerType::Report,
+            ]
+            .into_iter()
+            .find(|scanner| system.starts_with(&scanners::system_prompt(*scanner)));
+
+            if let Some(scanner) = scanner {
+                // ScannerAgent's opening turn is its only User message. Its
+                // follow-up after a tool result is intentionally unrecorded so
+                // the log measures scanner invocations, not ReAct turns.
+                let opening_turn = matches!(messages, [AgentMessage::User(_)]);
+                if opening_turn {
+                    self.calls
+                        .lock()
+                        .expect("pipeline call log poisoned")
+                        .push(PipelineCall::Scanner(scanner));
+                }
+                let tool_calls = if opening_turn {
+                    match scanner {
+                        ScannerType::FrameworkAnalysis => vec![ToolCall {
+                            id: "framework-architecture".to_string(),
+                            name: "write_architecture".to_string(),
+                            arguments: serde_json::json!({"content": "# Test architecture"}),
+                        }],
+                        ScannerType::Sast => self
+                            .sast_findings
+                            .iter()
+                            .enumerate()
+                            .map(|(index, arguments)| ToolCall {
+                                id: format!("sast-finding-{index}"),
+                                name: "write_finding".to_string(),
+                                arguments: arguments.clone(),
+                            })
+                            .collect(),
+                        ScannerType::Report => vec![ToolCall {
+                            id: "final-report".to_string(),
+                            name: "write_report".to_string(),
+                            arguments: serde_json::json!({"content": "# Deterministic report"}),
+                        }],
+                        ScannerType::ThreatModel => Vec::new(),
+                        _ => unreachable!("only selected scanner prompts are recognized"),
+                    }
+                } else {
+                    Vec::new()
+                };
+                return Ok(Self::response(tool_calls));
+            }
+
+            match tools.first().map(|tool| tool.name.as_str()) {
+                Some("report_clusters") => {
+                    self.calls
+                        .lock()
+                        .expect("pipeline call log poisoned")
+                        .push(PipelineCall::Correlation);
+                    Ok(Self::response(vec![ToolCall {
+                        id: "no-clusters".to_string(),
+                        name: "report_clusters".to_string(),
+                        arguments: serde_json::json!({"clusters": []}),
+                    }]))
+                }
+                Some("report_screening") => {
+                    self.calls
+                        .lock()
+                        .expect("pipeline call log poisoned")
+                        .push(PipelineCall::Screening);
+                    Ok(Self::response(vec![ToolCall {
+                        id: "screened".to_string(),
+                        name: "report_screening".to_string(),
+                        arguments: serde_json::json!({"verdicts": []}),
+                    }]))
+                }
+                other => Err(anyhow!("unexpected pipeline completion request: {other:?}")),
+            }
+        }
+
+        fn context_window(&self) -> u32 {
+            200_000
+        }
+
+        fn model_name(&self) -> &str {
+            "deterministic-pipeline"
+        }
+    }
+}
+
+#[tokio::test]
+async fn no_chat_runtime_preserves_legacy_scanner_order_completion_findings_and_one_report() {
+    use test_support::{PipelineCall, PipelineProvider};
+    use zentra_cli::agent::checkpoint::Checkpoint;
+
+    let dir = TempDir::new().unwrap();
+    let provider = Arc::new(PipelineProvider::with_sast_findings(vec![
+        serde_json::json!({
+            "severity": "high",
+            "title": "Legacy SAST finding",
+            "description": "Deterministic integration evidence.",
+            "location": "src/lib.rs:7",
+            "recommendation": "Fix the deterministic test issue."
+        }),
+    ]));
+    let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
+    let writer = Arc::new(StateWriter::new(dir.path()).unwrap());
+    let (tx, mut rx) = mpsc::channel(128);
+
+    // Deliberately do not call `with_chat_runtime`: this is the legacy public
+    // construction path that CLI scans use when interactive chat is absent.
+    let summary = OrchestratorAgent::new(
+        provider.clone(),
+        registry,
+        writer.clone(),
+        tx,
+        CancellationToken::new(),
+    )
+    .run(&[
+        ScannerType::FrameworkAnalysis,
+        ScannerType::ThreatModel,
+        ScannerType::Sast,
+        ScannerType::Report,
+    ])
+    .await
+    .unwrap();
+
+    assert!(
+        summary.failed.is_empty(),
+        "legacy scan should complete: {:?}",
+        summary.failed
+    );
+    let mut started = Vec::new();
+    let mut completed = Vec::new();
+    let mut persisted_events = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            ScanEvent::ScannerStarted(scanner) => started.push(scanner),
+            ScanEvent::ScannerCompleted(scanner) => completed.push(scanner),
+            ScanEvent::FindingAdded(finding) => persisted_events.push(finding.title),
+            // This legacy channel must contain only normal scan events; it has
+            // no chat-control event variant or chat-runtime payload.
+            ScanEvent::ToolCall { .. }
+            | ScanEvent::Error { .. }
+            | ScanEvent::FileRead { .. }
+            | ScanEvent::TokensUsed { .. }
+            | ScanEvent::McpChannelStatus(_) => {}
+        }
+    }
+    let expected = vec![
+        ScannerType::FrameworkAnalysis,
+        ScannerType::ThreatModel,
+        ScannerType::Sast,
+        ScannerType::Report,
+    ];
+    assert_eq!(started, expected, "legacy scanner starts must stay ordered");
+    assert_eq!(
+        completed, expected,
+        "legacy scanner completions must stay ordered"
+    );
+    assert_eq!(persisted_events, vec!["Legacy SAST finding"]);
+    assert_eq!(
+        provider.calls(),
+        vec![
+            PipelineCall::Scanner(ScannerType::FrameworkAnalysis),
+            PipelineCall::Scanner(ScannerType::ThreatModel),
+            PipelineCall::Scanner(ScannerType::Sast),
+            PipelineCall::Screening,
+            PipelineCall::Scanner(ScannerType::Report),
+        ],
+        "each selected legacy scanner is invoked once and report is last"
+    );
+
+    let findings = zentra_cli::state::parse_findings(&writer.read_findings_raw().unwrap());
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].title, "Legacy SAST finding");
+    assert_eq!(findings[0].scanner, "sast");
+    let reports = std::fs::read_dir(dir.path().join(".zentra/reports"))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let report = reports
+        .iter()
+        .find(|entry| entry.file_name().to_string_lossy().ends_with("-report.md"))
+        .expect("report scanner should persist exactly one dated report");
+    assert_eq!(
+        std::fs::read_to_string(report.path()).unwrap(),
+        "# Deterministic report"
+    );
+
+    let checkpoint_path = dir.path().join(".zentra/checkpoint.json");
+    assert!(
+        !checkpoint_path.exists(),
+        "a completed legacy scan clears its checkpoint"
+    );
+    assert!(Checkpoint::load(&dir.path().join(".zentra"))
+        .completed
+        .is_empty());
+}
+
+#[tokio::test]
+async fn incremental_pipeline_reconciles_findings_and_runs_final_passes_once() {
+    use test_support::{PipelineCall, PipelineProvider};
+    use zentra_cli::incremental::ChangeSet;
+
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/changed.rs"), "fn changed() {}").unwrap();
+    let prior = vec![Finding {
+        scanner: "sast".to_string(),
+        severity: Severity::Medium,
+        title: "Carried finding".to_string(),
+        description: "Untouched prior result.".to_string(),
+        location: Some("src/untouched.rs:1".to_string()),
+        recommendation: "Keep tracking it.".to_string(),
+        corroborated_by: vec![],
+        cwe: None,
+        secondary_cwe: vec![],
+        cvss_vector: None,
+        cvss_score: None,
+        owasp: None,
+        confidence: None,
+        screening: None,
+        evidence: None,
+    }];
+    let provider = Arc::new(PipelineProvider::with_sast_findings(vec![
+        serde_json::json!({
+            "severity": "high", "title": "Fresh issue one", "description": "d1",
+            "location": "src/changed.rs:1", "recommendation": "r1"
+        }),
+        serde_json::json!({
+            "severity": "low", "title": "Fresh issue two", "description": "d2",
+            "location": "src/changed.rs:2", "recommendation": "r2"
+        }),
+    ]));
+    let writer = Arc::new(StateWriter::new(dir.path()).unwrap());
+    let (tx, mut rx) = mpsc::channel(128);
+    let summary = OrchestratorAgent::new(
+        provider.clone(),
+        Arc::new(zentra_cli::tools::ToolRegistry::new()),
+        writer.clone(),
+        tx,
+        CancellationToken::new(),
+    )
+    .with_incremental(
+        prior,
+        ChangeSet {
+            changed: vec!["src/changed.rs".to_string()],
+            impact: vec!["src/changed.rs".to_string()],
+        },
+    )
+    .run(&[ScannerType::Sast, ScannerType::Report])
+    .await
+    .unwrap();
+
+    let delta = summary.delta.expect("incremental reconciliation delta");
+    assert_eq!(delta.carried, 1);
+    assert_eq!(delta.new, 2);
+    assert_eq!(delta.resolved, 0);
+    let persisted = zentra_cli::state::parse_findings(&writer.read_findings_raw().unwrap());
+    assert_eq!(
+        persisted.len(),
+        3,
+        "reconciliation preserves carried and fresh findings"
+    );
+    assert!(persisted
+        .iter()
+        .any(|finding| finding.title == "Carried finding"));
+
+    let mut started = Vec::new();
+    let mut completed = Vec::new();
+    while let Ok(event) = rx.try_recv() {
+        match event {
+            ScanEvent::ScannerStarted(scanner) => started.push(scanner),
+            ScanEvent::ScannerCompleted(scanner) => completed.push(scanner),
+            _ => {}
+        }
+    }
+    assert_eq!(started, vec![ScannerType::Sast, ScannerType::Report]);
+    assert_eq!(completed, vec![ScannerType::Sast, ScannerType::Report]);
+    assert_eq!(
+        provider.calls(),
+        vec![
+            PipelineCall::Scanner(ScannerType::Sast),
+            PipelineCall::Correlation,
+            PipelineCall::Screening,
+            PipelineCall::Scanner(ScannerType::Report),
+        ],
+        "correlation, screening, and report each run once; report is last"
+    );
 }
 
 #[tokio::test]

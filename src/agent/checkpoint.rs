@@ -9,7 +9,7 @@ use std::path::Path;
 
 /// Records which scanners completed successfully in a prior run.
 /// The orchestrator uses this to skip completed scanners on resume.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Checkpoint {
     /// Scanner names that completed successfully (for example "sast", "threat_model").
     #[serde(default)]
@@ -192,6 +192,114 @@ impl Checkpoint {
         Ok(true)
     }
 
+    /// Atomically invalidate a scanner and the report before a fresh chat
+    /// rerun. Clone-before-save is important: a persistence failure must leave
+    /// the caller's in-memory checkpoint accurately representing disk.
+    pub fn invalidate_for_chat_rerun_strict(
+        &mut self,
+        zentra_dir: &Path,
+        scanner: &str,
+    ) -> anyhow::Result<()> {
+        let mut updated = self.clone();
+        updated.completed.remove(scanner);
+        updated.completed.remove("report");
+        updated.updated_at = chrono::Utc::now().to_rfc3339();
+        updated.save_strict(zentra_dir)?;
+        *self = updated;
+        Ok(())
+    }
+
+    /// Atomically invalidate every requested chat target and the report.  This
+    /// is deliberately a single clone/save/swap so a resume can never observe a
+    /// subset of a multi-scanner action as fresh.
+    pub fn invalidate_chat_reruns_strict(
+        &mut self,
+        zentra_dir: &Path,
+        scanners: impl IntoIterator<Item = String>,
+    ) -> anyhow::Result<()> {
+        let mut updated = self.clone();
+        for scanner in scanners {
+            updated.completed.remove(&scanner);
+        }
+        updated.completed.remove("report");
+        updated.updated_at = chrono::Utc::now().to_rfc3339();
+        updated.save_strict(zentra_dir)?;
+        *self = updated;
+        Ok(())
+    }
+
+    /// Restore only the exact completion names captured immediately before a
+    /// resume invalidation. This compensates a fail-closed snapshot boundary
+    /// before any scanner work begins; it never reconstructs arbitrary state.
+    pub fn restore_completed_names_strict(
+        &mut self,
+        zentra_dir: &Path,
+        names: &BTreeSet<String>,
+    ) -> anyhow::Result<()> {
+        if names.is_empty() {
+            return Ok(());
+        }
+        let mut updated = self.clone();
+        updated.completed.extend(names.iter().cloned());
+        updated.updated_at = chrono::Utc::now().to_rfc3339();
+        updated.save_strict(zentra_dir)?;
+        *self = updated;
+        Ok(())
+    }
+
+    /// Commit scanner completion and durable per-proposal progress together.
+    pub fn complete_chat_scanner_strict(
+        &mut self,
+        zentra_dir: &Path,
+        scanner: &str,
+        proposal_ids: &[uuid::Uuid],
+    ) -> anyhow::Result<Vec<ConfirmedChatAction>> {
+        let supplied_count = proposal_ids.len();
+        let proposal_ids: BTreeSet<_> = proposal_ids.iter().copied().collect();
+        // The input is captured when a scanner is spawned. Reject accidental
+        // duplicate attribution rather than silently widening progress.
+        if proposal_ids.len() != supplied_count {
+            anyhow::bail!("duplicate chat proposal attribution for scanner completion");
+        }
+        let mut updated = self.clone();
+        updated.completed.insert(scanner.to_string());
+        let mut newly_complete = Vec::new();
+        for action in &mut updated.confirmed_chat_actions {
+            let was_pending = !action.remaining_scanners.is_empty();
+            if proposal_ids.contains(&action.proposal_id) {
+                action
+                    .remaining_scanners
+                    .retain(|target| target.name() != scanner);
+            }
+            if was_pending && action.remaining_scanners.is_empty() {
+                newly_complete.push(action.clone());
+            }
+        }
+        updated.updated_at = chrono::Utc::now().to_rfc3339();
+        updated.save_strict(zentra_dir)?;
+        *self = updated;
+        Ok(newly_complete)
+    }
+
+    /// Strictly remove several terminal actions in one durable replacement.
+    pub fn remove_confirmed_chat_actions_strict(
+        &mut self,
+        zentra_dir: &Path,
+        proposal_ids: &BTreeSet<uuid::Uuid>,
+    ) -> anyhow::Result<()> {
+        if proposal_ids.is_empty() {
+            return Ok(());
+        }
+        let mut updated = self.clone();
+        updated
+            .confirmed_chat_actions
+            .retain(|action| !proposal_ids.contains(&action.proposal_id));
+        updated.updated_at = chrono::Utc::now().to_rfc3339();
+        updated.save_strict(zentra_dir)?;
+        *self = updated;
+        Ok(())
+    }
+
     /// Return pending actions only when this checkpoint belongs to exactly the
     /// resumed session and canonical scanner set. A subset could widen or
     /// silently reinterpret confirmed work, so it is deliberately rejected.
@@ -204,11 +312,17 @@ impl Checkpoint {
         if self.session_id != session_id {
             return Err(ChatValidationError::SessionMismatch);
         }
-        let checkpoint_set: BTreeSet<_> = self.scanner_set.iter().map(String::as_str).collect();
-        let selected_set: BTreeSet<_> = selected.iter().map(|scanner| scanner.name()).collect();
-        if checkpoint_set.len() != self.scanner_set.len()
-            || selected_set.len() != selected.len()
-            || checkpoint_set != selected_set
+        let mut canonical_selected: Vec<_> =
+            selected.iter().map(|scanner| scanner.name()).collect();
+        canonical_selected.sort_unstable();
+        if canonical_selected.windows(2).any(|pair| pair[0] == pair[1])
+            || self.scanner_set.windows(2).any(|pair| pair[0] >= pair[1])
+            || self
+                .scanner_set
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                != canonical_selected
         {
             return Err(ChatValidationError::ScannerSetMismatch);
         }
@@ -233,8 +347,21 @@ impl Checkpoint {
 
     /// Clear the checkpoint. Call this when a fresh (non-resume) scan starts.
     pub fn clear(zentra_dir: &Path) {
+        if let Err(error) = Self::clear_strict(zentra_dir) {
+            crate::logging::warn("checkpoint", format!("failed to clear checkpoint: {error}"));
+        }
+    }
+
+    pub fn clear_strict(zentra_dir: &Path) -> anyhow::Result<()> {
         let path = zentra_dir.join("checkpoint.json");
-        let _ = std::fs::remove_file(&path);
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                sync_dir(zentra_dir)?;
+                Ok(())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
 }
 
@@ -427,7 +554,7 @@ mod tests {
 
         let checkpoint = Checkpoint {
             session_id: "session".to_string(),
-            scanner_set: vec!["sast".to_string(), "api_scan".to_string()],
+            scanner_set: vec!["api_scan".to_string(), "sast".to_string()],
             ..Checkpoint::default()
         };
         assert!(checkpoint
@@ -450,6 +577,33 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_or_noncanonical_scanner_set_is_rejected() {
+        use crate::agent::ScannerType;
+        let duplicate = Checkpoint {
+            session_id: "session".to_string(),
+            scanner_set: vec!["api_scan".to_string(), "api_scan".to_string()],
+            ..Checkpoint::default()
+        };
+        assert!(duplicate
+            .confirmed_chat_actions_for_resume(
+                "session",
+                &[ScannerType::ApiScan, ScannerType::Sast]
+            )
+            .is_err());
+        let noncanonical = Checkpoint {
+            session_id: "session".to_string(),
+            scanner_set: vec!["sast".to_string(), "api_scan".to_string()],
+            ..Checkpoint::default()
+        };
+        assert!(noncanonical
+            .confirmed_chat_actions_for_resume(
+                "session",
+                &[ScannerType::ApiScan, ScannerType::Sast]
+            )
+            .is_err());
+    }
+
+    #[test]
     fn strict_chat_lifecycle_does_not_mutate_when_persistence_fails() {
         let tmp = TempDir::new().unwrap();
         let not_a_directory = tmp.path().join("not-a-directory");
@@ -459,6 +613,186 @@ mod tests {
             .set_session_id_strict(&not_a_directory, "session".to_string())
             .is_err());
         assert!(checkpoint.session_id.is_empty());
+    }
+
+    #[test]
+    fn strict_rerun_invalidation_removes_target_and_report_without_partial_mutation() {
+        let tmp = TempDir::new().unwrap();
+        let dir = zentra_dir(&tmp);
+        let mut checkpoint = Checkpoint::default();
+        checkpoint.completed.extend([
+            "sast".to_string(),
+            "report".to_string(),
+            "api_scan".to_string(),
+        ]);
+        checkpoint.save_strict(&dir).unwrap();
+        checkpoint
+            .invalidate_for_chat_rerun_strict(&dir, "sast")
+            .unwrap();
+        assert!(!checkpoint.is_completed("sast"));
+        assert!(!checkpoint.is_completed("report"));
+        assert!(checkpoint.is_completed("api_scan"));
+
+        let original = checkpoint.clone();
+        let not_a_directory = tmp.path().join("not-a-directory");
+        std::fs::write(&not_a_directory, "file").unwrap();
+        assert!(checkpoint
+            .invalidate_for_chat_rerun_strict(&not_a_directory, "api_scan")
+            .is_err());
+        assert_eq!(checkpoint.completed, original.completed);
+    }
+
+    #[test]
+    fn strict_batch_invalidation_is_atomic_for_remaining_chat_targets() {
+        let tmp = TempDir::new().unwrap();
+        let dir = zentra_dir(&tmp);
+        let mut checkpoint = Checkpoint::default();
+        checkpoint.completed.extend([
+            "sast".to_string(),
+            "api_scan".to_string(),
+            "report".to_string(),
+            "iac_scan".to_string(),
+        ]);
+        checkpoint.save_strict(&dir).unwrap();
+        checkpoint
+            .invalidate_chat_reruns_strict(&dir, ["sast".to_string(), "api_scan".to_string()])
+            .unwrap();
+        assert!(!checkpoint.is_completed("sast"));
+        assert!(!checkpoint.is_completed("api_scan"));
+        assert!(!checkpoint.is_completed("report"));
+        assert!(checkpoint.is_completed("iac_scan"));
+
+        let before = checkpoint.clone();
+        let bad = tmp.path().join("not-a-directory");
+        std::fs::write(&bad, "file").unwrap();
+        assert!(checkpoint
+            .invalidate_chat_reruns_strict(&bad, ["iac_scan".to_string()])
+            .is_err());
+        assert_eq!(checkpoint, before);
+    }
+
+    #[test]
+    fn completing_chat_scanner_only_updates_dependents_and_reports_newly_empty_actions() {
+        use crate::agent::chat::{ChatAction, FocusFragment, FocusScope};
+        use crate::agent::ScannerType;
+        use uuid::Uuid;
+
+        let tmp = TempDir::new().unwrap();
+        let dir = zentra_dir(&tmp);
+        let scope = || FocusScope::new([FocusFragment::InputValidation], []).unwrap();
+        let multi = ConfirmedChatAction::new(
+            Uuid::new_v4(),
+            1,
+            ChatAction::focus_and_rerun([ScannerType::Sast, ScannerType::ApiScan], scope())
+                .unwrap(),
+            [ScannerType::Sast, ScannerType::ApiScan],
+        )
+        .unwrap();
+        let unrelated = ConfirmedChatAction::new(
+            Uuid::new_v4(),
+            2,
+            ChatAction::focus_and_rerun([ScannerType::IacScan], scope()).unwrap(),
+            [ScannerType::IacScan],
+        )
+        .unwrap();
+        let mut checkpoint = Checkpoint {
+            confirmed_chat_actions: vec![multi.clone(), unrelated.clone()],
+            ..Checkpoint::default()
+        };
+        checkpoint.save_strict(&dir).unwrap();
+
+        assert!(checkpoint
+            .complete_chat_scanner_strict(&dir, "sast", &[multi.proposal_id])
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            checkpoint.confirmed_chat_actions[0].remaining_scanners,
+            vec![ScannerType::ApiScan]
+        );
+        assert_eq!(
+            checkpoint.confirmed_chat_actions[1].remaining_scanners,
+            unrelated.remaining_scanners
+        );
+        assert_eq!(
+            checkpoint
+                .complete_chat_scanner_strict(&dir, "api_scan", &[multi.proposal_id])
+                .unwrap(),
+            vec![checkpoint.confirmed_chat_actions[0].clone()]
+        );
+
+        let before = checkpoint.clone();
+        let file = tmp.path().join("not-a-directory");
+        std::fs::write(&file, "file").unwrap();
+        assert!(checkpoint
+            .complete_chat_scanner_strict(&file, "iac_scan", &[unrelated.proposal_id])
+            .is_err());
+        assert_eq!(checkpoint.completed, before.completed);
+        assert_eq!(
+            checkpoint.confirmed_chat_actions,
+            before.confirmed_chat_actions
+        );
+    }
+
+    #[test]
+    fn scanner_completion_advances_only_focus_members_present_at_spawn() {
+        use crate::agent::chat::{ChatAction, FocusFragment, FocusScope};
+        use crate::agent::ScannerType;
+        use uuid::Uuid;
+
+        let tmp = TempDir::new().unwrap();
+        let dir = zentra_dir(&tmp);
+        let action = |sequence| {
+            ConfirmedChatAction::new(
+                Uuid::new_v4(),
+                sequence,
+                ChatAction::focus_and_rerun(
+                    [ScannerType::Sast],
+                    FocusScope::new([FocusFragment::InputValidation], []).unwrap(),
+                )
+                .unwrap(),
+                [ScannerType::Sast],
+            )
+            .unwrap()
+        };
+        let before = action(1);
+        let late = action(2);
+        let unrelated = ConfirmedChatAction::new(
+            Uuid::new_v4(),
+            3,
+            ChatAction::focus_and_rerun(
+                [ScannerType::ApiScan],
+                FocusScope::new([FocusFragment::InputValidation], []).unwrap(),
+            )
+            .unwrap(),
+            [ScannerType::ApiScan],
+        )
+        .unwrap();
+        let mut checkpoint = Checkpoint {
+            confirmed_chat_actions: vec![before.clone(), late.clone(), unrelated.clone()],
+            ..Checkpoint::default()
+        };
+        checkpoint.save_strict(&dir).unwrap();
+        let completed = checkpoint
+            .complete_chat_scanner_strict(&dir, "sast", &[before.proposal_id])
+            .unwrap();
+        assert_eq!(
+            completed,
+            vec![checkpoint.confirmed_chat_actions[0].clone()]
+        );
+        assert!(checkpoint.confirmed_chat_actions[0]
+            .remaining_scanners
+            .is_empty());
+        assert_eq!(
+            checkpoint.confirmed_chat_actions[1].remaining_scanners,
+            vec![ScannerType::Sast]
+        );
+        assert_eq!(
+            checkpoint.confirmed_chat_actions[2].remaining_scanners,
+            vec![ScannerType::ApiScan]
+        );
+        assert!(checkpoint
+            .complete_chat_scanner_strict(&dir, "sast", &[late.proposal_id, late.proposal_id])
+            .is_err());
     }
 
     #[test]

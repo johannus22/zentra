@@ -15,6 +15,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use tokio::sync::oneshot;
 use uuid::Uuid;
 
 pub const MAX_FOCUS_FRAGMENTS: usize = 4;
@@ -27,6 +28,9 @@ pub const MAX_LIFECYCLE_MESSAGE_BYTES: usize = 1024;
 pub const MAX_CHAT_RECORD_BYTES: usize =
     MAX_FOCUS_PATHS * MAX_PATH_BYTES * 6 + MAX_CHAT_TEXT_BYTES * 6 + 8 * 1024;
 pub const MAX_CHAT_SESSION_FILES: usize = 20;
+/// Bound transcript replay before allocation. Terminal lifecycle lookup only
+/// needs the recent bounded history used by the coordinator retry path.
+pub const MAX_CHAT_REPLAY_BYTES: u64 = (MAX_CHAT_RECORD_BYTES * MAX_CHAT_TURNS * 4) as u64;
 pub const CHAT_RECORD_SCHEMA_VERSION: u16 = 1;
 pub const MAX_CHAT_TURNS: usize = 12;
 
@@ -58,6 +62,19 @@ impl VulnerabilityCategory {
             Self::InfrastructureMisconfiguration => {
                 "Prioritize infrastructure configuration and privilege-boundary risks."
             }
+        }
+    }
+
+    /// Deterministic applicability table. Categories can influence only an
+    /// analyzer which is already selected by the scan; this table never causes
+    /// an otherwise unselected scanner to start.
+    pub fn applicable_scanners(self) -> &'static [ScannerType] {
+        match self {
+            Self::AuthenticationAuthorization => &[ScannerType::Sast, ScannerType::ApiScan],
+            Self::Injection => &[ScannerType::Sast, ScannerType::ApiScan],
+            Self::SensitiveDataExposure => &[ScannerType::Sast, ScannerType::ApiScan],
+            Self::DependencySupplyChain => &[ScannerType::SupplyChain],
+            Self::InfrastructureMisconfiguration => &[ScannerType::IacScan],
         }
     }
 }
@@ -202,6 +219,57 @@ pub struct FocusScope {
     pub paths: Vec<NormalizedRepoPath>,
 }
 
+/// Typed, canonical focus passed to a new scanner instance.  It deliberately
+/// stores no model/UI supplied prompt text; rendering is fixed below.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChatFocus {
+    pub categories: BTreeSet<VulnerabilityCategory>,
+    pub fragments: BTreeSet<FocusFragment>,
+    pub paths: Vec<NormalizedRepoPath>,
+}
+
+impl ChatFocus {
+    pub fn merge_scope(&mut self, scope: &FocusScope) {
+        self.fragments.extend(scope.fragments.iter().copied());
+        self.paths.extend(scope.paths.iter().cloned());
+        self.paths.sort();
+        self.paths.dedup();
+    }
+
+    /// The only Chat Focus prompt rendering path. All content comes from closed
+    /// enums or normalized repository paths.
+    pub fn render(&self) -> Option<String> {
+        if self.categories.is_empty() && self.fragments.is_empty() && self.paths.is_empty() {
+            return None;
+        }
+        let mut lines = Vec::new();
+        for category in &self.categories {
+            lines.push(category.prompt_fragment().to_string());
+        }
+        if !self.fragments.is_empty() {
+            lines.push(format!(
+                "Review these bounded areas: {}.",
+                self.fragments
+                    .iter()
+                    .map(|fragment| fragment.prompt_fragment())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if !self.paths.is_empty() {
+            lines.push(format!(
+                "Prioritize these repository paths:\n{}",
+                self.paths
+                    .iter()
+                    .map(|path| format!("- {path}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+        Some(lines.join("\n"))
+    }
+}
+
 impl FocusScope {
     pub fn new(
         fragments: impl IntoIterator<Item = FocusFragment>,
@@ -337,9 +405,8 @@ impl ChatAction {
         }
     }
 
-    /// Validate the coalesced plan, where a separately confirmed category can
-    /// provide the dependency focus required by SupplyChain. This contextual
-    /// check intentionally does not make an individual action invalid.
+    /// Legacy action-only compatibility validation. New confirmation paths use
+    /// [`plan_confirmed_chat_actions`] over durable confirmed actions instead.
     pub fn validate_coalesced_plan(
         actions: &[&ChatAction],
         selected: &[ScannerType],
@@ -563,6 +630,58 @@ pub enum ChatEvent {
     },
 }
 
+/// Terminal result emitted by the orchestrator and consumed by the coordinator.
+/// It is intentionally not a ScanEvent: chat lifecycle cannot couple CI or the
+/// scan event's exhaustive consumers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatActionOutcome {
+    Applied {
+        proposal_id: Uuid,
+        boundary: PhaseBoundary,
+    },
+    Deferred {
+        proposal_id: Uuid,
+        reason: String,
+    },
+}
+
+/// A non-persistent, acknowledged handoff from the phase loop to the chat
+/// coordinator.  The action snapshot prevents a stale proposal ID from
+/// terminally resolving different durable work.
+#[derive(Debug)]
+pub struct ChatActionOutcomeEnvelope {
+    pub expected: ConfirmedChatAction,
+    pub outcome: ChatActionOutcome,
+    pub ack: oneshot::Sender<Result<ChatOutcomeAck, ChatOutcomeFailure>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatOutcomeAck {
+    Committed,
+    Duplicate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatOutcomeFailure {
+    MismatchedAction,
+    AppliedBeforeCompletion,
+    Persistence,
+    CoordinatorUnavailable,
+}
+
+impl fmt::Display for ChatOutcomeFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::MismatchedAction => "chat action no longer matches durable state",
+            Self::AppliedBeforeCompletion => "chat action still has unfinished scanners",
+            Self::Persistence => "chat action outcome could not be persisted",
+            Self::CoordinatorUnavailable => "chat outcome coordinator is unavailable",
+        })
+    }
+}
+
+impl std::error::Error for ChatOutcomeFailure {}
+
 /// The bounded, serialisable view of a running scan that chat may receive.
 /// It intentionally contains summaries and normalized names only: scanner
 /// histories, raw source, credentials, and provider material never belong here.
@@ -588,6 +707,12 @@ pub struct ChatSnapshot {
     pub incremental_paths: Vec<String>,
     #[serde(default)]
     pub focus_fragments: Vec<FocusFragment>,
+    /// Whether a confirmation may still enter the scan's last mutable boundary.
+    #[serde(default)]
+    pub action_eligible: bool,
+    /// Bounded count of durable actions awaiting scanner progress.
+    #[serde(default)]
+    pub pending_action_count: usize,
 }
 
 impl Default for ChatSnapshot {
@@ -604,6 +729,8 @@ impl Default for ChatSnapshot {
             incremental_summary: None,
             incremental_paths: Vec::new(),
             focus_fragments: Vec::new(),
+            action_eligible: true,
+            pending_action_count: 0,
         }
     }
 }
@@ -768,6 +895,349 @@ pub struct ConfirmedChatAction {
     pub confirmation_sequence: u64,
     pub action: ChatAction,
     pub required_scanners: Vec<ScannerType>,
+    /// Targets still requiring a successful scanner run. Older checkpoint
+    /// records omit it; deserialization derives the canonical action targets.
+    pub remaining_scanners: Vec<ScannerType>,
+}
+
+/// One scanner-specific target in a coalesced, confirmed chat plan.  The
+/// proposal IDs are in confirmation order and make the dependency from a
+/// proposal to the scanner which must complete explicit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatFocusTarget {
+    pub scanner: ScannerType,
+    pub focus: ChatFocus,
+    pub proposal_ids: Vec<Uuid>,
+}
+
+/// The ordered scanner membership for one confirmed proposal.  This is kept in
+/// addition to [`ChatFocusTarget::proposal_ids`] so callers can account for a
+/// proposal exactly once without reverse-engineering a merged focus.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatProposalTargets {
+    pub proposal_id: Uuid,
+    pub confirmation_sequence: u64,
+    pub scanners: Vec<ScannerType>,
+}
+
+/// A deterministic, bounded plan for applying confirmed chat actions at an
+/// orchestration boundary.  `targets` is sorted by canonical scanner name;
+/// `proposals` is sorted by confirmation sequence.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CoalescedChatPlan {
+    pub targets: Vec<ChatFocusTarget>,
+    pub proposals: Vec<ChatProposalTargets>,
+}
+
+impl CoalescedChatPlan {
+    pub fn target(&self, scanner: ScannerType) -> Option<&ChatFocusTarget> {
+        self.targets.iter().find(|target| target.scanner == scanner)
+    }
+}
+
+/// The fixed limit violated by a merged focus.  These variants deliberately do
+/// not include caller-provided text or paths so they remain safe for lifecycle
+/// messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatFocusLimit {
+    PathCount,
+    PathBytes,
+    FragmentCount,
+    FragmentBytes,
+    RenderedBytes,
+}
+
+/// Typed failure for [`plan_confirmed_chat_actions`].  [`Self::user_reason`]
+/// is fixed, bounded text suitable for a deferred chat lifecycle event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatPlanError {
+    DuplicateProposalId {
+        proposal_id: Uuid,
+    },
+    DuplicateConfirmationSequence {
+        confirmation_sequence: u64,
+    },
+    ScannerSetMismatch {
+        proposal_id: Uuid,
+    },
+    InvalidAction {
+        proposal_id: Uuid,
+        error: ChatValidationError,
+    },
+    NoApplicableSelectedScanner {
+        proposal_id: Uuid,
+        category: VulnerabilityCategory,
+    },
+    SupplyChainCategoryRequired {
+        proposal_id: Uuid,
+    },
+    MergedFocusLimit {
+        scanner: ScannerType,
+        limit: ChatFocusLimit,
+    },
+}
+
+impl ChatPlanError {
+    pub const fn user_reason(&self) -> &'static str {
+        match self {
+            Self::DuplicateProposalId { .. } => "duplicate confirmed chat proposal",
+            Self::DuplicateConfirmationSequence { .. } => "duplicate chat confirmation sequence",
+            Self::ScannerSetMismatch { .. } => {
+                "chat action scanner set no longer matches this scan"
+            }
+            Self::InvalidAction { .. } => "confirmed chat action is no longer valid",
+            Self::NoApplicableSelectedScanner { .. } => {
+                "vulnerability category has no applicable selected scanner"
+            }
+            Self::SupplyChainCategoryRequired { .. } => {
+                "supply-chain focus requires dependency_supply_chain category context"
+            }
+            Self::MergedFocusLimit { .. } => "merged chat focus exceeds its fixed limit",
+        }
+    }
+}
+
+impl fmt::Display for ChatPlanError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.user_reason())
+    }
+}
+
+impl std::error::Error for ChatPlanError {}
+
+/// Build an ordered, scanner-coalesced plan from confirmed actions.
+///
+/// This is intentionally pure: it has no TUI, event, checkpoint, or scanner
+/// dependencies.  It validates the durable scanner set for every action,
+/// rejects ambiguous ordering, and validates the completed merged targets
+/// rather than truncating them.
+pub fn plan_confirmed_chat_actions(
+    actions: &[ConfirmedChatAction],
+    selected_scanners: &[ScannerType],
+) -> Result<CoalescedChatPlan, ChatPlanError> {
+    let selected = canonical_scanners(selected_scanners.iter().copied()).map_err(|error| {
+        ChatPlanError::InvalidAction {
+            proposal_id: Uuid::nil(),
+            error,
+        }
+    })?;
+    let mut proposal_ids = BTreeSet::new();
+    let mut sequences = BTreeSet::new();
+    for confirmed in actions {
+        if !proposal_ids.insert(confirmed.proposal_id) {
+            return Err(ChatPlanError::DuplicateProposalId {
+                proposal_id: confirmed.proposal_id,
+            });
+        }
+        if !sequences.insert(confirmed.confirmation_sequence) {
+            return Err(ChatPlanError::DuplicateConfirmationSequence {
+                confirmation_sequence: confirmed.confirmation_sequence,
+            });
+        }
+    }
+
+    let mut ordered = actions.to_vec();
+    ordered.sort_by_key(|confirmed| confirmed.confirmation_sequence);
+    let mut plan = CoalescedChatPlan::default();
+
+    for confirmed in ordered {
+        validate_confirmed_action_for_plan(&confirmed, &selected)?;
+        let targets = targets_for_action(&confirmed, &selected)?;
+        plan.proposals.push(ChatProposalTargets {
+            proposal_id: confirmed.proposal_id,
+            confirmation_sequence: confirmed.confirmation_sequence,
+            scanners: targets.clone(),
+        });
+
+        for scanner in targets {
+            let target = match plan
+                .targets
+                .iter_mut()
+                .find(|target| target.scanner == scanner)
+            {
+                Some(target) => target,
+                None => {
+                    plan.targets.push(ChatFocusTarget {
+                        scanner,
+                        focus: ChatFocus::default(),
+                        proposal_ids: Vec::new(),
+                    });
+                    plan.targets.last_mut().expect("target was just pushed")
+                }
+            };
+            target.proposal_ids.push(confirmed.proposal_id);
+            match &confirmed.action {
+                ChatAction::FocusAndRerun { scope, .. } => target.focus.merge_scope(scope),
+                ChatAction::PrioritizeVulnerability { category } => {
+                    target.focus.categories.insert(*category);
+                }
+            }
+        }
+    }
+
+    plan.targets.sort_by_key(|target| target.scanner.name());
+    for target in &plan.targets {
+        validate_merged_target(target)?;
+    }
+    Ok(plan)
+}
+
+fn validate_confirmed_action_for_plan(
+    confirmed: &ConfirmedChatAction,
+    selected: &[ScannerType],
+) -> Result<(), ChatPlanError> {
+    if confirmed.required_scanners != selected {
+        return Err(ChatPlanError::ScannerSetMismatch {
+            proposal_id: confirmed.proposal_id,
+        });
+    }
+    confirmed
+        .action
+        .validate_for_selected(selected)
+        .map_err(|error| ChatPlanError::InvalidAction {
+            proposal_id: confirmed.proposal_id,
+            error,
+        })?;
+    if let ChatAction::FocusAndRerun { scanners, scope } = &confirmed.action {
+        let canonical = canonical_scanners(scanners.iter().copied()).map_err(|error| {
+            ChatPlanError::InvalidAction {
+                proposal_id: confirmed.proposal_id,
+                error,
+            }
+        })?;
+        if scanners != &canonical || scanners.iter().any(|scanner| !is_phase_two(*scanner)) {
+            return Err(ChatPlanError::InvalidAction {
+                proposal_id: confirmed.proposal_id,
+                error: ChatValidationError::IneligibleScanner,
+            });
+        }
+        let canonical_scope =
+            FocusScope::new(scope.fragments.iter().copied(), scope.paths.iter().cloned()).map_err(
+                |error| ChatPlanError::InvalidAction {
+                    proposal_id: confirmed.proposal_id,
+                    error,
+                },
+            )?;
+        if scope != &canonical_scope {
+            return Err(ChatPlanError::InvalidAction {
+                proposal_id: confirmed.proposal_id,
+                error: ChatValidationError::DuplicatePath,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn targets_for_action(
+    confirmed: &ConfirmedChatAction,
+    selected: &[ScannerType],
+) -> Result<Vec<ScannerType>, ChatPlanError> {
+    let all = match &confirmed.action {
+        ChatAction::FocusAndRerun { scanners, .. } => scanners.clone(),
+        ChatAction::PrioritizeVulnerability { category } => {
+            let targets: Vec<_> = category
+                .applicable_scanners()
+                .iter()
+                .filter(|scanner| selected.contains(scanner) && is_phase_two(**scanner))
+                .copied()
+                .collect();
+            if targets.is_empty() {
+                return Err(ChatPlanError::NoApplicableSelectedScanner {
+                    proposal_id: confirmed.proposal_id,
+                    category: *category,
+                });
+            } else {
+                targets
+            }
+        }
+    };
+    if confirmed
+        .remaining_scanners
+        .iter()
+        .any(|scanner| !all.contains(scanner))
+    {
+        return Err(ChatPlanError::InvalidAction {
+            proposal_id: confirmed.proposal_id,
+            error: ChatValidationError::IneligibleScanner,
+        });
+    }
+    Ok(all
+        .into_iter()
+        .filter(|scanner| confirmed.remaining_scanners.contains(scanner))
+        .collect())
+}
+
+fn action_targets(
+    action: &ChatAction,
+    selected: &[ScannerType],
+) -> Result<Vec<ScannerType>, ChatValidationError> {
+    match action {
+        ChatAction::FocusAndRerun { scanners, .. } => Ok(scanners.clone()),
+        ChatAction::PrioritizeVulnerability { category } => {
+            let targets: Vec<_> = category
+                .applicable_scanners()
+                .iter()
+                .filter(|scanner| selected.contains(scanner) && is_phase_two(**scanner))
+                .copied()
+                .collect();
+            Ok(targets)
+        }
+    }
+}
+
+fn validate_merged_target(target: &ChatFocusTarget) -> Result<(), ChatPlanError> {
+    let limit_error = |limit| ChatPlanError::MergedFocusLimit {
+        scanner: target.scanner,
+        limit,
+    };
+    if target.focus.paths.len() > MAX_FOCUS_PATHS {
+        return Err(limit_error(ChatFocusLimit::PathCount));
+    }
+    if target
+        .focus
+        .paths
+        .iter()
+        .map(|path| path.as_str().len())
+        .sum::<usize>()
+        > MAX_FOCUS_PATHS * MAX_PATH_BYTES
+    {
+        return Err(limit_error(ChatFocusLimit::PathBytes));
+    }
+    if target.focus.fragments.len() > MAX_FOCUS_FRAGMENTS {
+        return Err(limit_error(ChatFocusLimit::FragmentCount));
+    }
+    if target
+        .focus
+        .fragments
+        .iter()
+        .map(|fragment| fragment.prompt_fragment().len())
+        .sum::<usize>()
+        > MAX_CHAT_TEXT_BYTES
+    {
+        return Err(limit_error(ChatFocusLimit::FragmentBytes));
+    }
+    if target
+        .focus
+        .render()
+        .is_some_and(|rendered| rendered.len() > MAX_CHAT_TEXT_BYTES)
+    {
+        return Err(limit_error(ChatFocusLimit::RenderedBytes));
+    }
+    if target.scanner == ScannerType::SupplyChain
+        && !target
+            .focus
+            .fragments
+            .contains(&FocusFragment::DependencyManifest)
+        && !target
+            .focus
+            .categories
+            .contains(&VulnerabilityCategory::DependencySupplyChain)
+    {
+        return Err(ChatPlanError::SupplyChainCategoryRequired {
+            proposal_id: target.proposal_ids[0],
+        });
+    }
+    Ok(())
 }
 
 impl ConfirmedChatAction {
@@ -779,25 +1249,34 @@ impl ConfirmedChatAction {
     ) -> Result<Self, ChatValidationError> {
         let required_scanners = canonical_scanners(required_scanners)?;
         action.validate_for_selected(&required_scanners)?;
+        let remaining_scanners = action_targets(&action, &required_scanners)?;
         Ok(Self {
             proposal_id,
             confirmation_sequence,
             action,
             required_scanners,
+            remaining_scanners,
         })
     }
 
     pub fn validate_for_resume(&self, selected: &[ScannerType]) -> Result<(), ChatValidationError> {
         self.action.validate_for_selected(selected)?;
-        if self
-            .required_scanners
-            .iter()
-            .all(|scanner| selected.contains(scanner))
-        {
-            Ok(())
-        } else {
-            Err(ChatValidationError::ScannerNotSelected)
+        let selected = canonical_scanners(selected.iter().copied())?;
+        if self.required_scanners != selected {
+            return Err(ChatValidationError::ScannerSetMismatch);
         }
+        let targets = action_targets(&self.action, &selected)?;
+        let remaining = if self.remaining_scanners.is_empty() {
+            Vec::new()
+        } else {
+            canonical_scanners(self.remaining_scanners.iter().copied())?
+        };
+        if remaining != self.remaining_scanners
+            || remaining.iter().any(|scanner| !targets.contains(scanner))
+        {
+            return Err(ChatValidationError::IneligibleScanner);
+        }
+        Ok(())
     }
 }
 
@@ -812,6 +1291,7 @@ impl Serialize for ConfirmedChatAction {
             confirmation_sequence: u64,
             action: &'a ChatAction,
             required_scanners: Vec<&'static str>,
+            remaining_scanners: Vec<&'static str>,
         }
         Raw {
             proposal_id: self.proposal_id,
@@ -819,6 +1299,11 @@ impl Serialize for ConfirmedChatAction {
             action: &self.action,
             required_scanners: self
                 .required_scanners
+                .iter()
+                .map(ScannerType::name)
+                .collect(),
+            remaining_scanners: self
+                .remaining_scanners
                 .iter()
                 .map(ScannerType::name)
                 .collect(),
@@ -839,9 +1324,11 @@ impl<'de> Deserialize<'de> for ConfirmedChatAction {
             confirmation_sequence: u64,
             action: ChatAction,
             required_scanners: Vec<String>,
+            #[serde(default)]
+            remaining_scanners: Option<Vec<String>>,
         }
         let raw = Raw::deserialize(deserializer)?;
-        ConfirmedChatAction::new(
+        let mut confirmed = ConfirmedChatAction::new(
             raw.proposal_id,
             raw.confirmation_sequence,
             raw.action,
@@ -851,7 +1338,22 @@ impl<'de> Deserialize<'de> for ConfirmedChatAction {
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(de::Error::custom)?,
         )
-        .map_err(de::Error::custom)
+        .map_err(de::Error::custom)?;
+        if let Some(remaining_scanners) = raw.remaining_scanners {
+            confirmed.remaining_scanners = if remaining_scanners.is_empty() {
+                Vec::new()
+            } else {
+                canonical_scanners(
+                    remaining_scanners
+                        .iter()
+                        .map(|scanner| scanner_from_name(scanner))
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(de::Error::custom)?,
+                )
+                .map_err(de::Error::custom)?
+            };
+        }
+        Ok(confirmed)
     }
 }
 
@@ -871,6 +1373,7 @@ pub struct ChatRecord {
     pub proposal_id: Option<Uuid>,
     pub lifecycle: ChatLifecycle,
     #[serde(
+        default,
         skip_serializing_if = "Option::is_none",
         deserialize_with = "deserialize_optional_chat_text"
     )]
@@ -950,6 +1453,12 @@ impl ChatStore {
         self.chat_dir.join(format!("{}.jsonl", self.session_id))
     }
 
+    /// Immutable lifecycle identity. Coordinator persistence must not depend
+    /// on a live snapshot lock, which can be poisoned by UI code.
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
     pub fn append(&self, record: &ChatRecord) -> Result<(), ChatPersistenceError> {
         record.validate().map_err(ChatPersistenceError::from)?;
         if record.session_id != self.session_id {
@@ -997,6 +1506,61 @@ impl ChatStore {
             .map_err(ChatPersistenceError::io)?;
         self.prune();
         Ok(())
+    }
+
+    /// Return the already durable terminal state for a proposal. This bounded
+    /// lookup is used to make a retry after transcript success idempotent.
+    pub fn terminal_proposal_lifecycle(
+        &self,
+        proposal_id: Uuid,
+    ) -> Result<Option<ProposalLifecycle>, ChatPersistenceError> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| ChatPersistenceError::new("chat store write lock poisoned"))?;
+        let path = self.path();
+        match fs::symlink_metadata(&path) {
+            Ok(metadata)
+                if metadata.file_type().is_symlink() || !metadata.file_type().is_file() =>
+            {
+                return Err(ChatPersistenceError::new(
+                    "chat target is not a regular file",
+                ));
+            }
+            Ok(metadata) if metadata.len() > MAX_CHAT_REPLAY_BYTES => {
+                return Err(ChatPersistenceError::new(
+                    "chat transcript exceeds replay limit",
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(ChatPersistenceError::io(error)),
+        }
+        let contents = match fs::read_to_string(path) {
+            Ok(contents) => contents,
+            Err(error) => return Err(ChatPersistenceError::io(error)),
+        };
+        // A session is bounded by record-size limits; cap this defensive replay
+        // scan as well rather than accepting an unbounded hostile transcript.
+        let mut found = None;
+        for line in contents.lines().rev().take(MAX_CHAT_TURNS * 4) {
+            let Ok(record) = serde_json::from_str::<ChatRecord>(line) else {
+                continue;
+            };
+            if record.proposal_id != Some(proposal_id) {
+                continue;
+            }
+            if let ChatLifecycle::Proposal { state } = record.lifecycle {
+                if matches!(
+                    state,
+                    ProposalLifecycle::Applied | ProposalLifecycle::Deferred
+                ) {
+                    found = Some(state);
+                    break;
+                }
+            }
+        }
+        Ok(found)
     }
 
     fn ensure_chat_dir(&self) -> Result<(), ChatPersistenceError> {
@@ -1312,26 +1876,6 @@ mod tests {
     }
 
     #[test]
-    fn coalesced_supply_chain_requires_dependency_focus_and_selected_scanner() {
-        let supply = ChatAction::focus_and_rerun([ScannerType::SupplyChain], scope()).unwrap();
-        assert_eq!(
-            ChatAction::validate_coalesced_plan(&[&supply], &[ScannerType::SupplyChain]),
-            Err(ChatValidationError::SupplyChainFocusRequired)
-        );
-        let category = ChatAction::prioritize(VulnerabilityCategory::DependencySupplyChain);
-        assert!(ChatAction::validate_coalesced_plan(
-            &[&supply, &category],
-            &[ScannerType::SupplyChain]
-        )
-        .is_ok());
-        let action = ChatAction::focus_and_rerun([ScannerType::Sast], scope()).unwrap();
-        assert_eq!(
-            action.validate_for_selected(&[ScannerType::ApiScan]),
-            Err(ChatValidationError::ScannerNotSelected)
-        );
-    }
-
-    #[test]
     fn redacts_sensitive_chat_text() {
         let redacted =
             crate::logging::redact("password=hunter2 bearer abc.def sk-ant-SUPERSECRET123");
@@ -1442,6 +1986,20 @@ mod tests {
         assert!(store.append(&record).is_err());
     }
 
+    #[test]
+    fn terminal_lifecycle_lookup_rejects_oversize_transcript_before_replay() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = ChatStore::new(tmp.path(), "safe-session").unwrap();
+        fs::create_dir(tmp.path().join("chat")).unwrap();
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(store.path())
+            .unwrap();
+        file.set_len(MAX_CHAT_REPLAY_BYTES + 1).unwrap();
+        assert!(store.terminal_proposal_lifecycle(Uuid::new_v4()).is_err());
+    }
+
     #[cfg(unix)]
     #[test]
     fn store_rejects_symlinked_chat_dir_and_target() {
@@ -1468,6 +2026,7 @@ mod tests {
         fs::create_dir(tmp.path().join("chat")).unwrap();
         symlink(outside.path().join("target"), store.path()).unwrap();
         assert!(store.append(&record).is_err());
+        assert!(store.terminal_proposal_lifecycle(Uuid::new_v4()).is_err());
     }
 
     #[test]
@@ -1539,5 +2098,291 @@ mod tests {
             serde_json::from_str::<ConfirmedChatAction>(&json).unwrap(),
             action
         );
+    }
+
+    #[test]
+    fn confirmed_action_preserves_explicit_empty_progress_but_derives_legacy_progress() {
+        let selected = [ScannerType::Sast];
+        let mut action = ConfirmedChatAction::new(
+            Uuid::new_v4(),
+            2,
+            ChatAction::focus_and_rerun([ScannerType::Sast], scope()).unwrap(),
+            selected,
+        )
+        .unwrap();
+        action.remaining_scanners.clear();
+        let json = serde_json::to_string(&action).unwrap();
+        let restored: ConfirmedChatAction = serde_json::from_str(&json).unwrap();
+        assert!(restored.remaining_scanners.is_empty());
+        assert!(plan_confirmed_chat_actions(&[restored], &selected)
+            .unwrap()
+            .proposals[0]
+            .scanners
+            .is_empty());
+
+        let legacy = json.replace(",\"remaining_scanners\":[]", "");
+        let restored: ConfirmedChatAction = serde_json::from_str(&legacy).unwrap();
+        assert_eq!(restored.remaining_scanners, vec![ScannerType::Sast]);
+    }
+
+    fn confirmed(
+        id: u128,
+        sequence: u64,
+        action: ChatAction,
+        selected: &[ScannerType],
+    ) -> ConfirmedChatAction {
+        ConfirmedChatAction::new(
+            Uuid::from_u128(id),
+            sequence,
+            action,
+            selected.iter().copied(),
+        )
+        .unwrap()
+    }
+
+    fn paths_scope(start: usize, count: usize) -> FocusScope {
+        FocusScope::from_paths(
+            [],
+            (start..start + count)
+                .map(|index| format!("src/{index}.rs"))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn planner_rejects_category_without_an_applicable_selected_scanner() {
+        let selected = [ScannerType::IacScan];
+        let action = confirmed(
+            1,
+            1,
+            ChatAction::prioritize(VulnerabilityCategory::Injection),
+            &selected,
+        );
+
+        assert_eq!(
+            plan_confirmed_chat_actions(&[action], &selected),
+            Err(ChatPlanError::NoApplicableSelectedScanner {
+                proposal_id: Uuid::from_u128(1),
+                category: VulnerabilityCategory::Injection,
+            })
+        );
+    }
+
+    #[test]
+    fn planner_rejects_duplicate_ids_and_confirmation_sequences() {
+        let selected = [ScannerType::Sast];
+        let first = confirmed(
+            2,
+            1,
+            ChatAction::focus_and_rerun([ScannerType::Sast], scope()).unwrap(),
+            &selected,
+        );
+        let duplicate_id = confirmed(
+            2,
+            2,
+            ChatAction::focus_and_rerun([ScannerType::Sast], scope()).unwrap(),
+            &selected,
+        );
+        assert!(matches!(
+            plan_confirmed_chat_actions(&[first.clone(), duplicate_id], &selected),
+            Err(ChatPlanError::DuplicateProposalId { .. })
+        ));
+
+        let duplicate_sequence = confirmed(
+            3,
+            1,
+            ChatAction::focus_and_rerun([ScannerType::Sast], scope()).unwrap(),
+            &selected,
+        );
+        assert!(matches!(
+            plan_confirmed_chat_actions(&[first, duplicate_sequence], &selected),
+            Err(ChatPlanError::DuplicateConfirmationSequence { .. })
+        ));
+    }
+
+    #[test]
+    fn planner_rejects_per_action_valid_merged_path_and_fragment_limits() {
+        let selected = [ScannerType::Sast];
+        let path_actions = [
+            confirmed(
+                4,
+                1,
+                ChatAction::focus_and_rerun([ScannerType::Sast], paths_scope(0, 11)).unwrap(),
+                &selected,
+            ),
+            confirmed(
+                5,
+                2,
+                ChatAction::focus_and_rerun([ScannerType::Sast], paths_scope(11, 10)).unwrap(),
+                &selected,
+            ),
+        ];
+        assert!(matches!(
+            plan_confirmed_chat_actions(&path_actions, &selected),
+            Err(ChatPlanError::MergedFocusLimit {
+                limit: ChatFocusLimit::PathCount,
+                ..
+            })
+        ));
+
+        let fragment_actions = [
+            confirmed(
+                6,
+                1,
+                ChatAction::focus_and_rerun(
+                    [ScannerType::Sast],
+                    FocusScope::new(
+                        [
+                            FocusFragment::AuthBoundary,
+                            FocusFragment::InputValidation,
+                            FocusFragment::DataFlow,
+                            FocusFragment::SecretsAndSensitiveData,
+                        ],
+                        [],
+                    )
+                    .unwrap(),
+                )
+                .unwrap(),
+                &selected,
+            ),
+            confirmed(
+                7,
+                2,
+                ChatAction::focus_and_rerun(
+                    [ScannerType::Sast],
+                    FocusScope::new(
+                        [
+                            FocusFragment::DependencyManifest,
+                            FocusFragment::NetworkExposure,
+                            FocusFragment::IaCPrivilege,
+                        ],
+                        [],
+                    )
+                    .unwrap(),
+                )
+                .unwrap(),
+                &selected,
+            ),
+        ];
+        assert!(matches!(
+            plan_confirmed_chat_actions(&fragment_actions, &selected),
+            Err(ChatPlanError::MergedFocusLimit {
+                limit: ChatFocusLimit::FragmentCount,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn planner_accepts_supply_chain_manifest_or_category_and_rejects_neither() {
+        let selected = [ScannerType::SupplyChain];
+        let supply_without_evidence = confirmed(
+            8,
+            1,
+            ChatAction::focus_and_rerun([ScannerType::SupplyChain], scope()).unwrap(),
+            &selected,
+        );
+        assert!(matches!(
+            plan_confirmed_chat_actions(std::slice::from_ref(&supply_without_evidence), &selected),
+            Err(ChatPlanError::SupplyChainCategoryRequired { .. })
+        ));
+
+        let manifest = confirmed(
+            9,
+            2,
+            ChatAction::focus_and_rerun(
+                [ScannerType::SupplyChain],
+                FocusScope::new([FocusFragment::DependencyManifest], []).unwrap(),
+            )
+            .unwrap(),
+            &selected,
+        );
+        assert!(plan_confirmed_chat_actions(&[manifest], &selected).is_ok());
+
+        let category = confirmed(
+            10,
+            3,
+            ChatAction::prioritize(VulnerabilityCategory::DependencySupplyChain),
+            &selected,
+        );
+        let plan =
+            plan_confirmed_chat_actions(&[supply_without_evidence, category], &selected).unwrap();
+        assert!(plan.targets[0]
+            .focus
+            .categories
+            .contains(&VulnerabilityCategory::DependencySupplyChain));
+    }
+
+    #[test]
+    fn planner_is_input_order_independent_and_preserves_membership() {
+        let selected = [ScannerType::Sast, ScannerType::ApiScan];
+        let focus = confirmed(
+            10,
+            2,
+            ChatAction::focus_and_rerun([ScannerType::Sast], scope()).unwrap(),
+            &selected,
+        );
+        let category = confirmed(
+            11,
+            1,
+            ChatAction::prioritize(VulnerabilityCategory::AuthenticationAuthorization),
+            &selected,
+        );
+        let forward =
+            plan_confirmed_chat_actions(&[focus.clone(), category.clone()], &selected).unwrap();
+        let reversed = plan_confirmed_chat_actions(&[category, focus], &selected).unwrap();
+        assert_eq!(forward, reversed);
+        assert_eq!(
+            forward.target(ScannerType::Sast).unwrap().proposal_ids,
+            vec![Uuid::from_u128(11), Uuid::from_u128(10)]
+        );
+        assert_eq!(
+            forward
+                .proposals
+                .iter()
+                .map(|proposal| proposal.confirmation_sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn planner_collapses_repeated_scanner_targets_and_excludes_unselected_scanners() {
+        let selected = [ScannerType::Sast];
+        let first = confirmed(
+            12,
+            1,
+            ChatAction::focus_and_rerun([ScannerType::Sast], paths_scope(0, 1)).unwrap(),
+            &selected,
+        );
+        let second = confirmed(
+            13,
+            2,
+            ChatAction::focus_and_rerun([ScannerType::Sast], paths_scope(1, 1)).unwrap(),
+            &selected,
+        );
+        let category = confirmed(
+            14,
+            3,
+            ChatAction::prioritize(VulnerabilityCategory::AuthenticationAuthorization),
+            &selected,
+        );
+        let plan = plan_confirmed_chat_actions(&[second, category, first], &selected).unwrap();
+
+        assert_eq!(plan.targets.len(), 1);
+        assert_eq!(plan.targets[0].scanner, ScannerType::Sast);
+        assert_eq!(
+            plan.targets[0].proposal_ids,
+            vec![
+                Uuid::from_u128(12),
+                Uuid::from_u128(13),
+                Uuid::from_u128(14)
+            ]
+        );
+        assert!(plan
+            .proposals
+            .iter()
+            .all(|proposal| proposal.scanners == vec![ScannerType::Sast]));
     }
 }

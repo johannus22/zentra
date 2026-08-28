@@ -1,16 +1,21 @@
 //! Bounded single-flight coordinator for the isolated chat agent.
 
 use crate::agent::chat::{
-    ActionProposal, ChatCommand, ChatError, ChatEvent, ChatLifecycle, ChatRecord, ChatSnapshot,
-    ChatStore, ChatTurn, ConfirmedChatAction, FocusScope, ProposalLifecycle, RequestLifecycle,
+    plan_confirmed_chat_actions, ActionProposal, ChatActionOutcome, ChatActionOutcomeEnvelope,
+    ChatCommand, ChatError, ChatEvent, ChatLifecycle, ChatOutcomeAck, ChatOutcomeFailure,
+    ChatRecord, ChatSnapshot, ChatStore, ChatTurn, ConfirmedChatAction, FocusScope,
+    ProposalLifecycle, RequestLifecycle,
 };
 use crate::agent::chat_agent::{ChatAgent, ChatAgentResult};
 use crate::agent::checkpoint::Checkpoint;
 use crate::agent::ScannerType;
 use crate::security::{AuditEvent, SecurityContext};
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -69,6 +74,8 @@ pub struct ChatCoordinator {
     pending_tx: mpsc::Sender<ConfirmedChatAction>,
     scan_cancel: CancellationToken,
     confirmation_sequence: u64,
+    outcome_rx: Option<mpsc::Receiver<ChatActionOutcomeEnvelope>>,
+    action_eligible: Arc<AtomicBool>,
 }
 
 impl ChatCoordinator {
@@ -109,7 +116,24 @@ impl ChatCoordinator {
                         .max()
                 })
                 .unwrap_or(0),
+            outcome_rx: None,
+            action_eligible: Arc::new(AtomicBool::new(true)),
         }
+    }
+
+    /// Attach the bounded phase-loop outcome channel. Kept as a builder so the
+    /// already usable coordinator constructor remains source compatible.
+    pub fn with_outcomes(mut self, outcome_rx: mpsc::Receiver<ChatActionOutcomeEnvelope>) -> Self {
+        self.outcome_rx = Some(outcome_rx);
+        self
+    }
+
+    /// Share the phase loop's final-boundary gate.  Keeping this as a builder
+    /// preserves existing construction sites while making the runtime pair use
+    /// one atomic close decision.
+    pub fn with_action_eligibility(mut self, action_eligible: Arc<AtomicBool>) -> Self {
+        self.action_eligible = action_eligible;
+        self
     }
 
     /// Own the command receiver; a completion is spawned separately, so this
@@ -143,8 +167,13 @@ impl ChatCoordinator {
         let mut active: Option<(Uuid, u64, CancellationToken, JoinHandle<()>)> = None;
         let mut generation = 0u64;
         let mut expiry_tick = tokio::time::interval(std::time::Duration::from_secs(1));
+        let mut outcome_rx = self.outcome_rx.take();
+        let mut commands_closed = false;
 
         loop {
+            if commands_closed && outcome_rx.is_none() {
+                break;
+            }
             if active.is_none() {
                 if let Some((request_id, request)) = queued.pop_front() {
                     self.persist_request(
@@ -208,7 +237,11 @@ impl ChatCoordinator {
                     self.drain_proposals(&mut proposals, ProposalLifecycle::Cancelled, &events).await;
                     break;
                 }
-                Some(command) = command_rx.recv() => {
+                command = command_rx.recv(), if !commands_closed => {
+                    let Some(command) = command else {
+                        commands_closed = true;
+                        continue;
+                    };
                     match command {
                         ChatCommand::Ask { request_id, text } => {
                             if ChatCommand::ask(request_id, text.clone()).is_err() || active.as_ref().is_some_and(|(id, _, _, _)| *id == request_id) || queued.iter().any(|(id, _)| *id == request_id) || proposals.values().any(|proposal| proposal.request_id == request_id) {
@@ -218,6 +251,13 @@ impl ChatCoordinator {
                             if active.is_some() && queued.len() >= MAX_QUEUED_CHAT_ASKS {
                                 let _ = events.terminal(error(Some(request_id), ChatError::Backpressure, "chat request queue is full")).await;
                             } else {
+                                // Validate the live bounded view before this
+                                // request becomes runnable. Persistence below
+                                // deliberately uses ChatStore's immutable ID.
+                                if let Err(reason) = self.snapshot() {
+                                    events.terminal(error(Some(request_id), ChatError::Security, &reason)).await;
+                                    continue;
+                                }
                                 let position = usize::from(active.is_some()) + queued.len();
                                 self.persist_request(request_id, RequestLifecycle::Queued, Some(text.clone()), &events).await;
                                 queued.push_back((request_id, text));
@@ -257,8 +297,26 @@ impl ChatCoordinator {
                             if let Some((request_id, _, cancel, task)) = active.take() { cancel.cancel(); task.abort(); let _ = events.terminal(ChatEvent::Cancelled { request_id }).await; }
                             while let Some((request_id, _)) = queued.pop_front() { self.persist_request(request_id, RequestLifecycle::Cancelled, None, &events).await; events.terminal(ChatEvent::Cancelled { request_id }).await; }
                             self.drain_proposals(&mut proposals, ProposalLifecycle::Cancelled, &events).await;
-                            break;
+                            if outcome_rx.is_some() {
+                                // Closing the drawer must not strand terminal
+                                // action outcomes; only command processing ends.
+                                commands_closed = true;
+                            } else {
+                                break;
+                            }
                         }
+                    }
+                }
+                outcome = async {
+                    match outcome_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    if let Some(outcome) = outcome {
+                        self.consume_outcome(outcome, &events).await;
+                    } else {
+                        outcome_rx = None;
                     }
                 }
                 Some((result_generation, result)) = result_rx.recv() => {
@@ -376,6 +434,10 @@ impl ChatCoordinator {
             self.defer_cancelled_proposal(&proposal, event_tx).await;
             return true;
         }
+        if !self.action_eligible.load(Ordering::Acquire) {
+            self.defer_finalized_proposal(&proposal, event_tx).await;
+            return true;
+        }
         if self
             .snapshot()
             .map(|snapshot| snapshot.boundary)
@@ -433,6 +495,15 @@ impl ChatCoordinator {
                     "checkpoint lock poisoned".to_string(),
                 )
             })?;
+            // This check must be inside the checkpoint critical section.  A
+            // confirmation saved before the final close is drained; one after
+            // it is never made pending.
+            if !self.action_eligible.load(Ordering::Acquire) {
+                return Err((
+                    ChatError::InvalidProposal,
+                    "the scan has reached its final boundary".to_string(),
+                ));
+            }
             self.validate_proposal_with_checkpoint(&proposal, &checkpoint)
                 .map_err(|error| (ChatError::InvalidProposal, error))?;
             let confirmation_sequence = checkpoint
@@ -450,6 +521,10 @@ impl ChatCoordinator {
                 self.selected.clone(),
             )
             .map_err(|error_value| (ChatError::InvalidProposal, error_value.to_string()))?;
+            let mut plan_actions = checkpoint.confirmed_chat_actions.clone();
+            plan_actions.push(action.clone());
+            plan_confirmed_chat_actions(&plan_actions, &self.selected)
+                .map_err(|error_value| (ChatError::InvalidProposal, error_value.to_string()))?;
             checkpoint
                 .save_confirmed_chat_action_strict(&self.zentra_dir, action.clone())
                 .map_err(|error_value| (ChatError::Persistence, error_value.to_string()))?;
@@ -458,6 +533,22 @@ impl ChatCoordinator {
         let (confirmation_sequence, action) = match saved {
             Ok(saved) => saved,
             Err((kind, error_value)) => {
+                if !self.action_eligible.load(Ordering::Acquire) {
+                    self.persist_proposal(
+                        proposal.proposal_id,
+                        ProposalLifecycle::Deferred,
+                        Some(proposal.action),
+                        event_tx,
+                    )
+                    .await;
+                    event_tx
+                        .terminal(ChatEvent::Deferred {
+                            proposal_id: proposal.proposal_id,
+                            reason: "the scan has reached its final boundary".to_string(),
+                        })
+                        .await;
+                    return true;
+                }
                 event_tx.terminal(error(None, kind, &error_value)).await;
                 return kind == ChatError::InvalidProposal;
             }
@@ -524,6 +615,26 @@ impl ChatCoordinator {
             .await;
     }
 
+    async fn defer_finalized_proposal(
+        &self,
+        proposal: &ActionProposal,
+        event_tx: &EventDispatcher,
+    ) {
+        self.persist_proposal(
+            proposal.proposal_id,
+            ProposalLifecycle::Deferred,
+            Some(proposal.action.clone()),
+            event_tx,
+        )
+        .await;
+        event_tx
+            .terminal(ChatEvent::Deferred {
+                proposal_id: proposal.proposal_id,
+                reason: "the scan has reached its final boundary".to_string(),
+            })
+            .await;
+    }
+
     fn validate_proposal(&self, proposal: &ActionProposal) -> Result<(), String> {
         let checkpoint = self
             .checkpoint
@@ -544,28 +655,19 @@ impl ChatCoordinator {
             validate_scope(scope, &self.root, self.incremental_paths.as_deref())
                 .map_err(|error_value| error_value.to_string())?;
         }
-        let snapshot = self.snapshot()?;
-        if !checkpoint.session_id.is_empty() && checkpoint.session_id != snapshot.session_id {
+        if !checkpoint.session_id.is_empty() && checkpoint.session_id != self.store.session_id() {
             return Err("chat session does not match checkpoint".to_string());
         }
         if !checkpoint.scanner_set.is_empty()
-            && scanner_names(&self.selected)
-                != checkpoint
+            && (canonical_scanner_names(&self.selected).is_none()
+                || Some(checkpoint.scanner_set.clone()) != canonical_scanner_names(&self.selected)
+                || checkpoint
                     .scanner_set
-                    .iter()
-                    .cloned()
-                    .collect::<BTreeSet<_>>()
+                    .windows(2)
+                    .any(|pair| pair[0] >= pair[1]))
         {
             return Err("scanner set does not exactly match checkpoint".to_string());
         }
-        let mut actions: Vec<&crate::agent::chat::ChatAction> = checkpoint
-            .confirmed_chat_actions
-            .iter()
-            .map(|action| &action.action)
-            .collect();
-        actions.push(&proposal.action);
-        crate::agent::chat::ChatAction::validate_coalesced_plan(&actions, &self.selected)
-            .map_err(|error_value| error_value.to_string())?;
         Ok(())
     }
 
@@ -587,15 +689,7 @@ impl ChatCoordinator {
     ) {
         self.persist(
             ChatRecord::new(
-                match self.snapshot() {
-                    Ok(snapshot) => snapshot.session_id,
-                    Err(reason) => {
-                        event_tx
-                            .terminal(error(Some(request_id), ChatError::Security, &reason))
-                            .await;
-                        return;
-                    }
-                },
+                self.store.session_id().to_string(),
                 Some(request_id),
                 None,
                 ChatLifecycle::Request { state },
@@ -616,15 +710,7 @@ impl ChatCoordinator {
     ) {
         self.persist(
             ChatRecord::new(
-                match self.snapshot() {
-                    Ok(snapshot) => snapshot.session_id,
-                    Err(reason) => {
-                        event_tx
-                            .terminal(error(None, ChatError::Security, &reason))
-                            .await;
-                        return;
-                    }
-                },
+                self.store.session_id().to_string(),
                 None,
                 Some(proposal_id),
                 ChatLifecycle::Proposal { state },
@@ -659,6 +745,107 @@ impl ChatCoordinator {
                 .await;
         }
     }
+
+    /// The coordinator owns durable lifecycle records and UI chat events; the
+    /// orchestrator merely reports typed terminal outcomes.
+    async fn consume_outcome(
+        &self,
+        envelope: ChatActionOutcomeEnvelope,
+        event_tx: &EventDispatcher,
+    ) {
+        let ChatActionOutcomeEnvelope {
+            expected,
+            outcome,
+            ack,
+        } = envelope;
+        let (proposal_id, lifecycle, event) = match outcome {
+            ChatActionOutcome::Applied {
+                proposal_id,
+                boundary,
+            } => (
+                proposal_id,
+                ProposalLifecycle::Applied,
+                ChatEvent::Applied {
+                    proposal_id,
+                    boundary,
+                },
+            ),
+            ChatActionOutcome::Deferred {
+                proposal_id,
+                reason,
+            } => (
+                proposal_id,
+                ProposalLifecycle::Deferred,
+                ChatEvent::Deferred {
+                    proposal_id,
+                    reason: lifecycle_message(&reason),
+                },
+            ),
+        };
+        let result = (|| -> Result<ChatOutcomeAck, ChatOutcomeFailure> {
+            let mut checkpoint = self
+                .checkpoint
+                .lock()
+                .map_err(|_| ChatOutcomeFailure::Persistence)?;
+            let Some(current) = checkpoint
+                .confirmed_chat_actions
+                .iter()
+                .find(|action| action.proposal_id == proposal_id)
+                .cloned()
+            else {
+                return Ok(ChatOutcomeAck::Duplicate);
+            };
+            if current != expected {
+                return Err(ChatOutcomeFailure::MismatchedAction);
+            }
+            if matches!(lifecycle, ProposalLifecycle::Applied)
+                && !current.remaining_scanners.is_empty()
+            {
+                return Err(ChatOutcomeFailure::AppliedBeforeCompletion);
+            }
+            match self
+                .store
+                .terminal_proposal_lifecycle(proposal_id)
+                .map_err(|_| ChatOutcomeFailure::Persistence)?
+            {
+                Some(existing) if existing != lifecycle => {
+                    return Err(ChatOutcomeFailure::Persistence)
+                }
+                Some(_) => {}
+                None => {
+                    let session_id = self.store.session_id().to_string();
+                    let record = ChatRecord::new(
+                        session_id,
+                        None,
+                        Some(proposal_id),
+                        ChatLifecycle::Proposal { state: lifecycle },
+                        None,
+                        Some(current.action.clone()),
+                    )
+                    .map_err(|_| ChatOutcomeFailure::Persistence)?;
+                    self.store
+                        .append(&record)
+                        .map_err(|_| ChatOutcomeFailure::Persistence)?;
+                }
+            }
+            checkpoint
+                .remove_confirmed_chat_action_strict(&self.zentra_dir, proposal_id)
+                .map_err(|_| ChatOutcomeFailure::Persistence)?;
+            Ok(ChatOutcomeAck::Committed)
+        })();
+        match result {
+            Ok(ChatOutcomeAck::Committed) => {
+                event_tx.terminal(event).await;
+                let _ = ack.send(Ok(ChatOutcomeAck::Committed));
+            }
+            Ok(ChatOutcomeAck::Duplicate) => {
+                let _ = ack.send(Ok(ChatOutcomeAck::Duplicate));
+            }
+            Err(failure) => {
+                let _ = ack.send(Err(failure));
+            }
+        }
+    }
 }
 
 fn result_matches_active(
@@ -681,13 +868,23 @@ fn validate_scope(
     }
     Ok(())
 }
-fn scanner_names(scanners: &[ScannerType]) -> BTreeSet<String> {
-    scanners
+fn canonical_scanner_names(scanners: &[ScannerType]) -> Option<Vec<String>> {
+    let mut names: Vec<_> = scanners
         .iter()
         .map(|scanner| scanner.name().to_string())
-        .collect()
+        .collect();
+    names.sort();
+    (!names.windows(2).any(|pair| pair[0] == pair[1])).then_some(names)
 }
 fn error(request_id: Option<Uuid>, kind: ChatError, message: &str) -> ChatEvent {
+    ChatEvent::Error {
+        request_id,
+        kind,
+        message: lifecycle_message(message),
+    }
+}
+
+fn lifecycle_message(message: &str) -> String {
     let message = crate::logging::redact(message);
     let mut end = message
         .len()
@@ -695,11 +892,7 @@ fn error(request_id: Option<Uuid>, kind: ChatError, message: &str) -> ChatEvent 
     while end > 0 && !message.is_char_boundary(end) {
         end -= 1;
     }
-    ChatEvent::Error {
-        request_id,
-        kind,
-        message: message[..end].to_string(),
-    }
+    message[..end].to_string()
 }
 
 #[cfg(test)]
@@ -1039,6 +1232,29 @@ mod tests {
         }))
     }
 
+    fn checkpoint_for(session: &str, scanners: &[ScannerType]) -> Arc<Mutex<Checkpoint>> {
+        Arc::new(Mutex::new(Checkpoint {
+            session_id: session.into(),
+            scanner_set: scanners
+                .iter()
+                .map(|scanner| scanner.name().to_string())
+                .collect(),
+            ..Default::default()
+        }))
+    }
+
+    fn snapshot_for(session: &str, scanners: &[ScannerType]) -> Arc<Mutex<ChatSnapshot>> {
+        Arc::new(Mutex::new(ChatSnapshot {
+            session_id: session.into(),
+            boundary: crate::agent::chat::PhaseBoundary::AfterFramework,
+            selected_scanners: scanners
+                .iter()
+                .map(|scanner| scanner.name().to_string())
+                .collect(),
+            ..Default::default()
+        }))
+    }
+
     fn proposal(request_id: Uuid, action: crate::agent::chat::ChatAction) -> ActionProposal {
         let now = chrono::Utc::now();
         ActionProposal {
@@ -1057,6 +1273,336 @@ mod tests {
             FocusScope::new([crate::agent::chat::FocusFragment::InputValidation], []).unwrap(),
         )
         .unwrap()
+    }
+
+    fn durable_action(id: Uuid, empty: bool) -> ConfirmedChatAction {
+        let mut action =
+            ConfirmedChatAction::new(id, 1, sast_focus(), [ScannerType::Sast]).unwrap();
+        if empty {
+            action.remaining_scanners.clear();
+        }
+        action
+    }
+
+    fn envelope(
+        expected: ConfirmedChatAction,
+        outcome: ChatActionOutcome,
+    ) -> (
+        ChatActionOutcomeEnvelope,
+        tokio::sync::oneshot::Receiver<Result<ChatOutcomeAck, ChatOutcomeFailure>>,
+    ) {
+        let (ack, received) = tokio::sync::oneshot::channel();
+        (
+            ChatActionOutcomeEnvelope {
+                expected,
+                outcome,
+                ack,
+            },
+            received,
+        )
+    }
+
+    fn applied(action: &ConfirmedChatAction) -> ChatActionOutcome {
+        ChatActionOutcome::Applied {
+            proposal_id: action.proposal_id,
+            boundary: crate::agent::chat::PhaseBoundary::AfterParallel,
+        }
+    }
+
+    #[tokio::test]
+    async fn close_keeps_outcome_pump_alive_until_terminal_action_is_acked() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = "outcome-after-close";
+        let checkpoint = test_checkpoint(session);
+        let action = durable_action(Uuid::new_v4(), true);
+        checkpoint
+            .lock()
+            .unwrap()
+            .confirmed_chat_actions
+            .push(action.clone());
+        let (outcome_tx, outcome_rx) = mpsc::channel(2);
+        let (coordinator, _, _) = test_coordinator(
+            &temp,
+            session,
+            vec![ScannerType::Sast],
+            checkpoint.clone(),
+            test_snapshot(session, crate::agent::chat::PhaseBoundary::AfterFramework),
+            1,
+        );
+        let (command_tx, command_rx, event_tx, mut event_rx) = channels();
+        let task = tokio::spawn(
+            coordinator
+                .with_outcomes(outcome_rx)
+                .run(command_rx, event_tx),
+        );
+        command_tx.send(ChatCommand::Close).await.unwrap();
+        tokio::task::yield_now().await;
+        let (message, ack) = envelope(action.clone(), applied(&action));
+        outcome_tx.send(message).await.unwrap();
+        assert_eq!(ack.await.unwrap(), Ok(ChatOutcomeAck::Committed));
+        assert!(checkpoint.lock().unwrap().confirmed_chat_actions.is_empty());
+        assert!(
+            matches!(event_rx.recv().await, Some(ChatEvent::Applied { proposal_id, .. }) if proposal_id == action.proposal_id)
+        );
+        assert!(!task.is_finished());
+        let transcript = std::fs::read_to_string(
+            temp.path()
+                .join(".zentra/chat")
+                .join(format!("{session}.jsonl")),
+        )
+        .unwrap();
+        assert_eq!(transcript.matches("\"state\":\"applied\"").count(), 1);
+        drop(outcome_tx);
+        tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn bounded_outcome_transport_waits_instead_of_dropping_second_sender() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = "outcome-backpressure";
+        let checkpoint = test_checkpoint(session);
+        let first = durable_action(Uuid::new_v4(), true);
+        let second = durable_action(Uuid::new_v4(), true);
+        checkpoint.lock().unwrap().confirmed_chat_actions = vec![first.clone(), second.clone()];
+        let (outcome_tx, outcome_rx) = mpsc::channel(1);
+        let (one, one_ack) = envelope(first.clone(), applied(&first));
+        outcome_tx.send(one).await.unwrap();
+        let (two, two_ack) = envelope(second.clone(), applied(&second));
+        let second_send = tokio::spawn({
+            let outcome_tx = outcome_tx.clone();
+            async move { outcome_tx.send(two).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!second_send.is_finished());
+        let (coordinator, _, _) = test_coordinator(
+            &temp,
+            session,
+            vec![ScannerType::Sast],
+            checkpoint,
+            test_snapshot(session, crate::agent::chat::PhaseBoundary::AfterFramework),
+            1,
+        );
+        let (command_tx, command_rx, event_tx, _event_rx) = channels();
+        let task = tokio::spawn(
+            coordinator
+                .with_outcomes(outcome_rx)
+                .run(command_rx, event_tx),
+        );
+        second_send.await.unwrap().unwrap();
+        assert_eq!(one_ack.await.unwrap(), Ok(ChatOutcomeAck::Committed));
+        assert_eq!(two_ack.await.unwrap(), Ok(ChatOutcomeAck::Committed));
+        drop(outcome_tx);
+        drop(command_tx);
+        tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn duplicate_and_unknown_outcomes_ack_duplicate_without_reemitting_terminal_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = "outcome-duplicates";
+        let checkpoint = test_checkpoint(session);
+        let action = durable_action(Uuid::new_v4(), true);
+        checkpoint
+            .lock()
+            .unwrap()
+            .confirmed_chat_actions
+            .push(action.clone());
+        let (outcome_tx, outcome_rx) = mpsc::channel(4);
+        let (coordinator, _, _) = test_coordinator(
+            &temp,
+            session,
+            vec![ScannerType::Sast],
+            checkpoint,
+            test_snapshot(session, crate::agent::chat::PhaseBoundary::AfterFramework),
+            1,
+        );
+        let (command_tx, command_rx, event_tx, mut event_rx) = channels();
+        let task = tokio::spawn(
+            coordinator
+                .with_outcomes(outcome_rx)
+                .run(command_rx, event_tx),
+        );
+        let (first, ack) = envelope(action.clone(), applied(&action));
+        outcome_tx.send(first).await.unwrap();
+        assert_eq!(ack.await.unwrap(), Ok(ChatOutcomeAck::Committed));
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(ChatEvent::Applied { .. })
+        ));
+        let (duplicate, ack) = envelope(action.clone(), applied(&action));
+        outcome_tx.send(duplicate).await.unwrap();
+        assert_eq!(ack.await.unwrap(), Ok(ChatOutcomeAck::Duplicate));
+        let unknown = durable_action(Uuid::new_v4(), true);
+        let (unknown_message, ack) = envelope(unknown.clone(), applied(&unknown));
+        outcome_tx.send(unknown_message).await.unwrap();
+        assert_eq!(ack.await.unwrap(), Ok(ChatOutcomeAck::Duplicate));
+        assert!(event_rx.try_recv().is_err());
+        let transcript = std::fs::read_to_string(
+            temp.path()
+                .join(".zentra/chat")
+                .join(format!("{session}.jsonl")),
+        )
+        .unwrap();
+        assert_eq!(transcript.matches("\"state\":\"applied\"").count(), 1);
+        drop(outcome_tx);
+        drop(command_tx);
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalid_applied_and_mismatched_outcomes_fail_without_mutating_durable_action() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = "outcome-invalid";
+        let checkpoint = test_checkpoint(session);
+        let action = durable_action(Uuid::new_v4(), false);
+        checkpoint
+            .lock()
+            .unwrap()
+            .confirmed_chat_actions
+            .push(action.clone());
+        let (coordinator, _, _) = test_coordinator(
+            &temp,
+            session,
+            vec![ScannerType::Sast],
+            checkpoint.clone(),
+            test_snapshot(session, crate::agent::chat::PhaseBoundary::AfterFramework),
+            1,
+        );
+        let (event_tx, mut event_rx) = mpsc::channel(2);
+        let events = EventDispatcher { tx: event_tx };
+        let (message, ack) = envelope(action.clone(), applied(&action));
+        coordinator.consume_outcome(message, &events).await;
+        assert_eq!(
+            ack.await.unwrap(),
+            Err(ChatOutcomeFailure::AppliedBeforeCompletion)
+        );
+        let mut mismatch = action.clone();
+        mismatch.confirmation_sequence = 2;
+        let (message, ack) = envelope(mismatch, applied(&action));
+        coordinator.consume_outcome(message, &events).await;
+        assert_eq!(
+            ack.await.unwrap(),
+            Err(ChatOutcomeFailure::MismatchedAction)
+        );
+        assert_eq!(
+            checkpoint.lock().unwrap().confirmed_chat_actions,
+            vec![action]
+        );
+        assert!(event_rx.try_recv().is_err());
+        assert!(!temp
+            .path()
+            .join(".zentra/chat")
+            .join(format!("{session}.jsonl"))
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn transcript_success_checkpoint_failure_retries_without_duplicate_terminal_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = "outcome-retry";
+        let checkpoint = test_checkpoint(session);
+        let action = durable_action(Uuid::new_v4(), true);
+        checkpoint
+            .lock()
+            .unwrap()
+            .confirmed_chat_actions
+            .push(action.clone());
+        let (mut coordinator, _, _) = test_coordinator(
+            &temp,
+            session,
+            vec![ScannerType::Sast],
+            checkpoint.clone(),
+            test_snapshot(session, crate::agent::chat::PhaseBoundary::AfterFramework),
+            1,
+        );
+        let good_zentra = coordinator.zentra_dir.clone();
+        let fault = temp.path().join("checkpoint-fault");
+        std::fs::write(&fault, "not a directory").unwrap();
+        coordinator.zentra_dir = fault.clone();
+        let (event_tx, mut event_rx) = mpsc::channel(2);
+        let events = EventDispatcher { tx: event_tx };
+        let (message, ack) = envelope(action.clone(), applied(&action));
+        coordinator.consume_outcome(message, &events).await;
+        assert_eq!(ack.await.unwrap(), Err(ChatOutcomeFailure::Persistence));
+        assert_eq!(
+            checkpoint.lock().unwrap().confirmed_chat_actions,
+            vec![action.clone()]
+        );
+        assert!(event_rx.try_recv().is_err());
+        let transcript =
+            std::fs::read_to_string(good_zentra.join("chat").join(format!("{session}.jsonl")))
+                .unwrap();
+        assert_eq!(transcript.matches("\"state\":\"applied\"").count(), 1);
+        assert_eq!(
+            coordinator
+                .store
+                .terminal_proposal_lifecycle(action.proposal_id)
+                .unwrap(),
+            Some(ProposalLifecycle::Applied)
+        );
+        std::fs::remove_file(&fault).unwrap();
+        std::fs::create_dir(&fault).unwrap();
+        let (message, ack) = envelope(action.clone(), applied(&action));
+        coordinator.consume_outcome(message, &events).await;
+        assert_eq!(ack.await.unwrap(), Ok(ChatOutcomeAck::Committed));
+        assert!(checkpoint.lock().unwrap().confirmed_chat_actions.is_empty());
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(ChatEvent::Applied { .. })
+        ));
+        let transcript =
+            std::fs::read_to_string(good_zentra.join("chat").join(format!("{session}.jsonl")))
+                .unwrap();
+        assert_eq!(transcript.matches("\"state\":\"applied\"").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn command_receiver_close_still_consumes_later_outcome_without_hanging() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = "outcome-command-closed";
+        let checkpoint = test_checkpoint(session);
+        let action = durable_action(Uuid::new_v4(), true);
+        checkpoint
+            .lock()
+            .unwrap()
+            .confirmed_chat_actions
+            .push(action.clone());
+        let (outcome_tx, outcome_rx) = mpsc::channel(1);
+        let (coordinator, _, _) = test_coordinator(
+            &temp,
+            session,
+            vec![ScannerType::Sast],
+            checkpoint,
+            test_snapshot(session, crate::agent::chat::PhaseBoundary::AfterFramework),
+            1,
+        );
+        let (command_tx, command_rx, event_tx, _event_rx) = channels();
+        drop(command_tx);
+        let task = tokio::spawn(
+            coordinator
+                .with_outcomes(outcome_rx)
+                .run(command_rx, event_tx),
+        );
+        let (message, ack) = envelope(action.clone(), applied(&action));
+        outcome_tx.send(message).await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), ack)
+                .await
+                .unwrap()
+                .unwrap(),
+            Ok(ChatOutcomeAck::Committed)
+        );
+        drop(outcome_tx);
+        tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[test]
@@ -1403,37 +1949,220 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn supply_chain_focus_requires_context_but_accepts_confirmed_category_context() {
+    async fn confirm_rejects_category_without_applicable_selected_scanner() {
         let temp = tempfile::tempdir().unwrap();
-        let session = "supply-context";
-        let checkpoint = Arc::new(Mutex::new(Checkpoint {
-            session_id: session.into(),
-            scanner_set: vec!["supply_chain".into()],
-            ..Default::default()
-        }));
-        let snapshot = Arc::new(Mutex::new(ChatSnapshot {
-            session_id: session.into(),
-            boundary: crate::agent::chat::PhaseBoundary::AfterFramework,
-            selected_scanners: vec!["supply_chain".into()],
-            ..Default::default()
-        }));
-        let (coordinator, _, _) = test_coordinator(
+        let session = "no-applicable-category";
+        let selected = [ScannerType::IacScan];
+        let checkpoint = checkpoint_for(session, &selected);
+        let (mut coordinator, _, mut pending) = test_coordinator(
             &temp,
             session,
-            vec![ScannerType::SupplyChain],
+            selected.to_vec(),
             checkpoint.clone(),
-            snapshot,
-            2,
+            snapshot_for(session, &selected),
+            1,
         );
-        let supply = proposal(
-            Uuid::new_v4(),
-            crate::agent::chat::ChatAction::focus_and_rerun(
-                [ScannerType::SupplyChain],
-                FocusScope::new([crate::agent::chat::FocusFragment::InputValidation], []).unwrap(),
-            )
-            .unwrap(),
+        let (tx, mut events) = mpsc::channel(2);
+        assert!(
+            coordinator
+                .confirm(
+                    proposal(
+                        Uuid::new_v4(),
+                        crate::agent::chat::ChatAction::prioritize(
+                            crate::agent::chat::VulnerabilityCategory::Injection
+                        )
+                    ),
+                    &EventDispatcher { tx },
+                )
+                .await
         );
-        assert!(coordinator.validate_proposal(&supply).is_err());
+        assert!(matches!(
+            events.recv().await,
+            Some(ChatEvent::Error {
+                kind: ChatError::InvalidProposal,
+                ..
+            })
+        ));
+        assert!(checkpoint.lock().unwrap().confirmed_chat_actions.is_empty());
+        assert!(pending.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn confirm_rejects_candidates_that_overflow_merged_path_or_fragment_limits() {
+        for fragments in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let session = if fragments {
+                "merged-fragments"
+            } else {
+                "merged-paths"
+            };
+            let selected = [ScannerType::Sast];
+            let checkpoint = checkpoint_for(session, &selected);
+            let scope = if fragments {
+                FocusScope::new(
+                    [
+                        crate::agent::chat::FocusFragment::AuthBoundary,
+                        crate::agent::chat::FocusFragment::InputValidation,
+                        crate::agent::chat::FocusFragment::DataFlow,
+                        crate::agent::chat::FocusFragment::SecretsAndSensitiveData,
+                    ],
+                    [],
+                )
+                .unwrap()
+            } else {
+                let source = temp.path().join("src");
+                std::fs::create_dir_all(&source).unwrap();
+                for index in 0..21 {
+                    std::fs::write(source.join(format!("{index}.rs")), "").unwrap();
+                }
+                FocusScope::from_paths(
+                    [],
+                    (0..11)
+                        .map(|index| format!("src/{index}.rs"))
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap()
+            };
+            checkpoint.lock().unwrap().confirmed_chat_actions.push(
+                ConfirmedChatAction::new(
+                    Uuid::new_v4(),
+                    1,
+                    crate::agent::chat::ChatAction::focus_and_rerun([ScannerType::Sast], scope)
+                        .unwrap(),
+                    selected,
+                )
+                .unwrap(),
+            );
+            let candidate_scope = if fragments {
+                FocusScope::new(
+                    [
+                        crate::agent::chat::FocusFragment::DependencyManifest,
+                        crate::agent::chat::FocusFragment::NetworkExposure,
+                        crate::agent::chat::FocusFragment::IaCPrivilege,
+                    ],
+                    [],
+                )
+                .unwrap()
+            } else {
+                FocusScope::from_paths(
+                    [],
+                    (11..21)
+                        .map(|index| format!("src/{index}.rs"))
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap()
+            };
+            let (mut coordinator, _, mut pending) = test_coordinator(
+                &temp,
+                session,
+                selected.to_vec(),
+                checkpoint.clone(),
+                snapshot_for(session, &selected),
+                1,
+            );
+            let (tx, mut events) = mpsc::channel(2);
+            assert!(
+                coordinator
+                    .confirm(
+                        proposal(
+                            Uuid::new_v4(),
+                            crate::agent::chat::ChatAction::focus_and_rerun(
+                                [ScannerType::Sast],
+                                candidate_scope
+                            )
+                            .unwrap()
+                        ),
+                        &EventDispatcher { tx }
+                    )
+                    .await
+            );
+            assert!(matches!(
+                events.recv().await,
+                Some(ChatEvent::Error {
+                    kind: ChatError::InvalidProposal,
+                    ..
+                })
+            ));
+            assert_eq!(checkpoint.lock().unwrap().confirmed_chat_actions.len(), 1);
+            assert!(pending.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn confirm_accepts_supply_chain_dependency_manifest_alone() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = "supply-manifest";
+        let selected = [ScannerType::SupplyChain];
+        let checkpoint = checkpoint_for(session, &selected);
+        let (mut coordinator, _, mut pending) = test_coordinator(
+            &temp,
+            session,
+            selected.to_vec(),
+            checkpoint.clone(),
+            snapshot_for(session, &selected),
+            1,
+        );
+        let action = crate::agent::chat::ChatAction::focus_and_rerun(
+            [ScannerType::SupplyChain],
+            FocusScope::new([crate::agent::chat::FocusFragment::DependencyManifest], []).unwrap(),
+        )
+        .unwrap();
+        let (tx, mut events) = mpsc::channel(2);
+        assert!(
+            coordinator
+                .confirm(proposal(Uuid::new_v4(), action), &EventDispatcher { tx })
+                .await
+        );
+        assert!(matches!(
+            events.recv().await,
+            Some(ChatEvent::Confirmed { .. })
+        ));
+        assert_eq!(checkpoint.lock().unwrap().confirmed_chat_actions.len(), 1);
+        assert!(pending.try_recv().is_ok());
+    }
+
+    #[tokio::test]
+    async fn confirm_rejects_supply_chain_focus_without_manifest_or_category() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = "supply-neither";
+        let selected = [ScannerType::SupplyChain];
+        let checkpoint = checkpoint_for(session, &selected);
+        let (mut coordinator, _, mut pending) = test_coordinator(
+            &temp,
+            session,
+            selected.to_vec(),
+            checkpoint.clone(),
+            snapshot_for(session, &selected),
+            1,
+        );
+        let action = crate::agent::chat::ChatAction::focus_and_rerun(
+            [ScannerType::SupplyChain],
+            FocusScope::new([crate::agent::chat::FocusFragment::InputValidation], []).unwrap(),
+        )
+        .unwrap();
+        let (tx, mut events) = mpsc::channel(2);
+        assert!(
+            coordinator
+                .confirm(proposal(Uuid::new_v4(), action), &EventDispatcher { tx })
+                .await
+        );
+        assert!(matches!(
+            events.recv().await,
+            Some(ChatEvent::Error {
+                kind: ChatError::InvalidProposal,
+                ..
+            })
+        ));
+        assert!(checkpoint.lock().unwrap().confirmed_chat_actions.is_empty());
+        assert!(pending.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn confirm_accepts_supply_chain_focus_with_durable_dependency_category_companion() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = "supply-companion";
+        let selected = [ScannerType::SupplyChain];
+        let checkpoint = checkpoint_for(session, &selected);
         checkpoint.lock().unwrap().confirmed_chat_actions.push(
             ConfirmedChatAction::new(
                 Uuid::new_v4(),
@@ -1441,11 +2170,35 @@ mod tests {
                 crate::agent::chat::ChatAction::prioritize(
                     crate::agent::chat::VulnerabilityCategory::DependencySupplyChain,
                 ),
-                [ScannerType::SupplyChain],
+                selected,
             )
             .unwrap(),
         );
-        assert!(coordinator.validate_proposal(&supply).is_ok());
+        let (mut coordinator, _, mut pending) = test_coordinator(
+            &temp,
+            session,
+            selected.to_vec(),
+            checkpoint.clone(),
+            snapshot_for(session, &selected),
+            1,
+        );
+        let action = crate::agent::chat::ChatAction::focus_and_rerun(
+            [ScannerType::SupplyChain],
+            FocusScope::new([crate::agent::chat::FocusFragment::InputValidation], []).unwrap(),
+        )
+        .unwrap();
+        let (tx, mut events) = mpsc::channel(2);
+        assert!(
+            coordinator
+                .confirm(proposal(Uuid::new_v4(), action), &EventDispatcher { tx })
+                .await
+        );
+        assert!(matches!(
+            events.recv().await,
+            Some(ChatEvent::Confirmed { .. })
+        ));
+        assert_eq!(checkpoint.lock().unwrap().confirmed_chat_actions.len(), 2);
+        assert!(pending.try_recv().is_ok());
     }
 
     #[tokio::test]
@@ -1470,6 +2223,36 @@ mod tests {
         assert!(
             matches!(rx.recv().await, Some(ChatEvent::Deferred { proposal_id, .. }) if proposal_id == p.proposal_id)
         );
+        assert!(pending_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn final_boundary_confirmation_race_is_deferred_or_included_never_stranded() {
+        let temp = tempfile::tempdir().unwrap();
+        let session = "final-boundary-gate";
+        let checkpoint = test_checkpoint(session);
+        let snapshot = test_snapshot(session, crate::agent::chat::PhaseBoundary::AfterFramework);
+        let (mut coordinator, _, mut pending_rx) = test_coordinator(
+            &temp,
+            session,
+            vec![ScannerType::Sast],
+            checkpoint.clone(),
+            snapshot,
+            1,
+        );
+        let eligibility = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        coordinator.action_eligible = eligibility.clone();
+        // This is the same ordering used by the phase loop: close first, then
+        // inspect durable actions. A later confirmation cannot become pending.
+        eligibility.store(false, std::sync::atomic::Ordering::Release);
+        let proposal = proposal(Uuid::new_v4(), sast_focus());
+        let (event_tx, mut events_rx) = mpsc::channel(2);
+        let events = EventDispatcher { tx: event_tx };
+        assert!(coordinator.confirm(proposal.clone(), &events).await);
+        assert!(
+            matches!(events_rx.recv().await, Some(ChatEvent::Deferred { proposal_id, reason }) if proposal_id == proposal.proposal_id && reason == "the scan has reached its final boundary")
+        );
+        assert!(checkpoint.lock().unwrap().confirmed_chat_actions.is_empty());
         assert!(pending_rx.try_recv().is_err());
     }
 

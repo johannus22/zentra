@@ -1,3 +1,4 @@
+use crate::agent::chat::ChatFocus;
 use crate::agent::context_budget::{self, Outcome};
 use crate::agent::{ScanEvent, ScannerType};
 use crate::provider::{AgentMessage, LLMProvider};
@@ -28,6 +29,7 @@ pub struct ScannerAgent {
     cancel_token: CancellationToken,
     security: SecurityContext,
     board: crate::agent::board::ObservationBoard,
+    chat_focus: Option<ChatFocus>,
 }
 
 /// Render the impact-set file list for both the initial prompt and blocked-call
@@ -143,6 +145,7 @@ impl ScannerAgent {
             cancel_token,
             security: SecurityContext::disabled(),
             board: crate::agent::board::ObservationBoard::new(),
+            chat_focus: None,
         }
     }
 
@@ -173,6 +176,7 @@ impl ScannerAgent {
             cancel_token,
             security: SecurityContext::disabled(),
             board: crate::agent::board::ObservationBoard::new(),
+            chat_focus: None,
         }
     }
 
@@ -203,6 +207,13 @@ impl ScannerAgent {
         self
     }
 
+    /// Attach only canonical typed chat focus. No arbitrary strings may enter
+    /// the scanner system prompt through the interactive channel.
+    pub fn with_chat_focus(mut self, focus: Option<ChatFocus>) -> Self {
+        self.chat_focus = focus;
+        self
+    }
+
     pub async fn run(self) -> Result<()> {
         let base_system = scanners::system_prompt(self.scanner_type);
         let mut effective_system: String = match &self.context {
@@ -217,6 +228,12 @@ For example, do not flag SQL injection if the ORM listed here auto-parameterises
         if let Some(ctx) = &self.focus_context {
             effective_system.push_str("\n\n## Scan Focus Context\n\n");
             effective_system.push_str(ctx);
+        }
+        if let Some(chat_focus) = &self.chat_focus {
+            if let Some(rendered) = chat_focus.render() {
+                effective_system.push_str("\n\n## Chat Focus\n\n");
+                effective_system.push_str(&rendered);
+            }
         }
         // Inject cross-scanner observations from earlier phases. The board is
         // read-only here: this clones the data out under the lock, so no lock
@@ -267,12 +284,12 @@ For example, do not flag SQL injection if the ORM listed here auto-parameterises
                     "context budget exceeded for model {} (need ~{estimate} tokens, budget {budget}) — skipping scanner",
                     self.provider.model_name()
                 );
-                crate::logging::error(
-                    "scan",
-                    format!("scanner={:?} {message}", self.scanner_type),
-                );
+                crate::logging::error("scan", format!("scanner={:?} {message}", self.scanner_type));
                 self.tx
-                    .send(ScanEvent::Error { scanner: self.scanner_type, message: message.clone() })
+                    .send(ScanEvent::Error {
+                        scanner: self.scanner_type,
+                        message: message.clone(),
+                    })
                     .await
                     .ok();
                 self.tx
@@ -486,9 +503,7 @@ For example, do not flag SQL injection if the ORM listed here auto-parameterises
             ));
         }
         if !completed_normally {
-            let message = format!(
-                "scanner exhausted the maximum of {MAX_ITERATIONS} iterations"
-            );
+            let message = format!("scanner exhausted the maximum of {MAX_ITERATIONS} iterations");
             self.tx
                 .send(ScanEvent::Error {
                     scanner: self.scanner_type,
@@ -521,8 +536,10 @@ mod tests {
             initial_prompt_for(ScannerType::FrameworkAnalysis, None, None),
             initial_prompt_for(ScannerType::FrameworkAnalysis, Some(&scope), None),
         );
-        assert!(initial_prompt_for(ScannerType::FrameworkAnalysis, Some(&scope), None)
-            .contains("framework analysis"));
+        assert!(
+            initial_prompt_for(ScannerType::FrameworkAnalysis, Some(&scope), None)
+                .contains("framework analysis")
+        );
     }
 
     #[test]
@@ -626,5 +643,19 @@ mod tests {
                 "{tool} must never be blocked by incremental scope"
             );
         }
+    }
+
+    #[test]
+    fn typed_chat_focus_renders_only_in_its_own_section_data() {
+        let mut focus = ChatFocus::default();
+        focus
+            .categories
+            .insert(crate::agent::chat::VulnerabilityCategory::Injection);
+        focus
+            .fragments
+            .insert(crate::agent::chat::FocusFragment::InputValidation);
+        let rendered = focus.render().unwrap();
+        assert!(rendered.contains("injection"));
+        assert!(rendered.contains("input validation"));
     }
 }
