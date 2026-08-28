@@ -2,11 +2,26 @@
 
 ## Status / decision summary
 
-**Status:** agreed design; not implemented. Add a scan-local, read-only
-`ChatAgent` and a persistent TUI Chat drawer. Chat answers questions from a
-bounded live snapshot, and translates plain-language requests into typed action
-proposals. Nothing changes a scan until a local operator explicitly confirms a
+**Status:** implemented through `643f1a2` and the current phase. The local,
+read-only `ChatAgent`, persistent TUI drawer, bounded coordinator channels,
+checkpoint integration, and boundary-only action handling are shipped. Chat
+answers from a bounded live snapshot and translates requests into typed action
+proposals; nothing changes a scan until a local operator explicitly confirms a
 proposal.
+
+### Implementation evidence
+
+- Contracts, redaction, bounded JSONL persistence, and resume validation live
+  in `agent::chat`; the isolated read-only ReAct worker and single-flight
+  coordinator live in `agent::chat_agent` and `agent::chat_coordinator`.
+- `commands::scan` wires the interactive runtime only for local scans;
+  `OrchestratorAgent` owns checkpoint-backed boundary application and report
+  regeneration. CI/headless command paths do not create Chat channels.
+- `tui::scan_ui` and `tui::mod` cover default drawer state, narrow-primary-pane
+  rendering, key precedence, complete-proposal review, confirmation
+  acknowledgement/retry, and global `Ctrl+C` abort. Module tests also cover
+  typed validation, read-only tool isolation, action coalescing, persistence,
+  resume, and cancellation.
 
 V1 supports exactly two actions:
 
@@ -42,7 +57,7 @@ headless/CI chat surface (`commands::ci` remains unchanged).
 
 Chat is **visible and expanded by default** as a docked right drawer on a
 normal-width terminal; scanner and results panes remain visible. On narrow
-terminals, the expanded drawer is the full-screen active pane. It contains a
+terminals, the expanded drawer is the primary work pane. It contains a
 phase/status line, redacted transcript, input, in-flight/queued count, and a
 proposal card showing action, targets/category, canonical scope, and earliest
 boundary.
@@ -50,14 +65,26 @@ boundary.
 Drawer state is `ExpandedUnfocused`, `ExpandedFocused`, or `Collapsed`.
 `c` focuses an expanded drawer; `c` while it is focused collapses it; `c` from
 collapsed expands and focuses it. `Enter` submits input or confirms the visible
-proposal; `Esc` rejects a proposal or clears active input before it does
-anything else. The keys/footer must describe these states.
+proposal only after its complete typed content fits in view; it does not submit
+another confirmation while one is in progress. `Esc` rejects a proposal, then
+clears focused input, then collapses Chat before it does anything else.
+It leaves an in-progress confirmation in place. Once Chat is collapsed with no
+active interaction, `Esc` resumes the normal scan exit path.
+`Ctrl+C` has global precedence and aborts the scan. The keys/footer describe
+these states.
 
-Key precedence is: existing provider/scan popups first; then active chat
+After `Enter` sends a confirmation, the proposal remains visible as
+confirming until its matching durable `Confirmed` acknowledgement arrives. A
+matching confirmation error returns it to review so the operator can retry;
+terminal `Applied` or `Deferred` events remove it.
+
+Except for global `Ctrl+C`, key precedence is: existing provider/scan popups first; then active chat
 proposal/input; then expanded Chat (collapse it); only when Chat is collapsed
 and has no active interaction may `Esc` fall through to existing scan-screen
-handling (`q`/`Esc` returns to menu and cancels the scan). Thus Chat cannot
-accidentally turn a proposal rejection into a scan abort.
+handling. Before natural completion, `q`/`Esc` returns to the menu and cancels
+the scan; after natural completion it returns `Completed` without cancellation
+or interrupting scan finalization. Thus Chat cannot accidentally turn a
+proposal rejection into a scan abort.
 
 `UiState` gains chat view state in `src/tui/mod.rs`; chat rendering/key handling
 belongs in `src/tui/scan_ui.rs`. It is not part of `UiState::apply_event`.
@@ -66,7 +93,7 @@ belongs in `src/tui/scan_ui.rs`. It is not part of `UiState::apply_event`.
 
 ### Existing integration points
 
-- `commands::scan::run_scan` creates the existing `mpsc::channel(128)` scan
+- `commands::scan::run_once` creates the existing `mpsc::channel(128)` scan
   channel, `ToolRegistry`, `StateWriter`, `CancellationToken`, security context,
   and the `session_id` passed to `AuditLog::new`.
 - `OrchestratorAgent::run` owns the phase order: framework, threat model,
@@ -218,6 +245,7 @@ enum ChatCommand {
 enum ChatEvent {
     RequestQueued { request_id: Uuid, position: usize },
     Answer { request_id: Uuid, text: String }, Proposal { proposal: ActionProposal },
+    Confirmed { proposal_id: Uuid },
     Applied { proposal_id: Uuid, boundary: PhaseBoundary },
     Deferred { proposal_id: Uuid, reason: String }, Cancelled { request_id: Uuid },
     Error { request_id: Option<Uuid>, kind: ChatError, message: String },
@@ -234,6 +262,8 @@ enum ChatError { Backpressure, Cancelled, Provider, Security, Budget, InvalidPro
 Request lifecycle: `Draft -> Queued -> Running -> Answered | Proposed |
 Cancelled | Failed`. Proposal lifecycle: `Proposed -> Confirmed -> PendingBoundary
 -> Applied | Deferred | Expired`; reject/cancel ends it. Expiry is five minutes.
+`Confirmed` acknowledges that local confirmation was durably queued for a
+future boundary; `Applied` remains the phase loop's terminal outcome.
 Scan cancellation cancels the in-flight completion, drains queued asks and
 proposals, and prevents pending application.
 
@@ -270,64 +300,75 @@ maximum user input. Apply `context_budget::estimate_tokens`, `input_budget`,
 counters are separate from `UiState::total_tokens` and scanner progress.
 
 Security invariants: only local `Confirm` produces pending work; model text,
-tool calls, malformed JSON, or persisted records never execute actions; Chat
-cannot mutate `StateWriter` or `Checkpoint` directly; and persisted chat text is
-redacted while the tamper-evident audit stream stores hashes rather than prompts
-or source results.
+tool calls, malformed JSON, and transcript/JSONL records are never instruction
+or action authority. Only strictly validated checkpoint actions originating
+from prior local confirmation may restore or apply on resume. `ChatAgent` cannot
+mutate `StateWriter` or the checkpoint; persisted chat text is redacted; and
+the tamper-evident audit stream stores hashes rather than prompts or source
+results. The coordinator sends only locally confirmed, validated typed action
+records to the checkpoint and orchestration boundary.
 
 ## Persistence and resume
 
-Reuse the `session_id` already created by `commands::scan::run_scan` for the
-security audit session. Store append-only redacted records at
+Each invocation creates its own security audit session. On a fresh run, its new
+identifier initializes the Chat runtime; on resume, Chat instead retains the
+durable session identity from the checkpoint while audit remains per-invocation.
+Chat JSONL follows the Chat runtime identity. Store append-only redacted records at
 `.zentra/chat/<session-id>.jsonl`. Each record has schema version, timestamp,
 session ID, request/proposal ID, lifecycle event, redacted answer/request text
 or typed action, and no prompt, tool result, credential, nonce, or raw source.
-Keep the latest 20 session files and best-effort prune older files. Persistence
-failure emits `ChatError::Persistence` and never blocks scanning.
+Keep the latest 20 session files and best-effort prune older files. Ordinary
+request, answer, and transcript writes are best-effort: failures emit
+`ChatError::Persistence` without stopping scan execution. Confirmed-action
+checkpoint saves and terminal action lifecycle persistence are fail-closed;
+failure can surface and block that action's finalization rather than permit an
+ambiguous result.
 
 Extend `agent::checkpoint::Checkpoint` compatibly with `#[serde(default)]
 `session_id: String` and `confirmed_chat_actions: Vec<ConfirmedChatAction>`.
 The action record contains proposal ID, confirmation sequence, typed action,
 and required scanner set—never transcript content. At fresh-run checkpoint
 creation, set and save `session_id`; after local confirmation, append the
-validated action and save before reporting it pending. When an action is
-coalesced/applied or deferred/cancelled/expired, remove it and save. Before a
-rerun, perform the completion/report invalidation and save as described above.
-On success, existing `Checkpoint::clear` removes this transient state; JSONL
-history remains. On incomplete/cancelled runs, the checkpoint remains.
+validated action and save before reporting it pending. Applied or deferred
+confirmed actions are removed and saved by the coordinator; unconfirmed
+proposal expiry/cancellation is recorded only in JSONL. A cancelled scan keeps
+confirmed transient actions for strict resume. Before a rerun, perform the
+completion/report invalidation and save as described above. On success, existing
+`Checkpoint::clear` removes this transient state; JSONL history remains.
 
 `--resume` retains strict missing/corrupt checkpoint rejection. Restore pending
 actions only when checkpoint `session_id`, selected scanner set, and typed
-scope/category validation match the resumed run; otherwise discard them as
-`InvalidProposal` and record the outcome in JSONL. Old checkpoints deserialize
-with empty new fields. Conversation history is never restored as instruction
-context.
+scope/category validation match the resumed run; otherwise defer them and
+record the outcome in JSONL. Old checkpoints deserialize with empty new fields.
+Conversation history is never restored as instruction context or model prompt
+history.
 
 ## Errors, backpressure, and compatibility
 
 `Esc` behavior follows the UX precedence above. Provider/security/budget/
 persistence errors render in Chat, never as `ScanEvent::Error` or scanner
-failure. Terminal Chat events (`Answer`, `Proposal`, `Applied`, `Deferred`,
-`Cancelled`, `Error`) are never dropped; only nonterminal progress can be
-coalesced under event-channel pressure.
+failure. Terminal Chat events (`Answer`, `Proposal`, `Confirmed`, `Applied`,
+`Deferred`, `Cancelled`, `Error`) are never dropped; only nonterminal progress
+can be coalesced under event-channel pressure.
 
 The drawer is present by default; no scan CLI syntax, CI behavior, provider
-configuration, finding formats, or existing checkpoint fields change. Missing
-`.zentra/chat` is normal. Schema-versioned JSONL permits future readers to
-ignore unknown records safely.
+configuration, or finding formats change. Checkpoint extensions are
+backward-compatible defaults. Missing `.zentra/chat` is normal.
+Schema-versioned JSONL permits future readers to handle unknown records safely.
 
-## Phased implementation plan
+## Delivered implementation milestones
 
-1. Add pure `agent::chat` schemas, canonical scope/category validation,
-   redactor/JSONL store, and backward-compatible checkpoint fields.
-2. Add Chat-specific read-only registry/gate profile and ChatAgent provider,
-   prompt-guard, audit-hash, budget, and no-op-coverage integration.
-3. Wire separate channels, coordinator serialization, session-ID propagation,
-   checkpoint lifecycle, and deterministic orchestrator boundary coalescing.
-4. Add default-visible TUI drawer, focus/collapse keys, narrow view, proposal
-   confirmation, and precise Escape routing.
-5. Add integration/resume/security coverage; update public architecture/docs if
-   the released UI surface requires it.
+1. `agent::chat` supplies schemas, canonical scope/category validation,
+   redaction/JSONL storage, and backward-compatible checkpoint fields.
+2. The Chat-specific registry/gate profile, provider guard, prompt guard,
+   audit hashes, budget, and no-op coverage behavior are integrated.
+3. Separate channels, coordinator serialization, session identity, checkpoint
+   lifecycle, and deterministic orchestration-boundary coalescing are wired.
+4. The default-visible drawer supports focus/collapse keys, narrow primary-pane
+   rendering, complete-proposal confirmation, and precise Escape routing.
+5. Unit and integration coverage exercises resume, security, persistence,
+   cancellation, and UI lifecycle behavior; public architecture and README
+   describe the released surface.
 
 ## Verification matrix and acceptance criteria
 

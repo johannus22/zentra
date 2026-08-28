@@ -337,21 +337,22 @@ fn strip_terminal_controls(input: &str) -> String {
         if ch == '\u{1b}' {
             match chars.next() {
                 Some('[') => {
-                    while let Some(next) = chars.next() {
+                    for next in chars.by_ref() {
                         if next.is_ascii() && ('@'..='~').contains(&next) {
                             break;
                         }
                     }
                 }
                 Some(']') => {
-                    while let Some(next) = chars.next() {
+                    let mut previous_was_escape = false;
+                    for next in chars.by_ref() {
                         if next == '\u{7}' {
                             break;
                         }
-                        if next == '\u{1b}' && matches!(chars.peek(), Some('\\')) {
-                            chars.next();
+                        if previous_was_escape && next == '\\' {
                             break;
                         }
+                        previous_was_escape = next == '\u{1b}';
                     }
                 }
                 _ => {}

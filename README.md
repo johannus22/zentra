@@ -110,6 +110,39 @@ zentra scan --pack --dry-run  # inspect size and token estimate; no provider cal
 `--resume` and incremental scanning cannot be combined. The resume checkpoint
 is stored at `.zentra/checkpoint.json`; a successful complete scan removes it.
 
+### Interactive scan Chat
+
+Local `zentra scan` runs include a read-only Chat drawer. It starts visible and
+expanded: on a normal terminal it docks beside the scan panes; below the
+supported width it becomes the primary pane.
+
+- Press `c` to focus the expanded drawer, `c` again to collapse it, or `c` from
+  collapsed to open and focus it. `Enter` sends focused input. For a proposed
+   action, `Enter` confirms only after the entire typed proposal is visibly
+   reviewable, and never while its confirmation is already in progress. `Esc`
+   rejects a proposal, then clears focused input, then collapses Chat before it
+   can fall through to normal scan navigation; it does not interrupt a
+   confirmation already in progress. Once Chat is collapsed with no active
+   interaction, `Esc` resumes normal scan exit handling. `Ctrl+C` always aborts
+   the scan.
+- Chat answers bounded, redacted scan and repository questions with a
+  read-only profile (`list_files`, `read_file`, `grep_code`, and bounded Git
+  inspection). It can propose typed focus/rerun or vulnerability-category
+  actions, but neither model output nor a tool call can apply one: local
+  confirmation is required.
+- Confirmed actions are stored in the checkpoint and applied only at
+  deterministic orchestration boundaries. A target that is already too late is
+  reported as deferred. Eligible late targets may receive at most one
+  coalesced scanner rerun; Zentra then regenerates the final report.
+- On an incomplete `--resume`, confirmed transient actions remain available
+  after checkpoint validation. Chat transcript text is not restored into model
+  prompt history. Ordinary request/answer JSONL records are best-effort,
+  redacted, and bounded at `.zentra/chat/<session-id>.jsonl`; confirmed-action
+  checkpoint and terminal lifecycle persistence are fail-closed. Do not
+  intentionally enter sensitive values or source output into Chat.
+
+Chat is not available in `zentra ci` or other headless scan paths.
+
 Run the TUI (terminal interface) menu:
 
 ```bash
@@ -414,6 +447,7 @@ Zentra writes project-local output under `.zentra/`:
 .zentra/architecture.md
 .zentra/checkpoint.json
 .zentra/coverage.md
+.zentra/chat/<session-id>.jsonl
 .zentra/ci-report.md
 .zentra/ci-report.json
 .zentra/reports/
@@ -443,6 +477,7 @@ cargo run -- pentest --url https://target.test --authorized
 - Zentra stores provider credentials outside the project directory in its encrypted secret store. DPAPI protects the data-encryption key on Windows; Unix uses restrictive file permissions and the available keyring backend. In automated environments, use a CI secret store, not project files.
 - PR/MR comments are best-effort. Zentra still generates reports and logs if it cannot post a comment.
 - File tools block path traversal and cap file reads. Provider HTTP responses are size-capped and retry transient failures.
+- Interactive Chat uses a separate bounded, read-only tool profile. Ordinary local JSONL records are redacted best-effort; confirmed-action checkpoint and terminal lifecycle persistence are fail-closed. Chat is not a place to enter secrets or intentionally paste sensitive source output.
 - The default security envelope records a tamper-evident audit chain, gates tool calls, and marks untrusted tool output. Set `ZENTRA_SECURITY=hardened` to enforce response binding and abort-on-injection; use `ZENTRA_SECURITY=off` only for trusted local development. Verify an audit chain with `zentra security verify-audit [session]`.
 - Git history and dependency audit tools degrade gracefully when the required binaries or history are unavailable.
 

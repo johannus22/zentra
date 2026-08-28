@@ -2,9 +2,17 @@
 %% Community Edition is public. Enterprise Edition consumes this crate as a library.
 graph TB
     User["Developer or CI job"]
+    LocalDeveloper["Developer (local terminal)"]
 
     subgraph CE["Zentra CLI - Community Edition"]
         Entry["Entry points: TUI, CLI, CI"]
+        ChatUI["Interactive Scan Chat UI\nlocal TUI only"]
+        ChatCommand["Bounded ChatCommand\nUI to coordinator"]
+        ChatEvent["Bounded ChatEvent\ncoordinator to UI"]
+        ChatCoordinator["ChatCoordinator\nconfirmation and lifecycle"]
+        ChatAgent["ChatAgent\nread-only Q&A and tools"]
+        ChatState[("Shared scan snapshot\nand checkpoint")]
+        TypedActions["Typed confirmed actions\nboundary-only handoff"]
         Config["Configuration and credentials: profiles, encrypted secret store"]
         Security["Security envelope: audit log, tool gate, prompt guard, response binding"]
         Provider["Provider abstraction: Anthropic, OpenAI-compatible, Claude CLI, Codex CLI"]
@@ -32,14 +40,25 @@ graph TB
     end
 
     User --> Entry
+    LocalDeveloper --> ChatUI
     Entry --> Config
     Entry --> Scan
     Entry --> Pentest
+    ChatUI --> ChatCommand --> ChatCoordinator
+    ChatCoordinator --> ChatEvent --> ChatUI
+    ChatCoordinator --> ChatAgent
+    ChatCoordinator --> ChatState
+    Scan --> ChatState
+    ChatCoordinator --> TypedActions
+    TypedActions -. "deterministic boundaries" .-> Scan
     Config --> Provider
     Security --> Provider
+    Security --> ChatAgent
     Scan --> Agent
     Agent --> Tools
     Agent --> Provider
+    ChatAgent -. "registered read-only profile" .-> Tools
+    ChatAgent --> Provider
     Agent --> Incremental
     Agent --> State
     Pentest --> State

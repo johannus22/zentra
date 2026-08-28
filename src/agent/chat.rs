@@ -495,19 +495,14 @@ impl<'de> Deserialize<'de> for ChatAction {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PhaseBoundary {
+    #[default]
     AfterFramework,
     AfterThreatModel,
     AfterParallel,
     Finalized,
-}
-
-impl Default for PhaseBoundary {
-    fn default() -> Self {
-        Self::AfterFramework
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1994,6 +1989,7 @@ mod tests {
         let file = OpenOptions::new()
             .create(true)
             .write(true)
+            .truncate(false)
             .open(store.path())
             .unwrap();
         file.set_len(MAX_CHAT_REPLAY_BYTES + 1).unwrap();

@@ -25,6 +25,16 @@ struct IncrementalCtx {
     change_set: ChangeSet,
 }
 
+struct ChatBoundaryContext<'a> {
+    scanners: &'a [ScannerType],
+    checkpoint: &'a mut Checkpoint,
+    statuses: &'a HashMap<ScannerType, ChatScannerState>,
+    focus: &'a mut HashMap<ScannerType, ChatFocus>,
+    focus_members: &'a mut HashMap<ScannerType, Vec<uuid::Uuid>>,
+    reruns: &'a mut Vec<ScannerType>,
+    force_rerun: bool,
+}
+
 pub struct RunSummary {
     pub failed: Vec<ScannerType>,
     pub delta: Option<ScanDelta>,
@@ -421,7 +431,7 @@ impl OrchestratorAgent {
                     .scanner_status
                     .sort_by(|a, b| a.scanner.cmp(&b.scanner));
                 snapshot.checkpoint_completed =
-                    checkpoint.completed.iter().cloned().take(32).collect();
+                    checkpoint.completed.iter().take(32).cloned().collect();
                 snapshot.pending_action_count = checkpoint.confirmed_chat_actions.len().min(16);
                 snapshot.action_eligible = self
                     .chat_runtime
@@ -547,14 +557,7 @@ impl OrchestratorAgent {
             .as_mut()
             .map(|runtime| &mut runtime.pending_actions)
         {
-            loop {
-                match receiver.try_recv() {
-                    Ok(_) => {}
-                    Err(
-                        mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected,
-                    ) => break,
-                }
-            }
+            while receiver.try_recv().is_ok() {}
         }
         let actions = self.shared_checkpoint()?.confirmed_chat_actions;
         if let Err(error) = plan_confirmed_chat_actions(&actions, scanners) {
@@ -581,14 +584,17 @@ impl OrchestratorAgent {
     async fn apply_chat_boundary(
         &mut self,
         boundary: PhaseBoundary,
-        scanners: &[ScannerType],
-        checkpoint: &mut Checkpoint,
-        statuses: &HashMap<ScannerType, ChatScannerState>,
-        focus: &mut HashMap<ScannerType, ChatFocus>,
-        focus_members: &mut HashMap<ScannerType, Vec<uuid::Uuid>>,
-        reruns: &mut Vec<ScannerType>,
-        force_rerun: bool,
+        context: ChatBoundaryContext<'_>,
     ) -> Result<bool> {
+        let ChatBoundaryContext {
+            scanners,
+            checkpoint,
+            statuses,
+            focus,
+            focus_members,
+            reruns,
+            force_rerun,
+        } = context;
         if self.chat_runtime.is_none() {
             return Ok(false);
         }
@@ -710,6 +716,15 @@ impl OrchestratorAgent {
                     &checkpoint,
                     &chat_focus,
                 );
+            let invalid_resume_actions = if snapshot_unavailable {
+                false
+            } else if let Some(runtime) = self.chat_runtime.as_ref() {
+                checkpoint
+                    .confirmed_chat_actions_for_resume(&runtime.session_id, scanners)
+                    .is_err()
+            } else {
+                false
+            };
             if snapshot_unavailable {
                 resume_snapshot_failed_closed = true;
                 let actions = checkpoint.confirmed_chat_actions.clone();
@@ -724,18 +739,7 @@ impl OrchestratorAgent {
                     .await?;
                 }
                 checkpoint = self.shared_checkpoint()?;
-            } else if checkpoint
-                .confirmed_chat_actions_for_resume(
-                    &self
-                        .chat_runtime
-                        .as_ref()
-                        .expect("chat runtime checked")
-                        .session_id,
-                    scanners,
-                )
-                .is_err()
-                && !checkpoint.confirmed_chat_actions.is_empty()
-            {
+            } else if invalid_resume_actions && !checkpoint.confirmed_chat_actions.is_empty() {
                 let actions = checkpoint.confirmed_chat_actions.clone();
                 for action in actions {
                     self.publish_chat_outcome(
@@ -991,13 +995,15 @@ impl OrchestratorAgent {
         let boundary_failed_closed = self
             .apply_chat_boundary(
                 PhaseBoundary::AfterFramework,
-                scanners,
-                &mut checkpoint,
-                &chat_status,
-                &mut chat_focus,
-                &mut chat_focus_members,
-                &mut rerun_targets,
-                false,
+                ChatBoundaryContext {
+                    scanners,
+                    checkpoint: &mut checkpoint,
+                    statuses: &chat_status,
+                    focus: &mut chat_focus,
+                    focus_members: &mut chat_focus_members,
+                    reruns: &mut rerun_targets,
+                    force_rerun: false,
+                },
             )
             .await?;
         if boundary_failed_closed {
@@ -1084,13 +1090,15 @@ impl OrchestratorAgent {
         let boundary_failed_closed = self
             .apply_chat_boundary(
                 PhaseBoundary::AfterThreatModel,
-                scanners,
-                &mut checkpoint,
-                &chat_status,
-                &mut chat_focus,
-                &mut chat_focus_members,
-                &mut rerun_targets,
-                false,
+                ChatBoundaryContext {
+                    scanners,
+                    checkpoint: &mut checkpoint,
+                    statuses: &chat_status,
+                    focus: &mut chat_focus,
+                    focus_members: &mut chat_focus_members,
+                    reruns: &mut rerun_targets,
+                    force_rerun: false,
+                },
             )
             .await?;
         if boundary_failed_closed {
@@ -1279,13 +1287,15 @@ impl OrchestratorAgent {
         let boundary_failed_closed = self
             .apply_chat_boundary(
                 PhaseBoundary::AfterParallel,
-                scanners,
-                &mut checkpoint,
-                &chat_status,
-                &mut chat_focus,
-                &mut chat_focus_members,
-                &mut rerun_targets,
-                true,
+                ChatBoundaryContext {
+                    scanners,
+                    checkpoint: &mut checkpoint,
+                    statuses: &chat_status,
+                    focus: &mut chat_focus,
+                    focus_members: &mut chat_focus_members,
+                    reruns: &mut rerun_targets,
+                    force_rerun: true,
+                },
             )
             .await?;
         if boundary_failed_closed {
@@ -2928,13 +2938,14 @@ mod tests {
         assert!(provider.scanner_systems(ScannerType::Sast).is_empty());
         assert!(provider.scanner_systems(ScannerType::Report).is_empty());
         assert_eq!(writer.read_findings_raw().unwrap(), before);
-        let current = checkpoint.lock().unwrap();
-        assert_eq!(
-            current.completed,
-            ["sast", "report"].into_iter().map(str::to_string).collect()
-        );
-        assert!(current.confirmed_chat_actions.is_empty());
-        drop(current);
+        {
+            let current = checkpoint.lock().unwrap();
+            assert_eq!(
+                current.completed,
+                ["sast", "report"].into_iter().map(str::to_string).collect()
+            );
+            assert!(current.confirmed_chat_actions.is_empty());
+        }
         assert!(
             matches!(harness.outcomes.lock().unwrap().as_slice(), [ChatActionOutcome::Deferred { proposal_id, .. }] if *proposal_id == action.proposal_id)
         );
@@ -2997,11 +3008,12 @@ mod tests {
         assert!(!labels.contains(&"correlation"));
         assert!(!labels.contains(&"screening"));
         assert_eq!(writer.read_findings_raw().unwrap(), before);
-        let current = checkpoint.lock().unwrap();
-        assert!(current.is_completed("sast"));
-        assert!(!current.is_completed("report"));
-        assert!(current.confirmed_chat_actions.is_empty());
-        drop(current);
+        {
+            let current = checkpoint.lock().unwrap();
+            assert!(current.is_completed("sast"));
+            assert!(!current.is_completed("report"));
+            assert!(current.confirmed_chat_actions.is_empty());
+        }
         assert!(
             matches!(harness.outcomes.lock().unwrap().as_slice(), [ChatActionOutcome::Deferred { proposal_id, .. }] if *proposal_id == action.proposal_id)
         );
@@ -3132,11 +3144,12 @@ mod tests {
         release_framework.notify_waiters();
         run.await.unwrap().unwrap();
 
-        let current = checkpoint.lock().unwrap();
-        assert!(current.is_completed("sast"));
-        assert!(current.is_completed("report"));
-        assert!(current.confirmed_chat_actions.is_empty());
-        drop(current);
+        {
+            let current = checkpoint.lock().unwrap();
+            assert!(current.is_completed("sast"));
+            assert!(current.is_completed("report"));
+            assert!(current.confirmed_chat_actions.is_empty());
+        }
         assert_eq!(writer.read_findings_raw().unwrap(), before);
         assert!(provider.scanner_systems(ScannerType::Sast).is_empty());
         assert!(provider.scanner_systems(ScannerType::Report).is_empty());
@@ -3275,9 +3288,7 @@ mod tests {
             .iter()
             .position(|label| *label == "correlation")
             .unwrap_or_else(|| panic!("correlation call; calls: {labels:?}"));
-        assert!(labels[..first_pipeline]
-            .iter()
-            .any(|label| *label == "sast"));
+        assert!(labels[..first_pipeline].contains(&"sast"));
         assert_eq!(
             labels
                 .iter()
