@@ -1,10 +1,14 @@
 use crate::agent::chat::{ActionProposal, ChatAction, ChatCommand, ChatEvent};
 use crate::agent::{McpStatus, ScanEvent, ScannerType};
-use crate::tui::{
-    sanitize_chat_text, ChatDrawerState, ScanOutcome, ScanResult, ScanStatus, UiState,
-};
+use crate::tui::{sanitize_chat_text, ChatFocus, ScanOutcome, ScanResult, ScanStatus, UiState};
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::{
+    event::{
+        self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+        MouseEventKind,
+    },
+    execute,
+};
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
@@ -67,6 +71,40 @@ const FINDINGS_PANEL_MIN_WIDTH: u16 = 20;
 const FAILED_PREVIEW_PREFIX: &str = "  └ ";
 pub const CHAT_NARROW_WIDTH: u16 = 108;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ChatHitRegions {
+    pub scan: Option<Rect>,
+    pub chat: Option<Rect>,
+    pub input: Option<Rect>,
+    pub confirm: Option<Rect>,
+    pub reject: Option<Rect>,
+    pub transcript: Option<Rect>,
+    pub layout_valid: bool,
+    pub transcript_max_scroll: usize,
+    /// Proposal identity for every actionable control in this render.
+    pub proposal_id: Option<uuid::Uuid>,
+}
+
+impl ChatHitRegions {
+    fn contains(region: Option<Rect>, column: u16, row: u16) -> bool {
+        region
+            .is_some_and(|r| column >= r.x && column < r.right() && row >= r.y && row < r.bottom())
+    }
+}
+
+struct MouseCaptureGuard;
+impl MouseCaptureGuard {
+    fn enable() -> std::io::Result<Self> {
+        execute!(std::io::stdout(), event::EnableMouseCapture)?;
+        Ok(Self)
+    }
+}
+impl Drop for MouseCaptureGuard {
+    fn drop(&mut self) {
+        let _ = execute!(std::io::stdout(), event::DisableMouseCapture);
+    }
+}
+
 /// UI-owned ends of the independent chat channels. The command lane creates
 /// these with `chat_coordinator::channels()` and passes `Some(...)` to
 /// `run_scan_ui_with_chat`; legacy callers keep using `run_scan_ui`.
@@ -124,6 +162,18 @@ pub async fn run_scan_ui_with_chat(
     mut chat: Option<ChatUiChannels>,
 ) -> Result<ScanOutcome> {
     let mut terminal = ratatui::init();
+    // Legacy scan-only sessions never alter mouse mode (or gain its failure path).
+    let mouse_capture = if chat.is_some() {
+        match MouseCaptureGuard::enable() {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                ratatui::restore();
+                return Err(error.into());
+            }
+        }
+    } else {
+        None
+    };
     let result = run_loop(
         &mut terminal,
         &mut rx,
@@ -138,6 +188,7 @@ pub async fn run_scan_ui_with_chat(
         chat.as_mut(),
     )
     .await;
+    drop(mouse_capture); // DisableMouseCapture precedes terminal restoration.
     ratatui::restore();
     if let Some(channels) = chat.as_ref() {
         channels.close();
@@ -176,6 +227,7 @@ async fn run_loop(
     );
     let mut input_ticker = tokio::time::interval(std::time::Duration::from_millis(25));
     let mut animation_ticker = tokio::time::interval(std::time::Duration::from_millis(80));
+    let mut hit_regions = ChatHitRegions::default();
 
     loop {
         tokio::select! {
@@ -200,10 +252,15 @@ async fn run_loop(
                 // navigation sluggish.
                 while event::poll(std::time::Duration::from_millis(0))? {
                     match event::read()? {
+                    Event::Resize(_, _) => {
+                        invalidate_chat_layout(&mut state, &mut hit_regions);
+                        // Do not let a queued Enter/click use a pre-resize review.
+                        break;
+                    }
                     Event::Paste(text) => {
                         if !state.provider_popup_open && !state.popup_open {
                             if let Some(channels) = chat.as_deref_mut() {
-                                if state.chat.drawer == ChatDrawerState::ExpandedFocused {
+                                if state.chat.focus == ChatFocus::Chat {
                                     // Paste follows the same bounded UTF-8 path as typing.
                                     let _ = channels; // channel presence enables chat input.
                                     state.chat.insert_text(&text);
@@ -285,6 +342,11 @@ async fn run_loop(
                             }
                         }
                     }
+                    Event::Mouse(mouse) if !state.provider_popup_open && !state.popup_open => {
+                        if let Some(channels) = chat.as_deref_mut() {
+                            let _ = handle_chat_mouse(&mut state, mouse, &mut hit_regions, channels);
+                        }
+                    }
                     _ => {}
                     }
                 }
@@ -300,8 +362,13 @@ async fn run_loop(
             state.activity = completion_hint(state.outcome());
         }
 
-        terminal.draw(|f| render(f, &mut state, chat.is_some()))?;
+        terminal.draw(|f| render(f, &mut state, chat.is_some(), &mut hit_regions))?;
     }
+}
+
+pub fn invalidate_chat_layout(state: &mut UiState, hits: &mut ChatHitRegions) {
+    state.chat.proposal_review_complete = false;
+    *hits = ChatHitRegions::default();
 }
 
 /// Navigation after a naturally terminal scan must not cancel the completed
@@ -327,7 +394,8 @@ pub fn drain_chat_events(state: &mut UiState, rx: &mut mpsc::Receiver<ChatEvent>
     }
 }
 
-fn render(frame: &mut Frame, state: &mut UiState, chat_enabled: bool) {
+fn render(frame: &mut Frame, state: &mut UiState, chat_enabled: bool, hits: &mut ChatHitRegions) {
+    *hits = ChatHitRegions::default();
     let area = frame.area();
 
     // Paint the whole frame with the theme background first.
@@ -347,11 +415,11 @@ fn render(frame: &mut Frame, state: &mut UiState, chat_enabled: bool) {
     .split(area);
 
     render_header(frame, chunks[0], state);
-    if !chat_enabled || state.chat.drawer == ChatDrawerState::Collapsed {
+    if !chat_enabled {
         render_body(frame, chunks[1], state);
         render_activity(frame, chunks[2], state);
         render_detail(frame, chunks[3], state);
-    } else if chat_uses_primary_pane(area.width, state.chat.drawer) {
+    } else if chat_uses_primary_pane(area.width, state.chat.focus) {
         // On narrow terminals Chat owns the complete work area. Rendering it
         // only in the old body row left an unusable, cramped drawer.
         let primary = Rect::new(
@@ -360,7 +428,7 @@ fn render(frame: &mut Frame, state: &mut UiState, chat_enabled: bool) {
             chunks[1].width,
             chunks[3].bottom().saturating_sub(chunks[1].y),
         );
-        render_chat_drawer(frame, primary, state);
+        render_chat_drawer(frame, primary, state, hits);
     } else {
         let main = Rect::new(
             chunks[1].x,
@@ -368,17 +436,31 @@ fn render(frame: &mut Frame, state: &mut UiState, chat_enabled: bool) {
             chunks[1].width,
             chunks[3].bottom().saturating_sub(chunks[1].y),
         );
-        let cols = Layout::horizontal([Constraint::Min(58), Constraint::Length(42)]).split(main);
-        let left = Layout::vertical([
-            Constraint::Min(6),
-            Constraint::Length(1),
-            Constraint::Length(8),
-        ])
-        .split(cols[0]);
-        render_body(frame, left[0], state);
-        render_activity(frame, left[1], state);
-        render_detail(frame, left[2], state);
-        render_chat_drawer(frame, cols[1], state);
+        if main.width <= 42 {
+            let cols = Layout::horizontal([Constraint::Min(1), Constraint::Length(1)]).split(main);
+            render_body(frame, cols[0], state);
+            render_chat_drawer(frame, cols[1], state, hits);
+            hits.scan = Some(cols[0]);
+        } else {
+            let chat_width = chat_pane_width(main.width);
+            let cols = Layout::horizontal([
+                Constraint::Min(40),
+                Constraint::Length(2),
+                Constraint::Length(chat_width),
+            ])
+            .split(main);
+            let left = Layout::vertical([
+                Constraint::Min(6),
+                Constraint::Length(1),
+                Constraint::Length(8),
+            ])
+            .split(cols[0]);
+            render_body(frame, left[0], state);
+            render_activity(frame, left[1], state);
+            render_detail(frame, left[2], state);
+            render_chat_drawer(frame, cols[2], state, hits);
+            hits.scan = Some(cols[0]);
+        }
     }
     render_keys(
         frame,
@@ -386,9 +468,13 @@ fn render(frame: &mut Frame, state: &mut UiState, chat_enabled: bool) {
         state.popup_open,
         state.scan_done,
         &state.theme,
-        chat_enabled.then_some(state.chat.drawer),
+        chat_enabled.then_some(state.chat.focus),
     );
 
+    if state.popup_open || state.provider_popup_open {
+        *hits = ChatHitRegions::default();
+        state.chat.proposal_review_complete = false;
+    }
     if state.popup_open {
         render_popup(frame, area, &state.popup, state.scan_done, &state.theme);
     }
@@ -400,6 +486,9 @@ fn render(frame: &mut Frame, state: &mut UiState, chat_enabled: bool) {
             &state.profiles,
             &state.theme,
         );
+    }
+    if !state.popup_open && !state.provider_popup_open {
+        hits.layout_valid = true;
     }
 }
 
@@ -420,8 +509,81 @@ fn send_chat(state: &mut UiState, channels: &mut ChatUiChannels, command: ChatCo
     }
 }
 
-/// Routes only Chat-owned keys. Returning false intentionally permits the
-/// existing scan Escape behavior once chat has safely collapsed.
+/// Mouse routing uses only regions produced by the latest render. Commands are
+/// intentionally `try_send` through the same guarded path as keyboard input.
+pub fn handle_chat_mouse(
+    state: &mut UiState,
+    mouse: MouseEvent,
+    hits: &mut ChatHitRegions,
+    channels: &mut ChatUiChannels,
+) -> bool {
+    let (x, y) = (mouse.column, mouse.row);
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            if ChatHitRegions::contains(hits.scan, x, y) {
+                state.chat.focus = ChatFocus::Scan;
+                return true;
+            }
+            if ChatHitRegions::contains(hits.confirm, x, y) {
+                if hits.layout_valid
+                    && state.chat.proposal_review_complete
+                    && !state.chat.is_current_confirming()
+                    && hits.proposal_id == state.chat.current_proposal().map(|p| p.proposal_id)
+                {
+                    if let Some(proposal) = state.chat.current_proposal() {
+                        let id = proposal.proposal_id;
+                        if send_chat(state, channels, ChatCommand::Confirm { proposal_id: id }) {
+                            state.chat.mark_confirming(id);
+                            state.chat.status = "Confirming…".to_string();
+                            invalidate_chat_layout(state, hits);
+                        }
+                    }
+                }
+                return true;
+            }
+            if ChatHitRegions::contains(hits.reject, x, y) {
+                if hits.layout_valid
+                    && !state.chat.is_current_confirming()
+                    && hits.proposal_id == state.chat.current_proposal().map(|p| p.proposal_id)
+                {
+                    if let Some(proposal) = state.chat.current_proposal() {
+                        let id = proposal.proposal_id;
+                        if send_chat(state, channels, ChatCommand::Reject { proposal_id: id }) {
+                            state.chat.take_current_proposal();
+                            state.chat.status = "Proposal rejected".to_string();
+                            state.chat.push("You", "Proposal rejected".to_string());
+                            invalidate_chat_layout(state, hits);
+                        }
+                    }
+                }
+                return true;
+            }
+            if ChatHitRegions::contains(hits.chat, x, y)
+                || ChatHitRegions::contains(hits.input, x, y)
+            {
+                state.chat.focus = ChatFocus::Chat;
+                return true;
+            }
+            false
+        }
+        MouseEventKind::ScrollUp if ChatHitRegions::contains(hits.transcript, x, y) => {
+            state.chat.transcript_scroll = state
+                .chat
+                .transcript_scroll
+                .saturating_add(1)
+                .min(hits.transcript_max_scroll);
+            true
+        }
+        MouseEventKind::ScrollDown if ChatHitRegions::contains(hits.transcript, x, y) => {
+            state.chat.transcript_scroll = state.chat.transcript_scroll.saturating_sub(1);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Routes only Chat-owned keys. Scan focus deliberately leaves scan shortcuts
+/// alone; Chat focus consumes editing keys so text never triggers navigation.
 pub fn handle_chat_key(
     state: &mut UiState,
     key: KeyEvent,
@@ -436,17 +598,19 @@ pub fn handle_chat_key(
         return false;
     }
     match key.code {
-        KeyCode::Char('c') if key.modifiers.is_empty() => {
-            state.chat.drawer = match state.chat.drawer {
-                ChatDrawerState::Collapsed => ChatDrawerState::ExpandedFocused,
-                ChatDrawerState::ExpandedUnfocused => ChatDrawerState::ExpandedFocused,
-                ChatDrawerState::ExpandedFocused => ChatDrawerState::Collapsed,
+        KeyCode::Tab => {
+            state.chat.focus = match state.chat.focus {
+                ChatFocus::Scan => ChatFocus::Chat,
+                ChatFocus::Chat => ChatFocus::Scan,
             };
             true
         }
+        KeyCode::Char('c') if key.modifiers.is_empty() && state.chat.focus == ChatFocus::Scan => {
+            state.chat.focus = ChatFocus::Chat;
+            true
+        }
         KeyCode::Esc
-            if state.chat.drawer != ChatDrawerState::Collapsed
-                && state.chat.current_proposal().is_some() =>
+            if state.chat.focus == ChatFocus::Chat && state.chat.current_proposal().is_some() =>
         {
             if state.chat.is_current_confirming() {
                 state.chat.status = "Confirmation in progress".to_string();
@@ -462,8 +626,7 @@ pub fn handle_chat_key(
             true
         }
         KeyCode::Enter
-            if state.chat.drawer != ChatDrawerState::Collapsed
-                && state.chat.current_proposal().is_some() =>
+            if state.chat.focus == ChatFocus::Chat && state.chat.current_proposal().is_some() =>
         {
             if state.chat.is_current_confirming() {
                 state.chat.feedback = Some("Confirming…".to_string());
@@ -481,19 +644,16 @@ pub fn handle_chat_key(
             }
             true
         }
-        KeyCode::Esc
-            if state.chat.drawer == ChatDrawerState::ExpandedFocused
-                && !state.chat.input.is_empty() =>
-        {
+        KeyCode::Esc if state.chat.focus == ChatFocus::Chat && !state.chat.input.is_empty() => {
             state.chat.clear_input();
             state.chat.feedback = None;
             true
         }
-        KeyCode::Esc if state.chat.drawer != ChatDrawerState::Collapsed => {
-            state.chat.drawer = ChatDrawerState::Collapsed;
+        KeyCode::Esc if state.chat.focus == ChatFocus::Chat => {
+            state.chat.focus = ChatFocus::Scan;
             true
         }
-        KeyCode::Enter if state.chat.drawer == ChatDrawerState::ExpandedFocused => {
+        KeyCode::Enter if state.chat.focus == ChatFocus::Chat => {
             let text = state.chat.input.trim().to_string();
             if text.is_empty() {
                 state.chat.feedback = Some("Type a question first".to_string());
@@ -508,18 +668,18 @@ pub fn handle_chat_key(
                     text: text.clone(),
                 },
             ) {
-                state.chat.push("YOU", text);
+                state.chat.push("You", text);
                 state.chat.clear_input();
                 state.chat.queued += 1;
                 state.chat.status = "Sending…".to_string();
             }
             true
         }
-        KeyCode::Backspace if state.chat.drawer == ChatDrawerState::ExpandedFocused => {
+        KeyCode::Backspace if state.chat.focus == ChatFocus::Chat => {
             state.chat.backspace();
             true
         }
-        KeyCode::Left if state.chat.drawer == ChatDrawerState::ExpandedFocused => {
+        KeyCode::Left if state.chat.focus == ChatFocus::Chat => {
             if state.chat.cursor > 0 {
                 state.chat.cursor = state.chat.input[..state.chat.cursor]
                     .char_indices()
@@ -529,7 +689,7 @@ pub fn handle_chat_key(
             }
             true
         }
-        KeyCode::Right if state.chat.drawer == ChatDrawerState::ExpandedFocused => {
+        KeyCode::Right if state.chat.focus == ChatFocus::Chat => {
             if state.chat.cursor < state.chat.input.len() {
                 state.chat.cursor += state.chat.input[state.chat.cursor..]
                     .chars()
@@ -540,19 +700,74 @@ pub fn handle_chat_key(
             true
         }
         KeyCode::Char(ch)
-            if state.chat.drawer == ChatDrawerState::ExpandedFocused
+            if state.chat.focus == ChatFocus::Chat
                 && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT) =>
         {
             state.chat.insert_text(&ch.to_string());
             true
         }
+        _ if state.chat.focus == ChatFocus::Chat => true,
         _ => false,
     }
 }
 
-/// Whether the expanded chat drawer should replace the dense scan panes.
-pub fn chat_uses_primary_pane(width: u16, drawer: ChatDrawerState) -> bool {
-    width < CHAT_NARROW_WIDTH && drawer != ChatDrawerState::Collapsed
+/// At narrow widths the focused pane gets the work area, while Chat remains
+/// visible beside Scan when scan navigation is active.
+pub fn chat_uses_primary_pane(width: u16, focus: ChatFocus) -> bool {
+    width < CHAT_NARROW_WIDTH && focus == ChatFocus::Chat
+}
+
+/// Chat occupies about 43% on ordinary terminals, capped to protect scan work.
+pub fn chat_pane_width(width: u16) -> u16 {
+    ((width as u32 * 43 / 100) as u16)
+        .clamp(38, 56)
+        .min(width.saturating_sub(42))
+}
+
+fn cell_width(text: &str) -> usize {
+    text.chars()
+        .map(|ch| if ch.is_ascii() { 1 } else { 2 })
+        .sum()
+}
+
+/// Rows as rendered: sender prefix occupies the first row and continuations
+/// align under message text. This mirrors the transcript paragraph width.
+pub fn transcript_rows(
+    entries: &std::collections::VecDeque<crate::tui::ChatTranscriptEntry>,
+    width: u16,
+) -> Vec<String> {
+    let width = width.max(1) as usize;
+    let mut rows = Vec::new();
+    for entry in entries {
+        let (label, prefix) = match entry.label.as_str() {
+            "You" | "YOU" => ("You", "› "),
+            "Zentra" | "ZENTRA" => ("Zentra", ""),
+            "CHAT ERROR" => ("Error", "! "),
+            _ => ("Status", "· "),
+        };
+        let first = format!("{prefix}{label}  ");
+        let indent = " ".repeat(cell_width(&first).min(width.saturating_sub(1)));
+        for (index, source) in sanitize_chat_text(&entry.text).split('\n').enumerate() {
+            let mut line = if index == 0 {
+                first.clone()
+            } else {
+                indent.clone()
+            };
+            let mut used = cell_width(&line);
+            for ch in source.chars() {
+                let cells = if ch.is_ascii() { 1 } else { 2 };
+                if used + cells > width && used > 0 {
+                    rows.push(line);
+                    line = indent.clone();
+                    used = cell_width(&line);
+                }
+                line.push(ch);
+                used += cells;
+            }
+            rows.push(line);
+        }
+    }
+    rows
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -609,7 +824,13 @@ pub fn proposal_review(area: Rect, proposal: &ActionProposal) -> ProposalReview 
     }
 }
 
-fn render_chat_drawer(frame: &mut Frame, area: Rect, state: &mut UiState) {
+fn render_chat_drawer(
+    frame: &mut Frame,
+    area: Rect,
+    state: &mut UiState,
+    hits: &mut ChatHitRegions,
+) {
+    hits.chat = Some(area);
     let proposal = state.chat.current_proposal().cloned();
     let fixed_rows = 10u16; // status, transcript floor, input, hint
     let available_review = area.height.saturating_sub(fixed_rows);
@@ -620,10 +841,11 @@ fn render_chat_drawer(frame: &mut Frame, area: Rect, state: &mut UiState) {
         )
     });
     state.chat.proposal_review_complete = review.as_ref().is_some_and(|review| review.complete);
-    let chat = &state.chat;
+    let chat = state.chat.clone();
     if area.width < 18 || area.height < 9 {
+        state.chat.proposal_review_complete = false;
         frame.render_widget(
-            Paragraph::new("CHAT\nResize terminal for conversation")
+            Paragraph::new(if area.width <= 1 { "C" } else { "Chat\nResize" })
                 .block(Block::default().borders(Borders::ALL).title(" CHAT ")),
             area,
         );
@@ -646,7 +868,7 @@ fn render_chat_drawer(frame: &mut Frame, area: Rect, state: &mut UiState) {
         Constraint::Length(1),
     ])
     .split(area);
-    let focus = if chat.drawer == ChatDrawerState::ExpandedFocused {
+    let focus = if chat.focus == ChatFocus::Chat {
         "FOCUSED"
     } else {
         "VIEW"
@@ -666,22 +888,28 @@ fn render_chat_drawer(frame: &mut Frame, area: Rect, state: &mut UiState) {
             .style(Style::default().fg(state.theme.text)),
         rows[0],
     );
-    let transcript: Vec<Line> = chat
-        .transcript
+    let visible = rows[1].height.saturating_sub(2) as usize;
+    let all_transcript_rows = transcript_rows(&chat.transcript, rows[1].width.saturating_sub(2));
+    let max_scroll = all_transcript_rows.len().saturating_sub(visible);
+    let scroll = state.chat.transcript_scroll.min(max_scroll);
+    state.chat.transcript_scroll = scroll;
+    let end = all_transcript_rows.len().saturating_sub(scroll);
+    let start = end.saturating_sub(visible);
+    let transcript: Vec<Line> = all_transcript_rows
         .iter()
-        .rev()
-        .take(rows[1].height.saturating_sub(2) as usize)
-        .rev()
-        .map(|entry| {
-            Line::from(vec![
-                Span::styled(
-                    format!("{}  ", entry.label),
-                    Style::default()
-                        .fg(state.theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(&entry.text),
-            ])
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .map(|row| {
+            let color = if row.starts_with("› You") {
+                state.theme.success
+            } else if row.starts_with("Zentra") {
+                state.theme.accent
+            } else if row.starts_with("! Error") {
+                state.theme.error
+            } else {
+                state.theme.warning
+            };
+            Line::from(Span::styled(row, Style::default().fg(color)))
         })
         .collect();
     frame.render_widget(
@@ -695,6 +923,8 @@ fn render_chat_drawer(frame: &mut Frame, area: Rect, state: &mut UiState) {
             ),
         rows[1],
     );
+    hits.transcript = Some(rows[1]);
+    hits.transcript_max_scroll = max_scroll;
     if proposal_height > 0 {
         if let Some(review) = &review {
             let content = if review.complete {
@@ -719,30 +949,83 @@ fn render_chat_drawer(frame: &mut Frame, area: Rect, state: &mut UiState) {
             );
         }
     }
-    let prompt = if chat.drawer == ChatDrawerState::ExpandedFocused {
+    let prompt = if chat.focus == ChatFocus::Chat {
         sanitize_chat_text(&format!("> {}", chat.input))
     } else {
-        "Press c to ask about this scan".to_string()
+        "Press Tab or c to ask about this scan".to_string()
     };
     frame.render_widget(
         Paragraph::new(prompt).block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(" ASK ")
-                .border_style(Style::default().fg(
-                    if chat.drawer == ChatDrawerState::ExpandedFocused {
-                        state.theme.accent
-                    } else {
-                        state.theme.border
-                    },
-                )),
+                .border_style(Style::default().fg(if chat.focus == ChatFocus::Chat {
+                    state.theme.accent
+                } else {
+                    state.theme.border
+                })),
         ),
         rows[3],
     );
+    hits.input = Some(rows[3]);
+    if proposal_height > 0 {
+        let confirming = chat.is_current_confirming();
+        let controls = Rect::new(
+            rows[2].x.saturating_add(1),
+            rows[2].bottom().saturating_sub(1),
+            rows[2].width.saturating_sub(2),
+            1,
+        );
+        const CONFIRM: &str = "[ Confirm ]";
+        const REJECT: &str = "[ Reject ]";
+        let controls_text = if confirming {
+            "Confirming…".to_string()
+        } else if state.chat.proposal_review_complete {
+            format!("{CONFIRM}   {REJECT}")
+        } else {
+            format!("Confirm disabled   {REJECT}")
+        };
+        frame.render_widget(
+            Paragraph::new(controls_text).style(Style::default().fg(if confirming {
+                state.theme.text_dim
+            } else {
+                state.theme.warning
+            })),
+            controls,
+        );
+        if !confirming
+            && state.chat.proposal_review_complete
+            && controls.width >= cell_width(CONFIRM) as u16
+        {
+            hits.confirm = Some(Rect::new(
+                controls.x,
+                controls.y,
+                cell_width(CONFIRM) as u16,
+                1,
+            ));
+            hits.proposal_id = chat.current_proposal().map(|proposal| proposal.proposal_id);
+        }
+        let reject_x = controls
+            .x
+            .saturating_add(if state.chat.proposal_review_complete {
+                (cell_width(CONFIRM) + 3) as u16
+            } else {
+                (cell_width("Confirm disabled") + 3) as u16
+            });
+        if !confirming && reject_x.saturating_add(cell_width(REJECT) as u16) <= controls.right() {
+            hits.reject = Some(Rect::new(
+                reject_x,
+                controls.y,
+                cell_width(REJECT) as u16,
+                1,
+            ));
+            hits.proposal_id = chat.current_proposal().map(|proposal| proposal.proposal_id);
+        }
+    }
     let hint = chat
         .feedback
         .as_deref()
-        .unwrap_or("c focus/collapse · Enter send · Esc clear");
+        .unwrap_or("Tab switch pane · Enter send · Esc clear/back");
     frame.render_widget(
         Paragraph::new(hint).style(Style::default().fg(state.theme.text_dim)),
         rows[4],
@@ -1175,16 +1458,14 @@ fn render_keys(
     popup_open: bool,
     scan_done: bool,
     theme: &crate::tui::theme::Theme,
-    chat: Option<ChatDrawerState>,
+    chat: Option<ChatFocus>,
 ) {
     let text = if popup_open {
         " ↑↓ navigate · Enter select · Esc close"
-    } else if let Some(ChatDrawerState::ExpandedFocused) = chat {
-        " Chat focused · Enter send/confirm · Esc clear · c collapse"
-    } else if let Some(ChatDrawerState::ExpandedUnfocused) = chat {
-        " ↑↓ select finding · c focus chat · Esc collapse chat"
+    } else if let Some(ChatFocus::Chat) = chat {
+        " Chat focused · Enter send/confirm · Esc back · Tab scan"
     } else if chat.is_some() {
-        " ↑↓ select finding · c open chat · p menu · q back"
+        " ↑↓ select finding · Tab/c focus chat · p menu · q back"
     } else if scan_done {
         " ↑↓ select finding · p menu · q back"
     } else {
@@ -1306,7 +1587,32 @@ pub fn incremental_banner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::ChatDrawerState;
+    use crate::tui::ChatFocus;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn render_for_test(state: &mut UiState, width: u16, height: u16) -> (ChatHitRegions, String) {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut hits = ChatHitRegions::default();
+        terminal
+            .draw(|frame| render(frame, state, true, &mut hits))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let text = buffer.content.iter().map(|cell| cell.symbol()).collect();
+        (hits, text)
+    }
+
+    fn test_proposal() -> ActionProposal {
+        let now = chrono::Utc::now();
+        ActionProposal {
+            proposal_id: uuid::Uuid::new_v4(),
+            request_id: uuid::Uuid::new_v4(),
+            action: ChatAction::prioritize(crate::agent::chat::VulnerabilityCategory::Injection),
+            created_at: now,
+            expires_at: now + chrono::Duration::minutes(1),
+            earliest_boundary: crate::agent::chat::PhaseBoundary::AfterParallel,
+        }
+    }
 
     #[test]
     fn fmt_tokens_abbreviates_as_expected() {
@@ -1321,15 +1627,16 @@ mod tests {
     }
 
     #[test]
-    fn chat_drawer_width_and_c_key_cycle_are_deliberate() {
+    fn chat_focus_width_and_c_key_are_deliberate() {
+        assert!(!chat_uses_primary_pane(
+            CHAT_NARROW_WIDTH - 1,
+            ChatFocus::Scan
+        ));
         assert!(chat_uses_primary_pane(
             CHAT_NARROW_WIDTH - 1,
-            ChatDrawerState::ExpandedUnfocused
+            ChatFocus::Chat
         ));
-        assert!(!chat_uses_primary_pane(
-            CHAT_NARROW_WIDTH,
-            ChatDrawerState::ExpandedUnfocused
-        ));
+        assert!(!chat_uses_primary_pane(CHAT_NARROW_WIDTH, ChatFocus::Scan));
         let mut state = UiState::new(
             vec![],
             "m".into(),
@@ -1351,11 +1658,11 @@ mod tests {
             key(KeyCode::Char('c')),
             Some(&mut channels)
         ));
-        assert_eq!(state.chat.drawer, ChatDrawerState::ExpandedFocused);
+        assert_eq!(state.chat.focus, ChatFocus::Chat);
         handle_chat_key(&mut state, key(KeyCode::Char('c')), Some(&mut channels));
-        assert_eq!(state.chat.drawer, ChatDrawerState::Collapsed);
+        assert_eq!(state.chat.focus, ChatFocus::Chat);
         handle_chat_key(&mut state, key(KeyCode::Char('c')), Some(&mut channels));
-        assert_eq!(state.chat.drawer, ChatDrawerState::ExpandedFocused);
+        assert_eq!(state.chat.focus, ChatFocus::Chat);
     }
 
     #[test]
@@ -1369,7 +1676,7 @@ mod tests {
             String::new(),
             String::new(),
         );
-        state.chat.drawer = ChatDrawerState::ExpandedFocused;
+        state.chat.focus = ChatFocus::Chat;
         state.chat.insert_text("question");
         let (tx, _command_rx) = mpsc::channel(1);
         let (_event_tx, rx) = mpsc::channel(1);
@@ -1388,7 +1695,7 @@ mod tests {
     }
 
     #[test]
-    fn escape_rejects_then_clears_then_collapses_before_scan_fallthrough() {
+    fn escape_rejects_then_clears_then_returns_to_scan_focus() {
         use crate::agent::chat::{
             ActionProposal, ChatAction, PhaseBoundary, VulnerabilityCategory,
         };
@@ -1401,7 +1708,7 @@ mod tests {
             String::new(),
             String::new(),
         );
-        state.chat.drawer = ChatDrawerState::ExpandedFocused;
+        state.chat.focus = ChatFocus::Chat;
         let now = chrono::Utc::now();
         let proposal = ActionProposal {
             proposal_id: uuid::Uuid::new_v4(),
@@ -1428,8 +1735,7 @@ mod tests {
         assert!(handle_chat_key(&mut state, esc, Some(&mut channels)));
         assert!(state.chat.input.is_empty());
         assert!(handle_chat_key(&mut state, esc, Some(&mut channels)));
-        assert_eq!(state.chat.drawer, ChatDrawerState::Collapsed);
-        assert!(!handle_chat_key(&mut state, esc, Some(&mut channels)));
+        assert_eq!(state.chat.focus, ChatFocus::Scan);
     }
 
     #[test]
@@ -1476,7 +1782,7 @@ mod tests {
     }
 
     #[test]
-    fn enter_does_not_confirm_a_collapsed_proposal() {
+    fn enter_does_not_confirm_a_proposal_while_scan_is_focused() {
         use crate::agent::chat::{
             ActionProposal, ChatAction, PhaseBoundary, VulnerabilityCategory,
         };
@@ -1489,7 +1795,7 @@ mod tests {
             String::new(),
             String::new(),
         );
-        state.chat.drawer = ChatDrawerState::Collapsed;
+        state.chat.focus = ChatFocus::Scan;
         let now = chrono::Utc::now();
         state.chat.proposals.push_back(ActionProposal {
             proposal_id: uuid::Uuid::new_v4(),
@@ -1528,7 +1834,7 @@ mod tests {
             String::new(),
             String::new(),
         );
-        state.chat.drawer = ChatDrawerState::ExpandedUnfocused;
+        state.chat.focus = ChatFocus::Chat;
         state.chat.proposal_review_complete = true;
         let now = chrono::Utc::now();
         let proposal = ActionProposal {
@@ -1604,7 +1910,7 @@ mod tests {
             String::new(),
             String::new(),
         );
-        state.chat.drawer = ChatDrawerState::ExpandedFocused;
+        state.chat.focus = ChatFocus::Chat;
         let (tx, _command_rx) = mpsc::channel(1);
         let (_event_tx, event_rx) = mpsc::channel(1);
         let mut channels = ChatUiChannels {
@@ -1668,5 +1974,541 @@ mod tests {
             .collect();
         assert_eq!(text, vec!["first", "second"]);
         drain_chat_events(&mut state, &mut rx); // empty is a safe no-op
+    }
+
+    #[test]
+    fn tab_and_escape_switch_focus_without_hiding_chat_or_leaking_typing() {
+        let mut state = UiState::new(
+            vec![],
+            "m".into(),
+            1,
+            vec![],
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+        let (tx, _commands) = mpsc::channel(1);
+        let (_events, event_rx) = mpsc::channel(1);
+        let mut channels = ChatUiChannels {
+            command_tx: tx,
+            event_rx,
+        };
+        assert!(handle_chat_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            Some(&mut channels)
+        ));
+        assert_eq!(state.chat.focus, ChatFocus::Chat);
+        assert!(handle_chat_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+            Some(&mut channels)
+        ));
+        assert_eq!(state.chat.input, "q");
+        assert!(handle_chat_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            Some(&mut channels)
+        ));
+        assert_eq!(state.chat.focus, ChatFocus::Chat);
+        assert!(state.chat.input.is_empty());
+        assert!(handle_chat_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            Some(&mut channels)
+        ));
+        assert_eq!(state.chat.focus, ChatFocus::Scan);
+    }
+
+    #[test]
+    fn mouse_focus_and_wheel_use_only_fresh_regions() {
+        let mut state = UiState::new(
+            vec![],
+            "m".into(),
+            1,
+            vec![],
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+        state.chat.push("You", "one".into());
+        state.chat.push("Zentra", "two".into());
+        let (tx, _commands) = mpsc::channel(1);
+        let (_events, event_rx) = mpsc::channel(1);
+        let mut channels = ChatUiChannels {
+            command_tx: tx,
+            event_rx,
+        };
+        let mut hits = ChatHitRegions {
+            scan: Some(Rect::new(0, 0, 10, 10)),
+            chat: Some(Rect::new(12, 0, 10, 10)),
+            input: Some(Rect::new(12, 7, 10, 2)),
+            transcript: Some(Rect::new(12, 2, 10, 4)),
+            layout_valid: true,
+            transcript_max_scroll: 1,
+            ..Default::default()
+        };
+        let click = |column, row| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(handle_chat_mouse(
+            &mut state,
+            click(13, 8),
+            &mut hits,
+            &mut channels
+        ));
+        assert_eq!(state.chat.focus, ChatFocus::Chat);
+        let wheel = MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 13,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(handle_chat_mouse(
+            &mut state,
+            wheel,
+            &mut hits,
+            &mut channels
+        ));
+        assert_eq!(state.chat.transcript_scroll, 1);
+        assert!(!handle_chat_mouse(
+            &mut state,
+            click(99, 99),
+            &mut ChatHitRegions::default(),
+            &mut channels
+        ));
+    }
+
+    #[test]
+    fn mouse_proposal_controls_obey_review_and_confirming_guards() {
+        use crate::agent::chat::{PhaseBoundary, VulnerabilityCategory};
+        let mut state = UiState::new(
+            vec![],
+            "m".into(),
+            1,
+            vec![],
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+        let now = chrono::Utc::now();
+        let proposal = ActionProposal {
+            proposal_id: uuid::Uuid::new_v4(),
+            request_id: uuid::Uuid::new_v4(),
+            action: ChatAction::prioritize(VulnerabilityCategory::Injection),
+            created_at: now,
+            expires_at: now + chrono::Duration::minutes(1),
+            earliest_boundary: PhaseBoundary::AfterParallel,
+        };
+        let id = proposal.proposal_id;
+        state.chat.proposals.push_back(proposal);
+        let (tx, mut commands) = mpsc::channel(2);
+        let (_events, event_rx) = mpsc::channel(1);
+        let mut channels = ChatUiChannels {
+            command_tx: tx,
+            event_rx,
+        };
+        let mut hits = ChatHitRegions {
+            confirm: Some(Rect::new(1, 1, 4, 1)),
+            reject: Some(Rect::new(6, 1, 4, 1)),
+            layout_valid: true,
+            proposal_id: Some(id),
+            ..Default::default()
+        };
+        let click = |column| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        };
+        handle_chat_mouse(&mut state, click(2), &mut hits, &mut channels);
+        assert!(commands.try_recv().is_err()); // clipped review cannot confirm
+        state.chat.proposal_review_complete = true;
+        handle_chat_mouse(&mut state, click(2), &mut hits, &mut channels);
+        assert!(
+            matches!(commands.try_recv(), Ok(ChatCommand::Confirm { proposal_id }) if proposal_id == id)
+        );
+        handle_chat_mouse(&mut state, click(7), &mut hits, &mut channels);
+        assert!(commands.try_recv().is_err()); // confirming also disables reject
+    }
+
+    #[test]
+    fn rendered_controls_have_exact_non_overlapping_cell_hitboxes() {
+        let mut base = UiState::new(
+            vec![],
+            "m".into(),
+            1,
+            vec![],
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+        base.chat.focus = ChatFocus::Chat;
+        base.chat.proposals.push_back(test_proposal());
+        let (hits, buffer) = render_for_test(&mut base, 140, 32);
+        let confirm = hits.confirm.expect("complete review renders Confirm");
+        let reject = hits.reject.expect("Reject is rendered");
+        let proposal = base.chat.current_proposal().unwrap().clone();
+        assert!(buffer.contains("[ Confirm ]") && buffer.contains("[ Reject ]"));
+        assert!(confirm.right() <= reject.x);
+        for x in confirm.x..confirm.right() {
+            let mut state = UiState::new(
+                vec![],
+                "m".into(),
+                1,
+                vec![],
+                String::new(),
+                String::new(),
+                String::new(),
+            );
+            state.chat.focus = ChatFocus::Chat;
+            state.chat.proposals.push_back(proposal.clone());
+            state.chat.proposal_review_complete = true;
+            let (tx, mut commands) = mpsc::channel(1);
+            let (_events, event_rx) = mpsc::channel(1);
+            let mut channels = ChatUiChannels {
+                command_tx: tx,
+                event_rx,
+            };
+            let mut click_hits = hits;
+            handle_chat_mouse(
+                &mut state,
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: x,
+                    row: confirm.y,
+                    modifiers: KeyModifiers::NONE,
+                },
+                &mut click_hits,
+                &mut channels,
+            );
+            assert!(
+                matches!(commands.try_recv(), Ok(ChatCommand::Confirm { .. })),
+                "confirm cell {x}"
+            );
+        }
+        for x in reject.x..reject.right() {
+            let mut state = UiState::new(
+                vec![],
+                "m".into(),
+                1,
+                vec![],
+                String::new(),
+                String::new(),
+                String::new(),
+            );
+            state.chat.focus = ChatFocus::Chat;
+            state.chat.proposals.push_back(proposal.clone());
+            state.chat.proposal_review_complete = true;
+            let (tx, mut commands) = mpsc::channel(1);
+            let (_events, event_rx) = mpsc::channel(1);
+            let mut channels = ChatUiChannels {
+                command_tx: tx,
+                event_rx,
+            };
+            let mut click_hits = hits;
+            handle_chat_mouse(
+                &mut state,
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: x,
+                    row: reject.y,
+                    modifiers: KeyModifiers::NONE,
+                },
+                &mut click_hits,
+                &mut channels,
+            );
+            assert!(
+                matches!(commands.try_recv(), Ok(ChatCommand::Reject { .. })),
+                "reject cell {x}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_keeps_chat_visible_and_hit_regions_fresh_at_tiny_sizes() {
+        for width in 1..=60 {
+            let mut state = UiState::new(
+                vec![],
+                "m".into(),
+                1,
+                vec![],
+                String::new(),
+                String::new(),
+                String::new(),
+            );
+            let (hits, buffer) = render_for_test(&mut state, width, 18);
+            assert!(hits.chat.is_some(), "chat rail at width {width}");
+            assert!(!buffer.trim().is_empty());
+        }
+        let mut state = UiState::new(
+            vec![],
+            "m".into(),
+            1,
+            vec![],
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+        state.chat.proposals.push_back(test_proposal());
+        let (wide, _) = render_for_test(&mut state, 140, 32);
+        assert!(wide.confirm.is_some());
+        let (tiny, _) = render_for_test(&mut state, 8, 8);
+        assert!(tiny.confirm.is_none() && tiny.reject.is_none() && tiny.input.is_none());
+    }
+
+    #[test]
+    fn rendered_transcript_wraps_by_rows_and_wheel_clamps_to_viewport() {
+        let mut state = UiState::new(
+            vec![],
+            "m".into(),
+            1,
+            vec![],
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+        state.chat.push(
+            "You",
+            "a very long answer that must wrap across rendered rows ".repeat(8),
+        );
+        state.chat.push(
+            "Zentra",
+            "another long reply that must also wrap across the viewport ".repeat(8),
+        );
+        let rows = transcript_rows(&state.chat.transcript, 12);
+        assert!(rows.len() > 2);
+        let (mut hits, buffer) = render_for_test(&mut state, 110, 18);
+        assert!(hits.transcript_max_scroll > 0);
+        assert!(buffer.contains("LIVE CONTEXT"));
+        let (tx, _commands) = mpsc::channel(1);
+        let (_events, event_rx) = mpsc::channel(1);
+        let mut channels = ChatUiChannels {
+            command_tx: tx,
+            event_rx,
+        };
+        let area = hits.transcript.unwrap();
+        for _ in 0..100 {
+            handle_chat_mouse(
+                &mut state,
+                MouseEvent {
+                    kind: MouseEventKind::ScrollUp,
+                    column: area.x,
+                    row: area.y,
+                    modifiers: KeyModifiers::NONE,
+                },
+                &mut hits,
+                &mut channels,
+            );
+        }
+        assert_eq!(state.chat.transcript_scroll, hits.transcript_max_scroll);
+    }
+
+    #[test]
+    fn test_backend_renders_sender_labels_and_permanent_chat_title() {
+        let mut state = UiState::new(
+            vec![],
+            "m".into(),
+            1,
+            vec![],
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+        state.chat.push("You", "question".into());
+        state.chat.push("Zentra", "answer".into());
+        state.chat.push("Status", "queued".into());
+        let (hits, buffer) = render_for_test(&mut state, 140, 32);
+        assert!(hits.chat.is_some() && buffer.contains("CHAT"));
+        assert!(buffer.contains("You") && buffer.contains("Zentra") && buffer.contains("Status"));
+    }
+
+    #[test]
+    fn resize_invalidation_blocks_stale_confirmation_and_c_types_in_chat() {
+        let mut state = UiState::new(
+            vec![],
+            "m".into(),
+            1,
+            vec![],
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+        state.chat.focus = ChatFocus::Chat;
+        state.chat.proposals.push_back(test_proposal());
+        let (mut hits, _) = render_for_test(&mut state, 140, 32);
+        assert!(state.chat.proposal_review_complete && hits.confirm.is_some());
+        invalidate_chat_layout(&mut state, &mut hits);
+        let (tx, mut commands) = mpsc::channel(1);
+        let (_events, event_rx) = mpsc::channel(1);
+        let mut channels = ChatUiChannels {
+            command_tx: tx,
+            event_rx,
+        };
+        assert!(handle_chat_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            Some(&mut channels)
+        ));
+        assert!(commands.try_recv().is_err());
+        assert!(!handle_chat_mouse(
+            &mut state,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 1,
+                row: 1,
+                modifiers: KeyModifiers::NONE
+            },
+            &mut hits,
+            &mut channels
+        ));
+        assert!(handle_chat_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+            Some(&mut channels)
+        ));
+        assert_eq!(state.chat.input, "c");
+    }
+
+    #[test]
+    fn reject_double_click_cannot_touch_promoted_fifo_proposal() {
+        let mut state = UiState::new(
+            vec![],
+            "m".into(),
+            1,
+            vec![],
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+        state.chat.focus = ChatFocus::Chat;
+        let first = test_proposal();
+        let first_id = first.proposal_id;
+        let second = test_proposal();
+        let second_id = second.proposal_id;
+        state.chat.proposals.push_back(first);
+        state.chat.proposals.push_back(second);
+        let (mut hits, _) = render_for_test(&mut state, 140, 32);
+        let reject = hits.reject.unwrap();
+        let (tx, mut commands) = mpsc::channel(2);
+        let (_events, event_rx) = mpsc::channel(1);
+        let mut channels = ChatUiChannels {
+            command_tx: tx,
+            event_rx,
+        };
+        let click = || MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: reject.x,
+            row: reject.y,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert!(handle_chat_mouse(
+            &mut state,
+            click(),
+            &mut hits,
+            &mut channels
+        ));
+        assert!(
+            matches!(commands.try_recv(), Ok(ChatCommand::Reject { proposal_id }) if proposal_id == first_id)
+        );
+        assert_eq!(
+            state.chat.current_proposal().unwrap().proposal_id,
+            second_id
+        );
+        assert!(!handle_chat_mouse(
+            &mut state,
+            click(),
+            &mut hits,
+            &mut channels
+        ));
+        assert!(commands.try_recv().is_err());
+        assert_eq!(
+            state.chat.current_proposal().unwrap().proposal_id,
+            second_id
+        );
+    }
+
+    #[test]
+    fn viewport_growth_persists_scroll_clamp_before_scroll_down() {
+        let mut state = UiState::new(
+            vec![],
+            "m".into(),
+            1,
+            vec![],
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+        state
+            .chat
+            .push("Zentra", "wrapped transcript row ".repeat(30));
+        state.chat.focus = ChatFocus::Chat;
+        let (mut small, _) = render_for_test(&mut state, 80, 24);
+        let area = small.transcript.unwrap();
+        let (tx, _commands) = mpsc::channel(1);
+        let (_events, event_rx) = mpsc::channel(1);
+        let mut channels = ChatUiChannels {
+            command_tx: tx,
+            event_rx,
+        };
+        for _ in 0..100 {
+            let _ = handle_chat_mouse(
+                &mut state,
+                MouseEvent {
+                    kind: MouseEventKind::ScrollUp,
+                    column: area.x,
+                    row: area.y,
+                    modifiers: KeyModifiers::NONE,
+                },
+                &mut small,
+                &mut channels,
+            );
+        }
+        let old = state.chat.transcript_scroll;
+        let (mut grown, _) = render_for_test(&mut state, 140, 40);
+        assert!(state.chat.transcript_scroll <= grown.transcript_max_scroll);
+        assert!(state.chat.transcript_scroll <= old);
+        let grown_area = grown.transcript.unwrap();
+        let before = state.chat.transcript_scroll;
+        let _ = handle_chat_mouse(
+            &mut state,
+            MouseEvent {
+                kind: MouseEventKind::ScrollDown,
+                column: grown_area.x,
+                row: grown_area.y,
+                modifiers: KeyModifiers::NONE,
+            },
+            &mut grown,
+            &mut channels,
+        );
+        assert_eq!(state.chat.transcript_scroll, before.saturating_sub(1));
+    }
+
+    #[test]
+    fn tiny_width_popups_render_after_compact_chat_layout() {
+        for provider in [false, true] {
+            let mut state = UiState::new(
+                vec![],
+                "m".into(),
+                1,
+                vec!["profile".into()],
+                String::new(),
+                String::new(),
+                String::new(),
+            );
+            if provider {
+                state.provider_popup_open = true;
+            } else {
+                state.popup_open = true;
+            }
+            state.chat.proposal_review_complete = true;
+            let (hits, buffer) = render_for_test(&mut state, 20, 18);
+            assert!(!hits.layout_valid && hits.chat.is_none());
+            assert!(!state.chat.proposal_review_complete);
+            assert!(!buffer.trim().is_empty());
+        }
     }
 }

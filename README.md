@@ -112,19 +112,22 @@ is stored at `.zentra/checkpoint.json`; a successful complete scan removes it.
 
 ### Interactive scan Chat
 
-Local `zentra scan` runs include a read-only Chat drawer. It starts visible and
-expanded: on a normal terminal it docks beside the scan panes; below the
-supported width it becomes the primary pane.
+Local `zentra scan` runs include a permanent read-only Chat pane. It starts
+Scan-focused and remains visible for the entire Chat-enabled scan.
 
-- Press `c` to focus the expanded drawer, `c` again to collapse it, or `c` from
-  collapsed to open and focus it. `Enter` sends focused input. For a proposed
-   action, `Enter` confirms only after the entire typed proposal is visibly
-   reviewable, and never while its confirmation is already in progress. `Esc`
-   rejects a proposal, then clears focused input, then collapses Chat before it
-   can fall through to normal scan navigation; it does not interrupt a
-   confirmation already in progress. Once Chat is collapsed with no active
-   interaction, `Esc` resumes normal scan exit handling. `Ctrl+C` always aborts
-   the scan.
+- `Tab` switches between Scan and Chat. From Scan, `c` focuses Chat; while Chat
+  is focused, `c` is normal input. `Enter` sends focused input. For a proposed
+  action, `Enter` confirms only after the entire typed proposal is visibly
+  reviewable, and never while its confirmation is already in progress. `Esc`
+  rejects a proposal, then clears focused input, then returns focus to Scan; it
+  never hides Chat and does not interrupt a confirmation in progress. `Ctrl+C`
+  always aborts the scan.
+- On normal terminals Chat is a dedicated right pane beside Scan. On narrow
+  terminals, Chat focus uses the primary pane; Scan focus keeps a compact,
+  clickable Chat rail. You can click Scan, Chat, or the input to focus, scroll
+  the Chat transcript, and use its guarded Confirm/Reject controls. Those
+  controls require the same fully visible action review; transcript labels show
+  `You`, `Zentra`, and status/error messages.
 - Chat answers bounded, redacted scan and repository questions with a
   read-only profile (`list_files`, `read_file`, `grep_code`, and bounded Git
   inspection). It can propose typed focus/rerun or vulnerability-category

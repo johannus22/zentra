@@ -15,13 +15,12 @@ pub const MAX_CHAT_TEXT_BYTES: usize = crate::agent::chat::MAX_CHAT_TEXT_BYTES;
 pub const MAX_PENDING_CHAT_ACTIONS: usize =
     crate::agent::chat_coordinator::MAX_PENDING_CHAT_ACTIONS;
 
-/// The drawer is deliberately independent from scan navigation.  An expanded
-/// drawer starts unfocused so existing finding navigation remains available.
+/// Chat is always present when the scan has a chat channel. Focus determines
+/// whether keys belong to scan navigation or the conversation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChatDrawerState {
-    ExpandedUnfocused,
-    ExpandedFocused,
-    Collapsed,
+pub enum ChatFocus {
+    Scan,
+    Chat,
 }
 
 #[cfg(test)]
@@ -66,7 +65,7 @@ mod chat_tests {
                 || state.chat.transcript[0].text.contains("***")
         );
         for i in 0..(MAX_CHAT_TRANSCRIPT + 3) {
-            state.chat.push("Z", i.to_string());
+            state.chat.push("Zentra", i.to_string());
         }
         assert_eq!(state.chat.transcript.len(), MAX_CHAT_TRANSCRIPT);
     }
@@ -88,14 +87,13 @@ mod chat_tests {
     #[test]
     fn proposals_auto_expand_fifo_and_unrelated_errors_do_not_clear_them() {
         let mut state = state();
-        state.chat.drawer = ChatDrawerState::Collapsed;
         let first = proposal();
         let first_id = first.proposal_id;
         let second = proposal();
         let second_id = second.proposal_id;
         state.apply_chat_event(ChatEvent::Proposal { proposal: first });
         state.apply_chat_event(ChatEvent::Proposal { proposal: second });
-        assert_eq!(state.chat.drawer, ChatDrawerState::ExpandedUnfocused);
+        assert_eq!(state.chat.focus, ChatFocus::Scan);
         assert_eq!(state.chat.current_proposal().unwrap().proposal_id, first_id);
         state.apply_chat_event(ChatEvent::Error {
             request_id: None,
@@ -187,6 +185,21 @@ mod chat_tests {
         assert!(chat.insert_text(&"a".repeat(MAX_CHAT_TEXT_BYTES)));
         assert!(chat.input.len() <= MAX_CHAT_TEXT_BYTES);
     }
+
+    #[test]
+    fn coordinator_lifecycle_is_status_not_user_attribution() {
+        let mut state = state();
+        state.apply_chat_event(ChatEvent::RequestQueued {
+            request_id: uuid::Uuid::new_v4(),
+            position: 1,
+        });
+        state.apply_chat_event(ChatEvent::Answer {
+            request_id: uuid::Uuid::new_v4(),
+            text: "reply".into(),
+        });
+        assert_eq!(state.chat.transcript[0].label, "Status");
+        assert_eq!(state.chat.transcript[1].label, "Zentra");
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,7 +210,7 @@ pub struct ChatTranscriptEntry {
 
 #[derive(Debug, Clone)]
 pub struct ChatUiState {
-    pub drawer: ChatDrawerState,
+    pub focus: ChatFocus,
     pub input: String,
     /// A UTF-8 byte offset, always kept on a character boundary.
     pub cursor: usize,
@@ -213,12 +226,14 @@ pub struct ChatUiState {
     pub proposal_review_complete: bool,
     pub status: String,
     pub feedback: Option<String>,
+    /// Number of newest transcript rows held below the viewport.
+    pub transcript_scroll: usize,
 }
 
 impl Default for ChatUiState {
     fn default() -> Self {
         Self {
-            drawer: ChatDrawerState::ExpandedUnfocused,
+            focus: ChatFocus::Scan,
             input: String::new(),
             cursor: 0,
             transcript: VecDeque::new(),
@@ -230,6 +245,7 @@ impl Default for ChatUiState {
             proposal_review_complete: false,
             status: "Ready".to_string(),
             feedback: None,
+            transcript_scroll: 0,
         }
     }
 }
@@ -319,6 +335,7 @@ impl ChatUiState {
         while self.transcript.len() > MAX_CHAT_TRANSCRIPT {
             self.transcript.pop_front();
         }
+        self.transcript_scroll = 0;
     }
 }
 
@@ -639,7 +656,7 @@ impl UiState {
                 self.chat.queued = self.chat.queued.max(position);
                 self.chat.status = format!("Queued · #{position}");
                 self.chat
-                    .push("YOU", format!("Request {request_id} queued"));
+                    .push("Status", format!("Request {request_id} queued"));
             }
             ChatEvent::Answer {
                 request_id: _,
@@ -647,16 +664,13 @@ impl UiState {
             } => {
                 self.chat.queued = self.chat.queued.saturating_sub(1);
                 self.chat.status = "Answered".to_string();
-                self.chat.push("ZENTRA", text);
+                self.chat.push("Zentra", text);
             }
             ChatEvent::Proposal { proposal } => {
                 self.chat.queued = self.chat.queued.saturating_sub(1);
                 self.chat.status = "Proposal ready — review locally".to_string();
                 if self.chat.proposals.len() < MAX_PENDING_CHAT_ACTIONS {
                     self.chat.proposals.push_back(proposal);
-                    if self.chat.drawer == ChatDrawerState::Collapsed {
-                        self.chat.drawer = ChatDrawerState::ExpandedUnfocused;
-                    }
                 } else {
                     self.chat
                         .push("CHAT ERROR", "Proposal queue is full".to_string());
@@ -690,7 +704,7 @@ impl UiState {
                 self.remove_pending_proposal(proposal_id);
                 self.chat.status = format!("Applied at {boundary:?}");
                 self.chat
-                    .push("ZENTRA", format!("Proposal applied at {boundary:?}"));
+                    .push("Status", format!("Proposal applied at {boundary:?}"));
             }
             ChatEvent::Deferred {
                 proposal_id,
@@ -699,13 +713,13 @@ impl UiState {
                 self.clear_terminal_proposal(proposal_id);
                 self.remove_pending_proposal(proposal_id);
                 self.chat.status = "Proposal deferred".to_string();
-                self.chat.push("ZENTRA", reason);
+                self.chat.push("Status", reason);
             }
             ChatEvent::Cancelled { request_id } => {
                 self.chat.queued = self.chat.queued.saturating_sub(1);
                 self.chat.proposals.retain(|p| p.request_id != request_id);
                 self.chat.status = "Request cancelled".to_string();
-                self.chat.push("ZENTRA", "Request cancelled".to_string());
+                self.chat.push("Status", "Request cancelled".to_string());
             }
             ChatEvent::Error {
                 request_id,

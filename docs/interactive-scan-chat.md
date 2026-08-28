@@ -3,7 +3,7 @@
 ## Status / decision summary
 
 **Status:** implemented through `643f1a2` and the current phase. The local,
-read-only `ChatAgent`, persistent TUI drawer, bounded coordinator channels,
+read-only `ChatAgent`, permanent TUI Chat pane, bounded coordinator channels,
 checkpoint integration, and boundary-only action handling are shipped. Chat
 answers from a bounded live snapshot and translates requests into typed action
 proposals; nothing changes a scan until a local operator explicitly confirms a
@@ -17,11 +17,11 @@ proposal.
 - `commands::scan` wires the interactive runtime only for local scans;
   `OrchestratorAgent` owns checkpoint-backed boundary application and report
   regeneration. CI/headless command paths do not create Chat channels.
-- `tui::scan_ui` and `tui::mod` cover default drawer state, narrow-primary-pane
-  rendering, key precedence, complete-proposal review, confirmation
-  acknowledgement/retry, and global `Ctrl+C` abort. Module tests also cover
-  typed validation, read-only tool isolation, action coalescing, persistence,
-  resume, and cancellation.
+- `tui::scan_ui` and `tui::mod` cover permanent-pane Scan/Chat focus,
+  narrow-primary-pane/rail rendering, keyboard and mouse routing,
+  complete-proposal review, confirmation acknowledgement/retry, and global
+  `Ctrl+C` abort. Module tests also cover typed validation, read-only tool
+  isolation, action coalescing, persistence, resume, and cancellation.
 
 V1 supports exactly two actions:
 
@@ -55,39 +55,47 @@ headless/CI chat surface (`commands::ci` remains unchanged).
 
 ## UX
 
-Chat is **visible and expanded by default** as a docked right drawer on a
-normal-width terminal; scanner and results panes remain visible. On narrow
-terminals, the expanded drawer is the primary work pane. It contains a
-phase/status line, redacted transcript, input, in-flight/queued count, and a
-proposal card showing action, targets/category, canonical scope, and earliest
-boundary.
+Chat is **permanently visible** whenever interactive Chat is enabled. It starts
+**Scan-focused**. On normal-width terminals, Chat is a right pane of roughly
+43% of the work area, capped at 38–56 columns and separated by a visual gutter;
+scanner and results panes remain visible. On narrow terminals, Chat focus uses
+the primary work pane, while Scan focus retains a compact visible, clickable
+Chat rail. The pane contains a phase/status line, attributed redacted
+transcript, input, in-flight/queued count, and a proposal card showing action,
+targets/category, canonical scope, and earliest boundary.
 
-Drawer state is `ExpandedUnfocused`, `ExpandedFocused`, or `Collapsed`.
-`c` focuses an expanded drawer; `c` while it is focused collapses it; `c` from
-collapsed expands and focuses it. `Enter` submits input or confirms the visible
-proposal only after its complete typed content fits in view; it does not submit
-another confirmation while one is in progress. `Esc` rejects a proposal, then
-clears focused input, then collapses Chat before it does anything else.
-It leaves an in-progress confirmation in place. Once Chat is collapsed with no
-active interaction, `Esc` resumes the normal scan exit path.
-`Ctrl+C` has global precedence and aborts the scan. The keys/footer describe
-these states.
+`Tab` toggles Scan and Chat focus, matching the pentest focus style. Unmodified
+`c` focuses Chat from Scan; while Chat is focused, `c` is ordinary input.
+`Enter` submits input or confirms the visible proposal only after its complete
+typed content fits in view; it does not submit another confirmation while one
+is in progress. `Esc` rejects a proposal, then clears focused input, then
+returns focus to Scan without hiding Chat. It leaves an in-progress confirmation
+in place. `Ctrl+C` has global precedence and aborts the scan. The keys/footer
+describe the active focus.
+
+Transcript entries distinguish `You`, `Zentra`, and lifecycle `Status`/`Error`
+attribution. Mouse input can click Scan, Chat, or input to set focus; click the
+guarded Confirm/Reject controls; and scroll over the Chat transcript. Controls
+only act on the current rendered proposal region: confirmation still requires a
+complete visible action review, ignores confirming/stale regions, and is blocked
+while overlays are active. Mouse capture is enabled only for a Chat-enabled scan
+UI and is restored on exit.
 
 After `Enter` sends a confirmation, the proposal remains visible as
 confirming until its matching durable `Confirmed` acknowledgement arrives. A
 matching confirmation error returns it to review so the operator can retry;
 terminal `Applied` or `Deferred` events remove it.
 
-Except for global `Ctrl+C`, key precedence is: existing provider/scan popups first; then active chat
-proposal/input; then expanded Chat (collapse it); only when Chat is collapsed
-and has no active interaction may `Esc` fall through to existing scan-screen
-handling. Before natural completion, `q`/`Esc` returns to the menu and cancels
-the scan; after natural completion it returns `Completed` without cancellation
-or interrupting scan finalization. Thus Chat cannot accidentally turn a
-proposal rejection into a scan abort.
+Except for global `Ctrl+C`, existing provider/scan popups take precedence. In
+Chat focus, Chat consumes its own proposal and input keys; `Esc` follows the
+interaction order above before returning focus to Scan. In Scan focus, normal
+scan navigation applies: before natural completion, `q`/`Esc` returns to the
+menu and cancels the scan; after natural completion it returns `Completed`
+without cancellation or interrupting scan finalization. Chat is never hidden.
 
-`UiState` gains chat view state in `src/tui/mod.rs`; chat rendering/key handling
-belongs in `src/tui/scan_ui.rs`. It is not part of `UiState::apply_event`.
+`UiState` gains Scan/Chat focus state in `src/tui/mod.rs`; Chat rendering,
+keyboard, and mouse handling belong in `src/tui/scan_ui.rs`. It is not part of
+`UiState::apply_event`.
 
 ## Project architecture
 
@@ -107,10 +115,10 @@ belongs in `src/tui/scan_ui.rs`. It is not part of `UiState::apply_event`.
 
 ### New components and channels
 
-Add `agent::chat` for schemas, snapshot/redaction, JSONL store, read-only
-`ChatAgent`, and `ChatCoordinator`. `commands::scan` creates two separate
-bounded channels and passes UI ends to `run_scan_ui` and coordinator ends to the
-orchestrator:
+`agent::chat` supplies schemas, snapshot/redaction, JSONL storage, the
+read-only `ChatAgent`, and `ChatCoordinator`. `commands::scan` creates two
+separate bounded channels and passes UI ends to `run_scan_ui_with_chat` and
+coordinator ends to the orchestrator:
 
 ```text
 TUI -- ChatCommand (16) --> ChatCoordinator / ChatAgent
@@ -351,7 +359,7 @@ failure. Terminal Chat events (`Answer`, `Proposal`, `Confirmed`, `Applied`,
 `Deferred`, `Cancelled`, `Error`) are never dropped; only nonterminal progress
 can be coalesced under event-channel pressure.
 
-The drawer is present by default; no scan CLI syntax, CI behavior, provider
+The Chat pane is permanent when enabled; no scan CLI syntax, CI behavior, provider
 configuration, or finding formats change. Checkpoint extensions are
 backward-compatible defaults. Missing `.zentra/chat` is normal.
 Schema-versioned JSONL permits future readers to handle unknown records safely.
@@ -364,8 +372,9 @@ Schema-versioned JSONL permits future readers to handle unknown records safely.
    audit hashes, budget, and no-op coverage behavior are integrated.
 3. Separate channels, coordinator serialization, session identity, checkpoint
    lifecycle, and deterministic orchestration-boundary coalescing are wired.
-4. The default-visible drawer supports focus/collapse keys, narrow primary-pane
-   rendering, complete-proposal confirmation, and precise Escape routing.
+4. The permanent pane supports Scan/Chat focus keys, narrow primary-pane/rail
+   rendering, mouse interaction, complete-proposal confirmation, and precise
+   Escape routing.
 5. Unit and integration coverage exercises resume, security, persistence,
    cancellation, and UI lifecycle behavior; public architecture and README
    describe the released surface.
@@ -375,7 +384,7 @@ Schema-versioned JSONL permits future readers to handle unknown records safely.
 | Area | Evidence / acceptance criterion |
 |---|---|
 | Typed schema | serde round trips; reject unknown category/fragment/scanner, over-limit scope, invalid path, and malformed model output; no individual-result targeting exists. |
-| Drawer/keys | Default is visible/expanded; `c` follows all three states; narrow view works; `Esc` rejects/clears/collapses before fall-through. An explicit test sends first `Esc` with expanded Chat and asserts scan remains active, then collapses Chat and sends second `Esc` to assert existing scan handling runs. |
+| Pane/focus/mouse | Chat is permanently visible and starts Scan-focused; `Tab` toggles focus, `c` focuses Chat only from Scan, and narrow Chat focus uses the primary pane while Scan keeps a clickable rail. `Esc` rejects/clears/returns focus without hiding Chat. Mouse focus, transcript scrolling, current-region controls, stale-region rejection, and mouse-capture restoration are covered. |
 | Q&A/channels | One Chat request runs with 15 FIFO extras; overflow is visible; scan events remain on capacity 128 and continue rendering while Chat answers. |
 | Boundaries | Not-started target gets initial focus; running/completed target is not touched and gets one later coalesced rerun; target and Report checkpoint completions are removed/saved before rerun; final report regenerates. |
 | Scope merge | Architecture and existing incremental focus remain ordered before Chat templates; Chat cannot widen incremental paths; SupplyChain remains unscoped in incremental mode. |
