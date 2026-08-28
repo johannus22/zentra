@@ -5,8 +5,380 @@ pub mod results;
 pub mod scan_ui;
 pub mod theme;
 
+use crate::agent::chat::{ActionProposal, ChatEvent};
 use crate::agent::{McpStatus, ScanEvent, ScannerType};
 use crate::state::{Finding, Severity};
+use std::collections::VecDeque;
+
+pub const MAX_CHAT_TRANSCRIPT: usize = 80;
+pub const MAX_CHAT_TEXT_BYTES: usize = crate::agent::chat::MAX_CHAT_TEXT_BYTES;
+pub const MAX_PENDING_CHAT_ACTIONS: usize =
+    crate::agent::chat_coordinator::MAX_PENDING_CHAT_ACTIONS;
+
+/// The drawer is deliberately independent from scan navigation.  An expanded
+/// drawer starts unfocused so existing finding navigation remains available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatDrawerState {
+    ExpandedUnfocused,
+    ExpandedFocused,
+    Collapsed,
+}
+
+#[cfg(test)]
+mod chat_tests {
+    use super::*;
+    use crate::agent::chat::{ChatAction, PhaseBoundary, VulnerabilityCategory};
+
+    fn state() -> UiState {
+        UiState::new(
+            vec![ScannerType::Sast],
+            "m".into(),
+            10,
+            vec![],
+            String::new(),
+            String::new(),
+            String::new(),
+        )
+    }
+    fn proposal() -> ActionProposal {
+        let now = chrono::Utc::now();
+        ActionProposal {
+            proposal_id: uuid::Uuid::new_v4(),
+            request_id: uuid::Uuid::new_v4(),
+            action: ChatAction::prioritize(VulnerabilityCategory::Injection),
+            created_at: now,
+            expires_at: now + chrono::Duration::minutes(1),
+            earliest_boundary: PhaseBoundary::AfterParallel,
+        }
+    }
+
+    #[test]
+    fn chat_events_are_bounded_redacted_and_do_not_touch_scan_state() {
+        let mut state = state();
+        state.apply_chat_event(ChatEvent::Answer {
+            request_id: uuid::Uuid::new_v4(),
+            text: "token=private-value".into(),
+        });
+        assert_eq!(state.findings.len(), 0);
+        assert_eq!(state.total_tokens, 0);
+        assert!(
+            state.chat.transcript[0].text.contains("<redacted>")
+                || state.chat.transcript[0].text.contains("***")
+        );
+        for i in 0..(MAX_CHAT_TRANSCRIPT + 3) {
+            state.chat.push("Z", i.to_string());
+        }
+        assert_eq!(state.chat.transcript.len(), MAX_CHAT_TRANSCRIPT);
+    }
+
+    #[test]
+    fn terminal_events_clear_only_the_visible_proposal() {
+        let mut state = state();
+        let proposal = proposal();
+        let id = proposal.proposal_id;
+        state.apply_chat_event(ChatEvent::Proposal { proposal });
+        assert!(state.chat.current_proposal().is_some());
+        state.apply_chat_event(ChatEvent::Deferred {
+            proposal_id: id,
+            reason: "later".into(),
+        });
+        assert!(state.chat.current_proposal().is_none());
+    }
+
+    #[test]
+    fn proposals_auto_expand_fifo_and_unrelated_errors_do_not_clear_them() {
+        let mut state = state();
+        state.chat.drawer = ChatDrawerState::Collapsed;
+        let first = proposal();
+        let first_id = first.proposal_id;
+        let second = proposal();
+        let second_id = second.proposal_id;
+        state.apply_chat_event(ChatEvent::Proposal { proposal: first });
+        state.apply_chat_event(ChatEvent::Proposal { proposal: second });
+        assert_eq!(state.chat.drawer, ChatDrawerState::ExpandedUnfocused);
+        assert_eq!(state.chat.current_proposal().unwrap().proposal_id, first_id);
+        state.apply_chat_event(ChatEvent::Error {
+            request_id: None,
+            kind: crate::agent::chat::ChatError::Provider,
+            message: "unrelated failure".into(),
+        });
+        assert_eq!(state.chat.current_proposal().unwrap().proposal_id, first_id);
+        state.apply_chat_event(ChatEvent::Deferred {
+            proposal_id: first_id,
+            reason: "later".into(),
+        });
+        assert_eq!(
+            state.chat.current_proposal().unwrap().proposal_id,
+            second_id
+        );
+    }
+
+    #[test]
+    fn terminal_text_is_redacted_and_control_safe() {
+        let safe =
+            sanitize_chat_text("\u{1b}[31mpassword=secret\u{1b}[0m\u{7f}\u{85} hello\n\tworld");
+        assert!(!safe.contains('\u{1b}'));
+        assert!(!safe.contains('\u{7f}'));
+        assert!(!safe.contains('\u{85}'));
+        assert!(!safe.contains("secret"));
+        assert!(safe.contains("hello\n\tworld"));
+    }
+
+    #[test]
+    fn confirmation_acknowledgement_keeps_head_until_matching_event() {
+        let mut state = state();
+        let first = proposal();
+        let first_id = first.proposal_id;
+        let first_request = first.request_id;
+        let second = proposal();
+        let second_id = second.proposal_id;
+        state.apply_chat_event(ChatEvent::Proposal { proposal: first });
+        state.apply_chat_event(ChatEvent::Proposal { proposal: second });
+        state.chat.mark_confirming(first_id);
+        assert!(state.chat.is_current_confirming());
+        state.apply_chat_event(ChatEvent::Error {
+            request_id: Some(uuid::Uuid::new_v4()),
+            kind: crate::agent::chat::ChatError::Provider,
+            message: "other".into(),
+        });
+        assert!(state.chat.is_current_confirming());
+        state.apply_chat_event(ChatEvent::Error {
+            request_id: Some(first_request),
+            kind: crate::agent::chat::ChatError::Provider,
+            message: "retry".into(),
+        });
+        assert!(!state.chat.is_current_confirming());
+        assert_eq!(state.chat.current_proposal().unwrap().proposal_id, first_id);
+        state.chat.mark_confirming(first_id);
+        state.apply_chat_event(ChatEvent::Confirmed {
+            proposal_id: first_id,
+        });
+        assert_eq!(
+            state.chat.current_proposal().unwrap().proposal_id,
+            second_id
+        );
+    }
+
+    #[test]
+    fn matching_applied_event_clears_head_and_promotes_next_proposal() {
+        let mut state = state();
+        let first = proposal();
+        let first_id = first.proposal_id;
+        let second = proposal();
+        let second_id = second.proposal_id;
+        state.apply_chat_event(ChatEvent::Proposal { proposal: first });
+        state.apply_chat_event(ChatEvent::Proposal { proposal: second });
+        state.apply_chat_event(ChatEvent::Applied {
+            proposal_id: first_id,
+            boundary: PhaseBoundary::AfterParallel,
+        });
+        assert_eq!(
+            state.chat.current_proposal().unwrap().proposal_id,
+            second_id
+        );
+    }
+
+    #[test]
+    fn input_is_utf8_safe_and_bounded() {
+        let mut chat = ChatUiState::default();
+        assert!(chat.insert_text("é🙂"));
+        chat.backspace();
+        assert_eq!(chat.input, "é");
+        assert!(chat.insert_text(&"a".repeat(MAX_CHAT_TEXT_BYTES)));
+        assert!(chat.input.len() <= MAX_CHAT_TEXT_BYTES);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatTranscriptEntry {
+    pub label: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ChatUiState {
+    pub drawer: ChatDrawerState,
+    pub input: String,
+    /// A UTF-8 byte offset, always kept on a character boundary.
+    pub cursor: usize,
+    pub transcript: VecDeque<ChatTranscriptEntry>,
+    /// Proposals are locally reviewable FIFO work, independent of durable
+    /// coordinator pending actions. Only the head is ever actionable.
+    pub proposals: VecDeque<ActionProposal>,
+    pub queued: usize,
+    pub pending: usize,
+    pending_proposal_ids: VecDeque<uuid::Uuid>,
+    confirming_proposal_ids: VecDeque<uuid::Uuid>,
+    /// Set only by the renderer after the complete typed action fits in view.
+    pub proposal_review_complete: bool,
+    pub status: String,
+    pub feedback: Option<String>,
+}
+
+impl Default for ChatUiState {
+    fn default() -> Self {
+        Self {
+            drawer: ChatDrawerState::ExpandedUnfocused,
+            input: String::new(),
+            cursor: 0,
+            transcript: VecDeque::new(),
+            proposals: VecDeque::new(),
+            queued: 0,
+            pending: 0,
+            pending_proposal_ids: VecDeque::new(),
+            confirming_proposal_ids: VecDeque::new(),
+            proposal_review_complete: false,
+            status: "Ready".to_string(),
+            feedback: None,
+        }
+    }
+}
+
+impl ChatUiState {
+    pub fn insert_text(&mut self, text: &str) -> bool {
+        let remaining = MAX_CHAT_TEXT_BYTES.saturating_sub(self.input.len());
+        let mut end = text.len().min(remaining);
+        while end > 0 && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == 0 && !text.is_empty() {
+            self.feedback = Some("Message limit reached".to_string());
+            return false;
+        }
+        self.input.insert_str(self.cursor, &text[..end]);
+        self.cursor += end;
+        if end != text.len() {
+            self.feedback = Some("Message clipped at 4 KiB".to_string());
+        }
+        true
+    }
+
+    pub fn backspace(&mut self) -> bool {
+        if self.cursor == 0 {
+            return false;
+        }
+        let start = self.input[..self.cursor]
+            .char_indices()
+            .last()
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        self.input.drain(start..self.cursor);
+        self.cursor = start;
+        true
+    }
+
+    pub fn clear_input(&mut self) {
+        self.input.clear();
+        self.cursor = 0;
+    }
+
+    pub fn current_proposal(&self) -> Option<&ActionProposal> {
+        self.proposals.front()
+    }
+
+    pub fn take_current_proposal(&mut self) -> Option<ActionProposal> {
+        let proposal = self.proposals.pop_front();
+        if proposal.is_some() {
+            self.proposal_review_complete = false;
+        }
+        proposal
+    }
+
+    pub fn mark_confirming(&mut self, proposal_id: uuid::Uuid) {
+        if self.confirming_proposal_ids.len() < MAX_PENDING_CHAT_ACTIONS {
+            self.confirming_proposal_ids.push_back(proposal_id);
+        }
+    }
+
+    pub fn is_current_confirming(&self) -> bool {
+        self.current_proposal().is_some_and(|proposal| {
+            self.confirming_proposal_ids
+                .iter()
+                .any(|id| *id == proposal.proposal_id)
+        })
+    }
+
+    fn clear_confirming_for_request(&mut self, request_id: uuid::Uuid) -> bool {
+        let Some(proposal_id) = self.current_proposal().and_then(|proposal| {
+            (proposal.request_id == request_id).then_some(proposal.proposal_id)
+        }) else {
+            return false;
+        };
+        let before = self.confirming_proposal_ids.len();
+        self.confirming_proposal_ids.retain(|id| *id != proposal_id);
+        before != self.confirming_proposal_ids.len()
+    }
+
+    fn push(&mut self, label: &str, text: String) {
+        let mut text = sanitize_chat_text(&text);
+        cap_utf8(&mut text, MAX_CHAT_TEXT_BYTES);
+        self.transcript.push_back(ChatTranscriptEntry {
+            label: label.to_string(),
+            text,
+        });
+        while self.transcript.len() > MAX_CHAT_TRANSCRIPT {
+            self.transcript.pop_front();
+        }
+    }
+}
+
+/// Chat may originate outside the TUI. Redaction alone does not make terminal
+/// control bytes safe, so remove them before state or rendering sees content.
+pub fn sanitize_chat_text(input: &str) -> String {
+    // Strip first so ANSI wrappers cannot break a secret-pattern match, then
+    // redact the plain display text.
+    crate::logging::redact(&strip_terminal_controls(input))
+}
+
+fn strip_terminal_controls(input: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            match chars.next() {
+                Some('[') => {
+                    while let Some(next) = chars.next() {
+                        if next.is_ascii() && ('@'..='~').contains(&next) {
+                            break;
+                        }
+                    }
+                }
+                Some(']') => {
+                    while let Some(next) = chars.next() {
+                        if next == '\u{7}' {
+                            break;
+                        }
+                        if next == '\u{1b}' && matches!(chars.peek(), Some('\\')) {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        let code = ch as u32;
+        if ch == '\n' || ch == '\t' {
+            output.push(ch);
+        } else if code < 0x20 || (0x7f..=0x9f).contains(&code) {
+            continue;
+        } else {
+            output.push(ch);
+        }
+    }
+    output
+}
+
+fn cap_utf8(value: &mut String, max: usize) {
+    if value.len() > max {
+        let mut end = max;
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        value.truncate(end);
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScanOutcome {
@@ -141,6 +513,7 @@ pub struct UiState {
     pub provider_kind: String,
     pub mcp_status: Option<McpStatus>,
     pub theme: crate::tui::theme::Theme,
+    pub chat: ChatUiState,
 }
 
 impl UiState {
@@ -181,6 +554,7 @@ impl UiState {
             provider_kind,
             mcp_status: None,
             theme: crate::tui::theme::Theme::default(),
+            chat: ChatUiState::default(),
         }
     }
 
@@ -224,7 +598,11 @@ impl UiState {
                 }
             }
             ScanEvent::ToolCall { tool, arg, .. } => {
-                let prefix = if self.provider_kind == "codex_cli" { "↔" } else { "→" };
+                let prefix = if self.provider_kind == "codex_cli" {
+                    "↔"
+                } else {
+                    "→"
+                };
                 self.activity = if arg.is_empty() {
                     format!("{} {}", prefix, tool)
                 } else {
@@ -246,6 +624,127 @@ impl UiState {
             ScanEvent::McpChannelStatus(status) => {
                 self.mcp_status = Some(status);
             }
+        }
+    }
+
+    /// Chat never enters the ScanEvent channel and never mutates scan progress,
+    /// findings, coverage, or token accounting.
+    pub fn apply_chat_event(&mut self, event: ChatEvent) {
+        match event {
+            ChatEvent::RequestQueued {
+                request_id,
+                position,
+            } => {
+                self.chat.queued = self.chat.queued.max(position);
+                self.chat.status = format!("Queued · #{position}");
+                self.chat
+                    .push("YOU", format!("Request {request_id} queued"));
+            }
+            ChatEvent::Answer {
+                request_id: _,
+                text,
+            } => {
+                self.chat.queued = self.chat.queued.saturating_sub(1);
+                self.chat.status = "Answered".to_string();
+                self.chat.push("ZENTRA", text);
+            }
+            ChatEvent::Proposal { proposal } => {
+                self.chat.queued = self.chat.queued.saturating_sub(1);
+                self.chat.status = "Proposal ready — review locally".to_string();
+                if self.chat.proposals.len() < MAX_PENDING_CHAT_ACTIONS {
+                    self.chat.proposals.push_back(proposal);
+                    if self.chat.drawer == ChatDrawerState::Collapsed {
+                        self.chat.drawer = ChatDrawerState::ExpandedUnfocused;
+                    }
+                } else {
+                    self.chat
+                        .push("CHAT ERROR", "Proposal queue is full".to_string());
+                }
+            }
+            ChatEvent::Confirmed { proposal_id } => {
+                if let Some(index) = self
+                    .chat
+                    .confirming_proposal_ids
+                    .iter()
+                    .position(|id| *id == proposal_id)
+                {
+                    self.chat.confirming_proposal_ids.remove(index);
+                    if self
+                        .chat
+                        .current_proposal()
+                        .is_some_and(|proposal| proposal.proposal_id == proposal_id)
+                    {
+                        self.chat.take_current_proposal();
+                    }
+                    self.chat.pending += 1;
+                    self.chat.pending_proposal_ids.push_back(proposal_id);
+                    self.chat.status = "Pending next boundary".to_string();
+                }
+            }
+            ChatEvent::Applied {
+                proposal_id,
+                boundary,
+            } => {
+                self.clear_terminal_proposal(proposal_id);
+                self.remove_pending_proposal(proposal_id);
+                self.chat.status = format!("Applied at {boundary:?}");
+                self.chat
+                    .push("ZENTRA", format!("Proposal applied at {boundary:?}"));
+            }
+            ChatEvent::Deferred {
+                proposal_id,
+                reason,
+            } => {
+                self.clear_terminal_proposal(proposal_id);
+                self.remove_pending_proposal(proposal_id);
+                self.chat.status = "Proposal deferred".to_string();
+                self.chat.push("ZENTRA", reason);
+            }
+            ChatEvent::Cancelled { request_id } => {
+                self.chat.queued = self.chat.queued.saturating_sub(1);
+                self.chat.proposals.retain(|p| p.request_id != request_id);
+                self.chat.status = "Request cancelled".to_string();
+                self.chat.push("ZENTRA", "Request cancelled".to_string());
+            }
+            ChatEvent::Error {
+                request_id,
+                kind,
+                message,
+            } => {
+                self.chat.queued = self.chat.queued.saturating_sub(1);
+                if request_id.is_some_and(|id| self.chat.clear_confirming_for_request(id)) {
+                    self.chat.status = "Confirmation failed — retry".to_string();
+                } else {
+                    self.chat.status = format!("{kind:?}");
+                }
+                self.chat.push("CHAT ERROR", message);
+            }
+        }
+    }
+
+    fn clear_terminal_proposal(&mut self, proposal_id: uuid::Uuid) {
+        let was_current = self
+            .chat
+            .current_proposal()
+            .is_some_and(|p| p.proposal_id == proposal_id);
+        self.chat.proposals.retain(|p| p.proposal_id != proposal_id);
+        self.chat
+            .confirming_proposal_ids
+            .retain(|id| *id != proposal_id);
+        if was_current {
+            self.chat.proposal_review_complete = false;
+        }
+    }
+
+    fn remove_pending_proposal(&mut self, proposal_id: uuid::Uuid) {
+        if let Some(index) = self
+            .chat
+            .pending_proposal_ids
+            .iter()
+            .position(|id| *id == proposal_id)
+        {
+            self.chat.pending_proposal_ids.remove(index);
+            self.chat.pending = self.chat.pending.saturating_sub(1);
         }
     }
 

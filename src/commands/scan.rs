@@ -1,9 +1,16 @@
 use anyhow::{bail, Context, Result};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{atomic::AtomicBool, Arc, Mutex};
 use tokio::sync::mpsc;
 
-use crate::agent::{orchestrator::OrchestratorAgent, ScannerType};
+use crate::agent::{
+    chat::{ChatScannerState, ChatScannerStatus, ChatSnapshot, NormalizedRepoPath, PhaseBoundary},
+    chat_agent::ChatAgent,
+    chat_coordinator::{self, ChatCoordinator},
+    checkpoint::Checkpoint,
+    orchestrator::{OrchestratorAgent, OrchestratorChatRuntime, RunSummary},
+    ScannerType,
+};
 use crate::config::{keychain, GlobalConfig, ProjectConfig};
 use crate::incremental::{
     build_focus_context, compute_change_set, decide_mode, ModeInputs, ScanManifest, ScanMode,
@@ -17,7 +24,10 @@ use crate::provider::{
 use crate::security::{self, AuditEvent, AuditLog, SecurityConfig, SecurityContext};
 use crate::state::StateWriter;
 use crate::tools::ToolRegistry;
-use crate::tui::{scan_ui::run_scan_ui, ScanOutcome};
+use crate::tui::{
+    scan_ui::{run_scan_ui_with_chat, ChatUiChannels},
+    ScanOutcome,
+};
 use crate::wizard;
 use tokio_util::sync::CancellationToken;
 
@@ -209,13 +219,24 @@ async fn run_once(
     // A fresh (non-resume) scan clears any stale checkpoint so it starts clean.
     let resume_checkpoint = if resume {
         Some(
-            crate::agent::checkpoint::Checkpoint::load_strict(&zentra_dir)
+            Checkpoint::load_strict(&zentra_dir)
                 .context("Cannot resume: checkpoint.json is missing or corrupt")?,
         )
     } else {
-        crate::agent::checkpoint::Checkpoint::clear(&zentra_dir);
+        Checkpoint::clear_strict(&zentra_dir)
+            .context("Cannot start scan: failed to clear stale checkpoint")?;
         None
     };
+
+    // A resume belongs to the scanner identity captured at the last durable
+    // boundary. CLI flags must not turn it into a different run; in particular
+    // a crashed FrameworkAnalysis is still resumed after architecture.md exists.
+    let scanners = effective_scanners_for_run(
+        &scanners,
+        resume_checkpoint.as_ref(),
+        zentra_dir.join("architecture.md").is_file(),
+    )
+    .context("Cannot determine scanner set for interactive scan")?;
 
     // Decide full vs incremental from the prior manifest + current env.
     let prior_manifest = ScanManifest::load(&zentra_dir);
@@ -320,8 +341,11 @@ async fn run_once(
     // and prompt-injection guard. Defaults are balanced; override with
     // ZENTRA_SECURITY=off (disable) or ZENTRA_SECURITY=hardened (strictest).
     let security_config = SecurityConfig::load();
-    let session_id = security::new_session_id();
-    let mut audit = AuditLog::new(&zentra_dir, &session_id, security_config.audit_log)
+    // The audit session remains per invocation. A resumed chat runtime instead
+    // retains the durable checkpoint session so pending actions cannot migrate
+    // to a newly-created conversation.
+    let audit_session_id = security::new_session_id();
+    let mut audit = AuditLog::new(&zentra_dir, &audit_session_id, security_config.audit_log)
         .context("Failed to open security audit log")?;
     audit
         .record(AuditEvent::SessionStart {
@@ -339,21 +363,78 @@ async fn run_once(
     let project_name = current_project_name();
     let profiles: Vec<String> = global.profiles.keys().cloned().collect();
 
-    // FrameworkAnalysis runs only when .zentra/architecture.md doesn't exist yet.
-    // On subsequent scans the cached file is read and injected by the orchestrator.
-    let mut scanners_with_framework = scanners.clone();
-    if !scanners_with_framework.contains(&ScannerType::FrameworkAnalysis)
-        && !state_writer.architecture_exists()
-    {
-        scanners_with_framework.insert(0, ScannerType::FrameworkAnalysis);
-    }
+    let scanners_for_agent = scanners.clone();
 
-    let scanners_for_agent = scanners_with_framework.clone();
+    // Establish the complete interactive runtime identity before either the
+    // coordinator or orchestrator can observe it. In particular, a fresh
+    // checkpoint is durable before chat can accept a confirmation.
+    let prepared_chat = prepare_chat_runtime(
+        &zentra_dir,
+        resume_checkpoint.clone(),
+        &scanners_for_agent,
+        &audit_session_id,
+    )
+    .context("Cannot initialize interactive chat runtime")?;
+    let runtime_session_id = prepared_chat.session_id;
+    // Pass the same migrated checkpoint that backs chat to the orchestrator,
+    // rather than the pre-migration strict-load copy.
+    let orchestrator_resume_checkpoint = resume.then(|| prepared_chat.checkpoint.clone());
+    let checkpoint = Arc::new(Mutex::new(prepared_chat.checkpoint));
+    let snapshot = Arc::new(Mutex::new(prepared_chat.snapshot));
+    let action_eligible = Arc::new(AtomicBool::new(true));
+
+    // Incremental chat may only name valid, in-root paths. Keep the allowed
+    // list bounded independently from the wider scanner impact set.
+    let incremental_paths = incremental.as_ref().map(|(_, change_set)| {
+        let mut paths: Vec<_> = change_set
+            .impact
+            .iter()
+            .filter_map(|path| NormalizedRepoPath::normalize(path).ok())
+            .filter(|path| path.validate_within_root(&target_root).is_ok())
+            .collect();
+        paths.sort();
+        paths.dedup();
+        paths.truncate(20);
+        paths
+    });
 
     let cancel_token = CancellationToken::new();
     let token_for_ui = cancel_token.clone();
     let token_for_orchestrator = cancel_token.clone();
 
+    // The UI owns only its command sender and event receiver. The coordinator
+    // owns the opposite ends; scan actions and their outcomes are separately
+    // bounded so neither lane can silently consume the other.
+    let (chat_command_tx, chat_command_rx, chat_event_tx, chat_event_rx) =
+        chat_coordinator::channels();
+    let (pending_tx, pending_actions) = mpsc::channel(chat_coordinator::MAX_PENDING_CHAT_ACTIONS);
+    let (outcome_tx, outcome_rx) = mpsc::channel(1);
+    let chat_store = crate::agent::chat::ChatStore::new(&zentra_dir, runtime_session_id.clone())
+        .context("Cannot initialize interactive chat transcript store")?;
+    let chat_agent = chat_agent_with_scan_provider(
+        provider.clone(),
+        tool_registry.clone(),
+        security_ctx.clone(),
+        cancel_token.clone(),
+    );
+    let coordinator = ChatCoordinator::new(
+        chat_agent,
+        security_ctx.clone(),
+        chat_store,
+        snapshot.clone(),
+        target_root.clone(),
+        zentra_dir.clone(),
+        scanners_for_agent.clone(),
+        incremental_paths,
+        checkpoint.clone(),
+        pending_tx,
+        cancel_token.clone(),
+    )
+    .with_outcomes(outcome_rx)
+    .with_action_eligibility(action_eligible.clone());
+    let mut coordinator_task = tokio::spawn(coordinator.run(chat_command_rx, chat_event_tx));
+
+    let scanners_for_task = scanners_for_agent.clone();
     let scan_task = tokio::spawn(async move {
         let mut orch = OrchestratorAgent::new(
             provider,
@@ -365,11 +446,19 @@ async fn run_once(
         .with_security(security_ctx)
         .with_focus_context(focus_context)
         .with_pack(pack)
-        .with_resume(resume_checkpoint);
+        .with_resume(orchestrator_resume_checkpoint)
+        .with_chat_runtime(OrchestratorChatRuntime {
+            session_id: runtime_session_id,
+            pending_actions,
+            outcome_tx,
+            checkpoint,
+            snapshot,
+            action_eligible,
+        });
         if let Some((prior, cs)) = incremental {
             orch = orch.with_incremental(prior, cs);
         }
-        orch.run(&scanners_for_agent).await
+        orch.run(&scanners_for_task).await
     });
 
     // Print incremental banner before launching TUI
@@ -380,9 +469,9 @@ async fn run_once(
         );
     }
 
-    let outcome = run_scan_ui(
+    let ui_result = run_scan_ui_with_chat(
         rx,
-        scanners_with_framework.clone(),
+        scanners_for_agent.clone(),
         model_id.clone(),
         context_window,
         token_for_ui,
@@ -390,12 +479,34 @@ async fn run_once(
         branch.clone(),
         project_name.clone(),
         provider_kind,
+        Some(ChatUiChannels {
+            command_tx: chat_command_tx,
+            event_rx: chat_event_rx,
+        }),
     )
-    .await?;
+    .await;
+    let outcome = match ui_result {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            stop_interactive_runtime(&cancel_token, scan_task, &mut coordinator_task).await;
+            return Err(error);
+        }
+    };
 
     match outcome {
         ScanOutcome::Completed => {
-            let summary = scan_task.await??;
+            let summary = match scan_task.await {
+                Ok(Ok(summary)) => summary,
+                Ok(Err(error)) => {
+                    stop_interactive_coordinator(&cancel_token, &mut coordinator_task).await;
+                    return Err(error);
+                }
+                Err(error) => {
+                    stop_interactive_coordinator(&cancel_token, &mut coordinator_task).await;
+                    return Err(error.into());
+                }
+            };
+            finish_interactive_coordinator(&cancel_token, &mut coordinator_task).await;
             let failed = summary.failed;
 
             // Persist the new baseline for the next scan.
@@ -403,7 +514,7 @@ async fn run_once(
                 last_scan_commit: head_commit.clone(),
                 was_dirty: git_is_dirty(&target_root),
                 scanned_at: chrono::Utc::now().to_rfc3339(),
-                scanner_set: scanners_with_framework
+                scanner_set: scanners_for_agent
                     .iter()
                     .map(|s| s.name().to_string())
                     .collect(),
@@ -468,13 +579,238 @@ async fn run_once(
             );
         }
         _ => {
-            cancel_token.cancel();
-            scan_task.abort();
-            let _ = tokio::time::timeout(std::time::Duration::from_millis(750), scan_task).await;
+            stop_interactive_runtime(&cancel_token, scan_task, &mut coordinator_task).await;
         }
     }
 
     Ok(outcome)
+}
+
+const INTERACTIVE_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(750);
+
+#[derive(Debug)]
+struct PreparedChatRuntime {
+    session_id: String,
+    checkpoint: Checkpoint,
+    snapshot: ChatSnapshot,
+}
+
+/// Make the durable checkpoint the identity authority before any task starts.
+/// A legacy checkpoint with no actions may be safely assigned this invocation's
+/// new runtime identity; actions without an owner remain fail-closed.
+fn prepare_chat_runtime(
+    zentra_dir: &Path,
+    resume_checkpoint: Option<Checkpoint>,
+    selected: &[ScannerType],
+    fresh_session_id: &str,
+) -> Result<PreparedChatRuntime> {
+    let selected_names = canonical_scanner_names(selected)?;
+    let (session_id, checkpoint) = match resume_checkpoint {
+        Some(mut checkpoint) => {
+            if checkpoint.session_id.is_empty() {
+                if !checkpoint.confirmed_chat_actions.is_empty() {
+                    bail!(
+                        "Cannot resume interactive scan: checkpoint actions have no owning session"
+                    );
+                }
+                crate::agent::chat::validate_session_id(fresh_session_id)
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+                checkpoint.session_id = fresh_session_id.to_string();
+                checkpoint.updated_at = chrono::Utc::now().to_rfc3339();
+                checkpoint
+                    .save_strict(zentra_dir)
+                    .context("failed to persist migrated interactive checkpoint session")?;
+            }
+            crate::agent::chat::validate_session_id(&checkpoint.session_id)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            checkpoint
+                .confirmed_chat_actions_for_resume(&checkpoint.session_id, selected)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            (checkpoint.session_id.clone(), checkpoint)
+        }
+        None => {
+            crate::agent::chat::validate_session_id(fresh_session_id)
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            let mut checkpoint = Checkpoint {
+                session_id: fresh_session_id.to_string(),
+                scanner_set: selected_names.clone(),
+                ..Checkpoint::default()
+            };
+            checkpoint.updated_at = chrono::Utc::now().to_rfc3339();
+            checkpoint
+                .save_strict(zentra_dir)
+                .context("failed to persist interactive checkpoint session")?;
+            (checkpoint.session_id.clone(), checkpoint)
+        }
+    };
+
+    let snapshot = ChatSnapshot {
+        session_id: session_id.clone(),
+        boundary: PhaseBoundary::default(),
+        selected_scanners: selected_names.clone(),
+        scanner_status: selected_names
+            .iter()
+            .map(|scanner| ChatScannerStatus {
+                scanner: scanner.clone(),
+                status: ChatScannerState::NotStarted,
+            })
+            .collect(),
+        checkpoint_completed: checkpoint.completed.iter().cloned().collect(),
+        action_eligible: true,
+        ..ChatSnapshot::default()
+    };
+    Ok(PreparedChatRuntime {
+        session_id,
+        checkpoint,
+        snapshot,
+    })
+}
+
+fn canonical_scanner_names(selected: &[ScannerType]) -> Result<Vec<String>> {
+    let mut names: Vec<_> = selected
+        .iter()
+        .map(|scanner| scanner.name().to_string())
+        .collect();
+    names.sort();
+    if names.windows(2).any(|pair| pair[0] == pair[1]) {
+        bail!("interactive scan selected duplicate scanners");
+    }
+    Ok(names)
+}
+
+/// Return the one scanner set that all interactive participants share. On a
+/// resume, the durable checkpoint is authoritative; requested CLI scanners are
+/// intentionally not merged into it.
+fn effective_scanners_for_run(
+    requested: &[ScannerType],
+    resume_checkpoint: Option<&Checkpoint>,
+    architecture_exists: bool,
+) -> Result<Vec<ScannerType>> {
+    ensure_unique_scanners(requested)?;
+    match resume_checkpoint {
+        Some(checkpoint) => scanners_from_checkpoint(&checkpoint.scanner_set),
+        None => {
+            let mut selected = requested.to_vec();
+            if !architecture_exists && !selected.contains(&ScannerType::FrameworkAnalysis) {
+                selected.insert(0, ScannerType::FrameworkAnalysis);
+            }
+            ensure_unique_scanners(&selected)?;
+            Ok(selected)
+        }
+    }
+}
+
+fn scanners_from_checkpoint(scanner_set: &[String]) -> Result<Vec<ScannerType>> {
+    if scanner_set.is_empty() {
+        bail!("Cannot resume interactive scan: checkpoint scanner set is empty");
+    }
+    let scanners: Vec<_> = scanner_set
+        .iter()
+        .map(|name| scanner_from_canonical_name(name))
+        .collect::<Result<_>>()?;
+    let canonical_names = canonical_scanner_names(&scanners)?;
+    if scanner_set != canonical_names.as_slice() {
+        bail!("Cannot resume interactive scan: checkpoint scanner set is not canonical");
+    }
+    Ok(scanners)
+}
+
+fn scanner_from_canonical_name(name: &str) -> Result<ScannerType> {
+    match name {
+        "framework" => Ok(ScannerType::FrameworkAnalysis),
+        "threat_model" => Ok(ScannerType::ThreatModel),
+        "sast" => Ok(ScannerType::Sast),
+        "supply_chain" => Ok(ScannerType::SupplyChain),
+        "api_scan" => Ok(ScannerType::ApiScan),
+        "iac_scan" => Ok(ScannerType::IacScan),
+        "report" => Ok(ScannerType::Report),
+        _ => bail!("Cannot resume interactive scan: checkpoint contains unknown scanner '{name}'"),
+    }
+}
+
+fn ensure_unique_scanners(selected: &[ScannerType]) -> Result<()> {
+    let _ = canonical_scanner_names(selected)?;
+    Ok(())
+}
+
+/// The scan provider has already crossed the single security-envelope boundary.
+/// Keep this helper separate from `ChatAgent::from_raw_provider` so interactive
+/// wiring cannot accidentally add a second `GuardedProvider` layer.
+fn chat_agent_with_scan_provider(
+    guarded_scan_provider: Arc<dyn LLMProvider>,
+    tools: Arc<ToolRegistry>,
+    security: SecurityContext,
+    cancel_token: CancellationToken,
+) -> ChatAgent {
+    ChatAgent::new(guarded_scan_provider, tools, security, cancel_token)
+}
+
+async fn finish_interactive_coordinator(
+    cancel_token: &CancellationToken,
+    coordinator_task: &mut tokio::task::JoinHandle<()>,
+) {
+    if tokio::time::timeout(INTERACTIVE_SHUTDOWN_TIMEOUT, &mut *coordinator_task)
+        .await
+        .is_ok()
+    {
+        return;
+    }
+    cancel_token.cancel();
+    if tokio::time::timeout(INTERACTIVE_SHUTDOWN_TIMEOUT, &mut *coordinator_task)
+        .await
+        .is_ok()
+    {
+        return;
+    }
+    crate::logging::warn(
+        "scan",
+        "interactive chat coordinator did not stop after cancellation; aborting task",
+    );
+    coordinator_task.abort();
+    let _ = tokio::time::timeout(INTERACTIVE_SHUTDOWN_TIMEOUT, coordinator_task).await;
+}
+
+async fn stop_interactive_coordinator(
+    cancel_token: &CancellationToken,
+    coordinator_task: &mut tokio::task::JoinHandle<()>,
+) {
+    cancel_token.cancel();
+    if tokio::time::timeout(INTERACTIVE_SHUTDOWN_TIMEOUT, &mut *coordinator_task)
+        .await
+        .is_ok()
+    {
+        return;
+    }
+    crate::logging::warn(
+        "scan",
+        "interactive chat coordinator did not drain after cancellation; aborting task",
+    );
+    coordinator_task.abort();
+    let _ = tokio::time::timeout(INTERACTIVE_SHUTDOWN_TIMEOUT, coordinator_task).await;
+}
+
+async fn stop_interactive_runtime(
+    cancel_token: &CancellationToken,
+    scan_task: tokio::task::JoinHandle<Result<RunSummary>>,
+    coordinator_task: &mut tokio::task::JoinHandle<()>,
+) {
+    cancel_token.cancel();
+    let mut scan_task = scan_task;
+    if tokio::time::timeout(INTERACTIVE_SHUTDOWN_TIMEOUT, &mut scan_task)
+        .await
+        .is_err()
+    {
+        crate::logging::warn(
+            "scan",
+            "scan task did not stop after cancellation; aborting task",
+        );
+        scan_task.abort();
+        let _ = tokio::time::timeout(INTERACTIVE_SHUTDOWN_TIMEOUT, &mut scan_task).await;
+    }
+    // The scan task owns the last outcome sender. Joining (or aborting) it
+    // first closes that lane before the coordinator performs its graceful
+    // cancellation drain.
+    stop_interactive_coordinator(cancel_token, coordinator_task).await;
 }
 
 /// Resolve the executable name/path for a CLI provider: an explicit `base_url`
@@ -670,7 +1006,535 @@ fn current_project_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::chat::{
+        ChatAction, ChatActionOutcome, ChatActionOutcomeEnvelope, ChatCommand, ChatOutcomeAck,
+        ConfirmedChatAction, VulnerabilityCategory,
+    };
     use crate::config::{AuthMethod, ProviderProfile};
+    use crate::provider::openai_compat::OpenAICompatProvider;
+    use crate::provider::{AgentMessage, CompletionRequest, CompletionResponse, ToolDefinition};
+    use async_trait::async_trait;
+    use tokio::sync::Notify;
+
+    struct BlockingProvider {
+        started: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl LLMProvider for BlockingProvider {
+        async fn complete(&self, _: CompletionRequest) -> Result<CompletionResponse> {
+            anyhow::bail!("not used")
+        }
+
+        async fn complete_with_tools(
+            &self,
+            _: &str,
+            _: &[AgentMessage],
+            _: &[ToolDefinition],
+            _: u32,
+            _: Option<&CancellationToken>,
+        ) -> Result<CompletionResponse> {
+            self.started.notify_one();
+            std::future::pending().await
+        }
+
+        fn context_window(&self) -> u32 {
+            32_000
+        }
+
+        fn model_name(&self) -> &str {
+            "blocking"
+        }
+    }
+
+    fn selected_scanners() -> Vec<ScannerType> {
+        vec![ScannerType::Sast, ScannerType::Report]
+    }
+
+    fn lifecycle_snapshot(session_id: &str) -> Arc<Mutex<ChatSnapshot>> {
+        Arc::new(Mutex::new(ChatSnapshot {
+            session_id: session_id.to_string(),
+            selected_scanners: vec!["report".to_string(), "sast".to_string()],
+            scanner_status: vec![
+                ChatScannerStatus {
+                    scanner: "report".to_string(),
+                    status: ChatScannerState::NotStarted,
+                },
+                ChatScannerStatus {
+                    scanner: "sast".to_string(),
+                    status: ChatScannerState::NotStarted,
+                },
+            ],
+            ..ChatSnapshot::default()
+        }))
+    }
+
+    fn lifecycle_checkpoint(session_id: &str, actions: Vec<ConfirmedChatAction>) -> Checkpoint {
+        Checkpoint {
+            session_id: session_id.to_string(),
+            scanner_set: vec!["report".to_string(), "sast".to_string()],
+            confirmed_chat_actions: actions,
+            ..Checkpoint::default()
+        }
+    }
+
+    #[test]
+    fn fresh_chat_runtime_persists_one_session_and_canonical_snapshot() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let zentra_dir = temp.path().join(".zentra");
+        std::fs::create_dir_all(&zentra_dir).unwrap();
+
+        let prepared =
+            prepare_chat_runtime(&zentra_dir, None, &selected_scanners(), "fresh-chat").unwrap();
+
+        let persisted = Checkpoint::load_strict(&zentra_dir).unwrap();
+        assert_eq!(prepared.session_id, "fresh-chat");
+        assert_eq!(persisted.session_id, prepared.session_id);
+        assert_eq!(persisted.scanner_set, vec!["report", "sast"]);
+        assert_eq!(prepared.snapshot.session_id, prepared.session_id);
+        assert_eq!(prepared.snapshot.selected_scanners, vec!["report", "sast"]);
+        assert!(prepared
+            .snapshot
+            .scanner_status
+            .iter()
+            .all(|status| matches!(status.status, ChatScannerState::NotStarted)));
+        assert!(matches!(
+            prepared.snapshot.boundary,
+            PhaseBoundary::AfterFramework
+        ));
+    }
+
+    #[test]
+    fn resumed_chat_runtime_uses_checkpoint_session_and_rejects_bad_identity() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let zentra_dir = temp.path().join(".zentra");
+        std::fs::create_dir_all(&zentra_dir).unwrap();
+        let checkpoint = Checkpoint {
+            session_id: "resumed-chat".to_string(),
+            scanner_set: vec!["report".to_string(), "sast".to_string()],
+            ..Checkpoint::default()
+        };
+
+        let prepared = prepare_chat_runtime(
+            &zentra_dir,
+            Some(checkpoint.clone()),
+            &selected_scanners(),
+            "new-audit-session",
+        )
+        .unwrap();
+        assert_eq!(prepared.session_id, "resumed-chat");
+        assert_eq!(prepared.snapshot.session_id, "resumed-chat");
+
+        let missing = Checkpoint::default();
+        assert!(
+            prepare_chat_runtime(&zentra_dir, Some(missing), &selected_scanners(), "fresh")
+                .is_err()
+        );
+        let mismatched = Checkpoint {
+            scanner_set: vec!["sast".to_string()],
+            ..checkpoint.clone()
+        };
+        assert!(
+            prepare_chat_runtime(&zentra_dir, Some(mismatched), &selected_scanners(), "fresh")
+                .is_err()
+        );
+        let invalid = Checkpoint {
+            session_id: "../invalid".to_string(),
+            ..checkpoint
+        };
+        assert!(
+            prepare_chat_runtime(&zentra_dir, Some(invalid), &selected_scanners(), "fresh")
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn resume_uses_durable_scanner_set_and_keeps_framework_after_architecture_exists() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let zentra_dir = temp.path().join(".zentra");
+        std::fs::create_dir_all(&zentra_dir).unwrap();
+        std::fs::write(zentra_dir.join("architecture.md"), "cached architecture").unwrap();
+        let checkpoint = Checkpoint {
+            session_id: "crash-session".to_string(),
+            scanner_set: vec![
+                "framework".to_string(),
+                "report".to_string(),
+                "sast".to_string(),
+            ],
+            ..Checkpoint::default()
+        };
+
+        let effective = effective_scanners_for_run(
+            &selected_scanners(),
+            Some(&checkpoint),
+            zentra_dir.join("architecture.md").is_file(),
+        )
+        .unwrap();
+        assert_eq!(
+            canonical_scanner_names(&effective).unwrap(),
+            checkpoint.scanner_set
+        );
+        assert!(effective.contains(&ScannerType::FrameworkAnalysis));
+
+        let prepared = prepare_chat_runtime(
+            &zentra_dir,
+            Some(checkpoint),
+            &effective,
+            "unused-fresh-session",
+        )
+        .unwrap();
+        assert_eq!(
+            prepared.snapshot.selected_scanners,
+            vec!["framework", "report", "sast"]
+        );
+    }
+
+    #[test]
+    fn legacy_empty_session_without_actions_is_migrated_before_resume() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let zentra_dir = temp.path().join(".zentra");
+        std::fs::create_dir_all(&zentra_dir).unwrap();
+        let checkpoint = Checkpoint {
+            scanner_set: vec!["report".to_string(), "sast".to_string()],
+            ..Checkpoint::default()
+        };
+
+        let prepared = prepare_chat_runtime(
+            &zentra_dir,
+            Some(checkpoint),
+            &selected_scanners(),
+            "migrated",
+        )
+        .unwrap();
+        assert_eq!(prepared.session_id, "migrated");
+        assert_eq!(
+            Checkpoint::load_strict(&zentra_dir).unwrap().session_id,
+            "migrated"
+        );
+    }
+
+    #[test]
+    fn legacy_empty_session_with_pending_actions_is_rejected() {
+        use crate::agent::chat::{ChatAction, ConfirmedChatAction, VulnerabilityCategory};
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let zentra_dir = temp.path().join(".zentra");
+        std::fs::create_dir_all(&zentra_dir).unwrap();
+        let pending = ConfirmedChatAction::new(
+            uuid::Uuid::new_v4(),
+            1,
+            ChatAction::prioritize(VulnerabilityCategory::Injection),
+            selected_scanners(),
+        )
+        .unwrap();
+        let checkpoint = Checkpoint {
+            scanner_set: vec!["report".to_string(), "sast".to_string()],
+            confirmed_chat_actions: vec![pending],
+            ..Checkpoint::default()
+        };
+
+        let error = prepare_chat_runtime(
+            &zentra_dir,
+            Some(checkpoint),
+            &selected_scanners(),
+            "must-not-migrate",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("no owning session"));
+    }
+
+    #[test]
+    fn resume_rejects_unknown_duplicate_or_noncanonical_scanner_names() {
+        for scanner_set in [
+            vec!["report".to_string(), "unknown".to_string()],
+            vec!["report".to_string(), "report".to_string()],
+            vec!["sast".to_string(), "report".to_string()],
+        ] {
+            assert!(scanners_from_checkpoint(&scanner_set).is_err());
+        }
+    }
+
+    #[test]
+    fn chat_agent_uses_the_already_guarded_scan_provider_path() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let raw: Arc<dyn LLMProvider> = Arc::new(OpenAICompatProvider::new(
+            "https://example.test/v1".to_string(),
+            "test-model".to_string(),
+            "not-used".to_string(),
+        ));
+        let security = SecurityContext::new(
+            SecurityConfig::hardened(),
+            AuditLog::new(temp.path(), "guarded-test", true).unwrap(),
+        );
+        let guarded = security::GuardedProvider::wrap(raw, &security);
+        let _agent = chat_agent_with_scan_provider(
+            guarded,
+            Arc::new(ToolRegistry::new()),
+            security,
+            CancellationToken::new(),
+        );
+    }
+
+    #[test]
+    fn interactive_wiring_channels_are_independent_from_scan_events() {
+        let (command_tx, mut command_rx, event_tx, mut event_rx) = chat_coordinator::channels();
+        command_tx
+            .try_send(crate::agent::chat::ChatCommand::Close)
+            .unwrap();
+        assert!(matches!(
+            command_rx.blocking_recv(),
+            Some(crate::agent::chat::ChatCommand::Close)
+        ));
+
+        let request_id = uuid::Uuid::new_v4();
+        event_tx
+            .try_send(crate::agent::chat::ChatEvent::Cancelled { request_id })
+            .unwrap();
+        assert!(matches!(
+            event_rx.blocking_recv(),
+            Some(crate::agent::chat::ChatEvent::Cancelled { request_id: id }) if id == request_id
+        ));
+    }
+
+    #[tokio::test]
+    async fn completed_navigation_drains_terminal_outcome_without_cancellation() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let zentra_dir = temp.path().join(".zentra");
+        std::fs::create_dir_all(&zentra_dir).unwrap();
+        let session_id = "completed-lifecycle";
+        let mut action = ConfirmedChatAction::new(
+            uuid::Uuid::new_v4(),
+            1,
+            ChatAction::prioritize(VulnerabilityCategory::Injection),
+            selected_scanners(),
+        )
+        .unwrap();
+        // This models the orchestrator's completed scanner attribution before
+        // it sends the terminal Applied outcome to the coordinator.
+        action.remaining_scanners.clear();
+        let proposal_id = action.proposal_id;
+        let checkpoint = Arc::new(Mutex::new(lifecycle_checkpoint(
+            session_id,
+            vec![action.clone()],
+        )));
+        checkpoint.lock().unwrap().save_strict(&zentra_dir).unwrap();
+        let store = crate::agent::chat::ChatStore::new(&zentra_dir, session_id).unwrap();
+        let inspect_store = store.clone();
+        let cancel = CancellationToken::new();
+        let (command_tx, command_rx, event_tx, _event_rx) = chat_coordinator::channels();
+        let (pending_tx, _pending_rx) = mpsc::channel(chat_coordinator::MAX_PENDING_CHAT_ACTIONS);
+        let (outcome_tx, outcome_rx) = mpsc::channel(1);
+        let coordinator = ChatCoordinator::new(
+            ChatAgent::new(
+                Arc::new(OpenAICompatProvider::new(
+                    "https://example.test/v1".to_string(),
+                    "test-model".to_string(),
+                    "not-used".to_string(),
+                )),
+                Arc::new(ToolRegistry::new()),
+                SecurityContext::disabled(),
+                cancel.clone(),
+            ),
+            SecurityContext::disabled(),
+            store,
+            lifecycle_snapshot(session_id),
+            temp.path().to_path_buf(),
+            zentra_dir.clone(),
+            selected_scanners(),
+            None,
+            checkpoint.clone(),
+            pending_tx,
+            cancel.clone(),
+        )
+        .with_outcomes(outcome_rx);
+        let mut coordinator_task = tokio::spawn(coordinator.run(command_rx, event_tx));
+
+        let mut state = crate::tui::UiState::new(
+            selected_scanners(),
+            "model".to_string(),
+            1,
+            vec![],
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+        state.mark_complete();
+        assert_eq!(
+            crate::tui::scan_ui::exit_outcome(&state),
+            ScanOutcome::Completed
+        );
+
+        // This real producer owns the last outcome sender, just like the scan
+        // task. Command completion awaits it before gracefully joining chat.
+        let scan_task = tokio::spawn(async move {
+            let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+            outcome_tx
+                .send(ChatActionOutcomeEnvelope {
+                    expected: action,
+                    outcome: ChatActionOutcome::Applied {
+                        proposal_id,
+                        boundary: PhaseBoundary::AfterParallel,
+                    },
+                    ack: ack_tx,
+                })
+                .await
+                .unwrap();
+            assert_eq!(ack_rx.await.unwrap().unwrap(), ChatOutcomeAck::Committed);
+        });
+        command_tx.try_send(ChatCommand::Close).unwrap();
+        drop(command_tx);
+
+        scan_task.await.unwrap(); // closes the outcome sender before coordinator join
+        finish_interactive_coordinator(&cancel, &mut coordinator_task).await;
+
+        assert!(!cancel.is_cancelled());
+        assert!(coordinator_task.is_finished());
+        assert!(checkpoint.lock().unwrap().confirmed_chat_actions.is_empty());
+        assert!(Checkpoint::load_strict(&zentra_dir)
+            .unwrap()
+            .confirmed_chat_actions
+            .is_empty());
+        assert_eq!(
+            inspect_store
+                .terminal_proposal_lifecycle(proposal_id)
+                .unwrap(),
+            Some(crate::agent::chat::ProposalLifecycle::Applied)
+        );
+    }
+
+    #[tokio::test]
+    async fn aborted_navigation_cancels_live_request_after_producer_closes() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let zentra_dir = temp.path().join(".zentra");
+        std::fs::create_dir_all(&zentra_dir).unwrap();
+        let session_id = "aborted-lifecycle";
+        let checkpoint = Arc::new(Mutex::new(lifecycle_checkpoint(session_id, Vec::new())));
+        checkpoint.lock().unwrap().save_strict(&zentra_dir).unwrap();
+        let store = crate::agent::chat::ChatStore::new(&zentra_dir, session_id).unwrap();
+        let inspect_store = store.clone();
+        let cancel = CancellationToken::new();
+        let provider_started = Arc::new(Notify::new());
+        let (command_tx, command_rx, event_tx, mut event_rx) = chat_coordinator::channels();
+        let (pending_tx, _pending_rx) = mpsc::channel(chat_coordinator::MAX_PENDING_CHAT_ACTIONS);
+        let (outcome_tx, outcome_rx) = mpsc::channel(1);
+        let coordinator = ChatCoordinator::new(
+            ChatAgent::new(
+                Arc::new(BlockingProvider {
+                    started: provider_started.clone(),
+                }),
+                Arc::new(ToolRegistry::new()),
+                SecurityContext::disabled(),
+                cancel.clone(),
+            ),
+            SecurityContext::disabled(),
+            store,
+            lifecycle_snapshot(session_id),
+            temp.path().to_path_buf(),
+            zentra_dir.clone(),
+            selected_scanners(),
+            None,
+            checkpoint,
+            pending_tx,
+            cancel.clone(),
+        )
+        .with_outcomes(outcome_rx);
+        let mut coordinator_task = tokio::spawn(coordinator.run(command_rx, event_tx));
+
+        let state = crate::tui::UiState::new(
+            selected_scanners(),
+            "model".to_string(),
+            1,
+            vec![],
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+        assert_eq!(
+            crate::tui::scan_ui::exit_outcome(&state),
+            ScanOutcome::Aborted
+        );
+        let request_id = uuid::Uuid::new_v4();
+        let provider_wait = provider_started.notified();
+        command_tx
+            .send(ChatCommand::ask(request_id, "hold this request".to_string()).unwrap())
+            .await
+            .unwrap();
+        // A queued event proves the coordinator durably accepted the request;
+        // the provider notification proves it is live when cancellation starts.
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+                .await
+                .unwrap(),
+            Some(crate::agent::chat::ChatEvent::RequestQueued { request_id: id, .. }) if id == request_id
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(1), provider_wait)
+            .await
+            .unwrap();
+
+        let (producer_closed_tx, producer_closed_rx) = tokio::sync::oneshot::channel();
+        let scan_cancel = cancel.clone();
+        let scan_task = tokio::spawn(async move {
+            scan_cancel.cancelled().await;
+            drop(outcome_tx);
+            let _ = producer_closed_tx.send(());
+            Err(anyhow::anyhow!("scan cancelled"))
+        });
+
+        stop_interactive_runtime(&cancel, scan_task, &mut coordinator_task).await;
+
+        assert!(producer_closed_rx.await.is_ok());
+        assert!(cancel.is_cancelled());
+        assert!(coordinator_task.is_finished());
+        let transcript = std::fs::read_to_string(inspect_store.path()).unwrap();
+        assert!(transcript.contains("\"cancelled\""), "{transcript}");
+    }
+
+    #[tokio::test]
+    async fn normal_coordinator_teardown_does_not_cancel_a_finished_scan() {
+        let cancel = CancellationToken::new();
+        let mut coordinator = tokio::spawn(async {});
+
+        finish_interactive_coordinator(&cancel, &mut coordinator).await;
+
+        assert!(coordinator.is_finished());
+        assert!(!cancel.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn abort_teardown_cancels_and_joins_both_runtime_tasks() {
+        let cancel = CancellationToken::new();
+        let scan = tokio::spawn(async { std::future::pending::<Result<RunSummary>>().await });
+        let mut coordinator = tokio::spawn(async { std::future::pending::<()>().await });
+
+        stop_interactive_runtime(&cancel, scan, &mut coordinator).await;
+
+        assert!(cancel.is_cancelled());
+        assert!(coordinator.is_finished());
+    }
+
+    #[tokio::test]
+    async fn cancellation_is_observed_before_runtime_teardown_aborts() {
+        let cancel = CancellationToken::new();
+        let (scan_observed_tx, scan_observed_rx) = tokio::sync::oneshot::channel();
+        let scan_cancel = cancel.clone();
+        let scan = tokio::spawn(async move {
+            scan_cancel.cancelled().await;
+            let _ = scan_observed_tx.send(());
+            Err(anyhow::anyhow!("scan cancelled"))
+        });
+        let (coordinator_observed_tx, coordinator_observed_rx) = tokio::sync::oneshot::channel();
+        let coordinator_cancel = cancel.clone();
+        let mut coordinator = tokio::spawn(async move {
+            coordinator_cancel.cancelled().await;
+            let _ = coordinator_observed_tx.send(());
+        });
+
+        stop_interactive_runtime(&cancel, scan, &mut coordinator).await;
+
+        assert!(scan_observed_rx.await.is_ok());
+        assert!(coordinator_observed_rx.await.is_ok());
+        assert!(coordinator.is_finished());
+    }
 
     // F9: an unknown --only value silently ran a FULL scan (the `_` arm),
     // so a typo like `--only sats` burned quota on every scanner. It must be

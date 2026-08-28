@@ -468,7 +468,20 @@ impl ChatCoordinator {
             )
             .await;
             event_tx
-                .terminal(error(None, ChatError::InvalidProposal, &error_value))
+                .terminal(error(
+                    Some(proposal.request_id),
+                    ChatError::InvalidProposal,
+                    &error_value,
+                ))
+                .await;
+            // Rejected has no dedicated UI event. Pair the associated error
+            // with the existing terminal proposal event so the UI clears its
+            // confirming state and removes this no-longer-valid proposal.
+            event_tx
+                .terminal(ChatEvent::Deferred {
+                    proposal_id: proposal.proposal_id,
+                    reason: "proposal is no longer valid".to_string(),
+                })
                 .await;
             return true;
         }
@@ -477,7 +490,7 @@ impl ChatCoordinator {
             Err(_) => {
                 event_tx
                     .terminal(error(
-                        None,
+                        Some(proposal.request_id),
                         ChatError::Backpressure,
                         "pending chat-action queue is full",
                     ))
@@ -549,8 +562,29 @@ impl ChatCoordinator {
                         .await;
                     return true;
                 }
-                event_tx.terminal(error(None, kind, &error_value)).await;
-                return kind == ChatError::InvalidProposal;
+                event_tx
+                    .terminal(error(Some(proposal.request_id), kind, &error_value))
+                    .await;
+                if kind == ChatError::InvalidProposal {
+                    self.persist_proposal(
+                        proposal.proposal_id,
+                        ProposalLifecycle::Rejected,
+                        Some(proposal.action),
+                        event_tx,
+                    )
+                    .await;
+                    event_tx
+                        .terminal(ChatEvent::Deferred {
+                            proposal_id: proposal.proposal_id,
+                            reason: "proposal is no longer valid".to_string(),
+                        })
+                        .await;
+                    return true;
+                }
+                // A strict persistence failure did not publish pending work;
+                // retain the proposal locally so this associated error can be
+                // retried once the durable store recovers.
+                return false;
             }
         };
         self.confirmation_sequence = confirmation_sequence;
@@ -1796,10 +1830,13 @@ mod tests {
             assert!(matches!(
                 rx.recv().await,
                 Some(ChatEvent::Error {
+                    request_id: Some(id),
                     kind: ChatError::Backpressure,
                     ..
-                })
+                }) if id == p.request_id
             ));
+            // `false` tells the command loop to retain the proposal, and the
+            // associated error lets the UI clear its confirming state for retry.
             assert!(checkpoint.lock().unwrap().confirmed_chat_actions.is_empty());
             assert!(pending_rx.try_recv().is_err() || capacity == 1);
         }
@@ -1819,13 +1856,14 @@ mod tests {
         let p = proposal(Uuid::new_v4(), sast_focus());
         let (event_tx, mut rx) = mpsc::channel(4);
         let events = EventDispatcher { tx: event_tx };
-        assert!(!coordinator.confirm(p, &events).await);
+        assert!(!coordinator.confirm(p.clone(), &events).await);
         assert!(matches!(
             rx.recv().await,
             Some(ChatEvent::Error {
+                request_id: Some(id),
                 kind: ChatError::Backpressure,
                 ..
-            })
+            }) if id == p.request_id
         ));
         assert!(checkpoint.lock().unwrap().confirmed_chat_actions.is_empty());
     }
@@ -1880,9 +1918,10 @@ mod tests {
         assert!(matches!(
             rx.recv().await,
             Some(ChatEvent::Error {
+                request_id: Some(id),
                 kind: ChatError::Persistence,
                 ..
-            })
+            }) if id == p.request_id
         ));
         assert!(checkpoint.lock().unwrap().confirmed_chat_actions.is_empty());
         assert!(pending_rx.try_recv().is_err());
@@ -1963,26 +2002,31 @@ mod tests {
             1,
         );
         let (tx, mut events) = mpsc::channel(2);
+        let proposal = proposal(
+            Uuid::new_v4(),
+            crate::agent::chat::ChatAction::prioritize(
+                crate::agent::chat::VulnerabilityCategory::Injection,
+            ),
+        );
         assert!(
             coordinator
-                .confirm(
-                    proposal(
-                        Uuid::new_v4(),
-                        crate::agent::chat::ChatAction::prioritize(
-                            crate::agent::chat::VulnerabilityCategory::Injection
-                        )
-                    ),
-                    &EventDispatcher { tx },
-                )
+                .confirm(proposal.clone(), &EventDispatcher { tx })
                 .await
         );
         assert!(matches!(
             events.recv().await,
             Some(ChatEvent::Error {
+                request_id: Some(id),
                 kind: ChatError::InvalidProposal,
                 ..
-            })
+            }) if id == proposal.request_id
         ));
+        assert!(matches!(
+            events.recv().await,
+            Some(ChatEvent::Deferred { proposal_id: id, .. }) if id == proposal.proposal_id
+        ));
+        // `true` tells the command loop to remove this terminally-invalid
+        // proposal; it was never saved or published to the pending lane.
         assert!(checkpoint.lock().unwrap().confirmed_chat_actions.is_empty());
         assert!(pending.try_recv().is_err());
     }

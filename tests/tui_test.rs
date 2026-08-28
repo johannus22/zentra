@@ -15,6 +15,36 @@ use zentra_cli::tui::pentest_ui::PentestUiState;
 use zentra_cli::tui::{ScanResult, ScanStatus, UiState};
 
 #[test]
+fn scan_exit_outcome_preserves_natural_completion() {
+    let mut state = UiState::new(
+        vec![],
+        "m".to_string(),
+        1,
+        vec![],
+        String::new(),
+        String::new(),
+        String::new(),
+    );
+    assert_eq!(
+        zentra_cli::tui::scan_ui::exit_outcome(&state),
+        zentra_cli::tui::ScanOutcome::Aborted
+    );
+    state.mark_complete();
+    assert_eq!(
+        zentra_cli::tui::scan_ui::exit_outcome(&state),
+        zentra_cli::tui::ScanOutcome::Completed
+    );
+}
+
+#[test]
+fn chat_terminal_text_is_safe_for_tui_rendering() {
+    let text = zentra_cli::tui::sanitize_chat_text("\u{1b}[31mpassword=secret\u{1b}[0m\u{85}safe");
+    assert!(!text.contains('\u{1b}'));
+    assert!(!text.contains('\u{85}'));
+    assert!(!text.contains("secret"));
+}
+
+#[test]
 fn ui_state_scanner_starts_as_queued() {
     let state = UiState::new(
         vec![ScannerType::Sast, ScannerType::Report],
