@@ -32,7 +32,7 @@ src/
 ├── commands/            # scan.rs, clone.rs (clone external repo → scan → .zentra/audits/), pentest.rs, init.rs, config.rs
 ├── agent/
 │   ├── orchestrator.rs  # OrchestratorAgent — 4-phase execution
-│   └── scanner.rs       # ScannerAgent — LLM ReAct tool-use loop (max 30 iters)
+│   └── scanner.rs       # ScannerAgent — LLM ReAct tool-use loop (SAST 50 rounds; others 30)
 ├── config/              # global.rs (TOML), project.rs (JSON), keychain.rs, custom_providers.rs
 ├── provider/            # LLMProvider trait + AnthropicProvider + OpenAICompatProvider
 ├── scanners/            # system_prompt() + allowed_tools() dispatch per ScannerType
@@ -54,7 +54,9 @@ Phase 3: Report             (sequential)
 ### ReAct Loop (`agent/scanner.rs`)
 
 1. Build the system prompt and tool definitions for the `ScannerType`.
-2. Post to the provider with tools, for a maximum of 30 iterations.
+2. Post to the provider with tools for up to 50 SAST ReAct rounds or 30 rounds
+   for every other scanner. This loop cap is independent of token/context
+   limits and provider retry behavior.
 3. On a tool call, route it through `ToolRegistry::dispatch()`, then append the results to the conversation.
 4. With no tool calls, the agent is done.
 5. Every event is emitted via `mpsc::channel(128)`, to `UiState::apply_event()`. This function is pure, with no side effects.

@@ -57,12 +57,13 @@ headless/CI chat surface (`commands::ci` remains unchanged).
 
 Chat is **permanently visible** whenever interactive Chat is enabled. It starts
 **Scan-focused**. On normal-width terminals, Chat is a right pane of roughly
-43% of the work area, capped at 38–56 columns and separated by a visual gutter;
+49% of the work area, capped at 38–68 columns and separated by a visual gutter;
 scanner and results panes remain visible. On narrow terminals, Chat focus uses
 the primary work pane, while Scan focus retains a compact visible, clickable
 Chat rail. The pane contains a phase/status line, attributed redacted
 transcript, input, in-flight/queued count, and a proposal card showing action,
-targets/category, canonical scope, and earliest boundary.
+targets/category, canonical scope, and earliest boundary. The existing
+narrow/tiny primary-pane and rail fallback remains unchanged.
 
 `Tab` toggles Scan and Chat focus, matching the pentest focus style. Unmodified
 `c` focuses Chat from Scan; while Chat is focused, `c` is ordinary input.
@@ -73,13 +74,20 @@ returns focus to Scan without hiding Chat. It leaves an in-progress confirmation
 in place. `Ctrl+C` has global precedence and aborts the scan. The keys/footer
 describe the active focus.
 
-Transcript entries distinguish `You`, `Zentra`, and lifecycle `Status`/`Error`
-attribution. Mouse input can click Scan, Chat, or input to set focus; click the
-guarded Confirm/Reject controls; and scroll over the Chat transcript. Controls
-only act on the current rendered proposal region: confirmation still requires a
-complete visible action review, ignores confirming/stale regions, and is blocked
-while overlays are active. Mouse capture is enabled only for a Chat-enabled scan
-UI and is restored on exit.
+`You:` and `Zentra:` render in distinct bounded bubbles with faint separators;
+lifecycle `Status`/`Error` entries stay compact. Zentra answers reveal subtly
+and progressively in the UI, but their complete sanitized content enters Chat
+state and persistence immediately. This is a local render effect, not streaming
+provider output. The blinking input cursor/pointer appears only in Chat focus
+with no modal open. Input display sanitizes pasted terminal control sequences
+without changing the underlying stored input.
+
+Mouse input can click Scan, Chat, or input to set focus; click the guarded
+Confirm/Reject controls; and scroll over the Chat transcript. Controls only act
+on the current rendered proposal region: confirmation still requires a complete
+visible action review, ignores confirming/stale regions, and is blocked while
+overlays are active. Mouse capture is enabled only for a Chat-enabled scan UI
+and is restored on exit.
 
 After `Enter` sends a confirmation, the proposal remains visible as
 confirming until its matching durable `Confirmed` acknowledgement arrives. A
@@ -97,6 +105,13 @@ without cancellation or interrupting scan finalization. Chat is never hidden.
 keyboard, and mouse handling belong in `src/tui/scan_ui.rs`. It is not part of
 `UiState::apply_event`.
 
+### Scanner round policy
+
+SAST has a 50-round ReAct provider-call cap. Framework analysis, threat model,
+supply chain, API, IaC, and report scanners remain capped at 30 rounds. This is
+a scanner-loop round limit, not a token/context limit or a provider retry
+budget.
+
 ## Project architecture
 
 ### Existing integration points
@@ -107,8 +122,8 @@ keyboard, and mouse handling belong in `src/tui/scan_ui.rs`. It is not part of
 - `OrchestratorAgent::run` owns the phase order: framework, threat model,
   parallel SAST/SupplyChain/API/IaC, `incremental::reconcile`,
   `correlation::correlate`, `screening::screen`, and report.
-- `ScannerAgent::run` owns mutable ReAct messages, `MAX_ITERATIONS`, scanner
-  `SecurityGate`/`PromptGuard`, and mutation-capable tool dispatch.
+- `ScannerAgent::run` owns mutable ReAct messages, its scanner-specific round
+  cap, scanner `SecurityGate`/`PromptGuard`, and mutation-capable tool dispatch.
 - `ToolRegistry` owns the shared scanner coverage ledger. `ScanEvent` is
   exhaustively matched (notably in `tui::UiState::apply_event` and
   `commands::ci`), so it must not carry chat events.
@@ -344,6 +359,15 @@ confirmed transient actions for strict resume. Before a rerun, perform the
 completion/report invalidation and save as described above. On success, existing
 `Checkpoint::clear` removes this transient state; JSONL history remains.
 
+A new non-resume scan that finds a leftover regular `checkpoint.json` treats it
+as abandoned state and forces full mode for that invocation, so a selected
+ThreatModel reruns rather than being skipped by incremental scope rules.
+Detection is non-consuming: pack dry-runs and preflight failures leave this
+one-shot full-mode condition intact. The fresh runtime atomically replaces stale
+checkpoint state only when it is durably initialized. Explicit `--resume` keeps
+its strict existing behavior. After a successful completion, a later scan may
+use normal incremental mode again.
+
 `--resume` retains strict missing/corrupt checkpoint rejection. Restore pending
 actions only when checkpoint `session_id`, selected scanner set, and typed
 scope/category validation match the resumed run; otherwise defer them and
@@ -372,9 +396,10 @@ Schema-versioned JSONL permits future readers to handle unknown records safely.
    audit hashes, budget, and no-op coverage behavior are integrated.
 3. Separate channels, coordinator serialization, session identity, checkpoint
    lifecycle, and deterministic orchestration-boundary coalescing are wired.
-4. The permanent pane supports Scan/Chat focus keys, narrow primary-pane/rail
-   rendering, mouse interaction, complete-proposal confirmation, and precise
-   Escape routing.
+4. The permanent pane supports Scan/Chat focus keys, near-half-width normal
+   layout, narrow primary-pane/rail rendering, bounded transcript bubbles,
+   progressive local answer reveal, terminal-safe focused input, mouse
+   interaction, complete-proposal confirmation, and precise Escape routing.
 5. Unit and integration coverage exercises resume, security, persistence,
    cancellation, and UI lifecycle behavior; public architecture and README
    describe the released surface.
@@ -384,14 +409,14 @@ Schema-versioned JSONL permits future readers to handle unknown records safely.
 | Area | Evidence / acceptance criterion |
 |---|---|
 | Typed schema | serde round trips; reject unknown category/fragment/scanner, over-limit scope, invalid path, and malformed model output; no individual-result targeting exists. |
-| Pane/focus/mouse | Chat is permanently visible and starts Scan-focused; `Tab` toggles focus, `c` focuses Chat only from Scan, and narrow Chat focus uses the primary pane while Scan keeps a clickable rail. `Esc` rejects/clears/returns focus without hiding Chat. Mouse focus, transcript scrolling, current-region controls, stale-region rejection, and mouse-capture restoration are covered. |
+| Pane/focus/mouse | Chat is permanently visible and starts Scan-focused; normal width targets about 49% with a 68-column cap and gutter, while narrow Chat focus uses the primary pane and Scan keeps a clickable rail. `Tab` toggles focus, `c` focuses Chat only from Scan, and `Esc` rejects/clears/returns focus without hiding Chat. Bounded `You:`/`Zentra:` bubbles, compact lifecycle rows, local progressive reveal, terminal-safe cursor display, mouse focus/scrolling, current-region controls, stale-region rejection, and mouse-capture restoration are covered. |
 | Q&A/channels | One Chat request runs with 15 FIFO extras; overflow is visible; scan events remain on capacity 128 and continue rendering while Chat answers. |
 | Boundaries | Not-started target gets initial focus; running/completed target is not touched and gets one later coalesced rerun; target and Report checkpoint completions are removed/saved before rerun; final report regenerates. |
 | Scope merge | Architecture and existing incremental focus remain ordered before Chat templates; Chat cannot widen incremental paths; SupplyChain remains unscoped in incremental mode. |
 | Pipeline | Any rerun executes incremental reconciliation when applicable, then correlation, screening, and one final report. |
 | Read-only/security | Exact allowlist succeeds only when registered; `run_audit`, every writer, and process execution are blocked; Gate/GuardedProvider/PromptGuard/audit hashes operate; strict binding failure creates no pending action. |
 | Coverage | Chat reads do not change scanner coverage snapshots, UI file counts, or `.zentra/coverage.md`. |
-| Persistence/resume | Session-ID JSONL, redaction, 20-file pruning, nonfatal write error, checkpoint save/remove lifecycle, matching resume restoration, and mismatched session/scanner rejection are covered. |
+| Persistence/resume | Session-ID JSONL, redaction, 20-file pruning, nonfatal ordinary-write error, checkpoint save/remove lifecycle, matching resume restoration, mismatched session/scanner rejection, abandoned-checkpoint full-mode forcing across pack dry-run/preflight, and later incremental recovery are covered. |
 | Isolation/cancel | Chat cannot reach ScannerAgent history or mutation state; abort drains chat and prevents application; late events are ignored. |
 
 Acceptance requires the matrix plus the repository's assigned Rust test suite.

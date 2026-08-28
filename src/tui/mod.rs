@@ -206,6 +206,9 @@ mod chat_tests {
 pub struct ChatTranscriptEntry {
     pub label: String,
     pub text: String,
+    /// Answers are stored in full immediately, while this UI-only count lets
+    /// the terminal reveal them without ever changing the recorded text.
+    pub revealed_chars: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -331,11 +334,34 @@ impl ChatUiState {
         self.transcript.push_back(ChatTranscriptEntry {
             label: label.to_string(),
             text,
+            revealed_chars: (label == "Zentra").then_some(0),
         });
         while self.transcript.len() > MAX_CHAT_TRANSCRIPT {
             self.transcript.pop_front();
         }
         self.transcript_scroll = 0;
+    }
+
+    /// Reveal the newest unfinished assistant answer. The count is in chars,
+    /// not bytes, so a tick can never slice a UTF-8 codepoint.
+    pub fn advance_answer_reveal(&mut self) -> bool {
+        let Some(entry) = self.transcript.iter_mut().rev().find(|entry| {
+            entry
+                .revealed_chars
+                .is_some_and(|shown| shown < entry.text.chars().count())
+        }) else {
+            return false;
+        };
+        let total = entry.text.chars().count();
+        let shown = entry.revealed_chars.unwrap_or(total);
+        if shown >= total {
+            return false;
+        }
+        // About fourteen frames for a long answer; short answers still feel
+        // immediate. The cap prevents a single redraw from becoming costly.
+        let step = (total / 14).clamp(8, 96);
+        entry.revealed_chars = Some((shown + step).min(total));
+        true
     }
 }
 

@@ -12,7 +12,17 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-const MAX_ITERATIONS: usize = 30;
+const DEFAULT_MAX_ITERATIONS: usize = 30;
+const SAST_MAX_ITERATIONS: usize = 50;
+
+/// ReAct turn budget by scanner specialization. SAST explores source trees more
+/// deeply than the other scanners, so it receives additional tool-call rounds.
+fn max_iterations_for(scanner_type: ScannerType) -> usize {
+    match scanner_type {
+        ScannerType::Sast => SAST_MAX_ITERATIONS,
+        _ => DEFAULT_MAX_ITERATIONS,
+    }
+}
 
 pub struct ScannerAgent {
     scanner_type: ScannerType,
@@ -266,9 +276,10 @@ For example, do not flag SQL injection if the ORM listed here auto-parameterises
             .await
             .ok();
 
+        let max_iterations = max_iterations_for(self.scanner_type);
         let mut completed_normally = false;
         let mut prompt_guard_aborted = false;
-        'react: for _iter in 0..MAX_ITERATIONS {
+        'react: for _iter in 0..max_iterations {
             if self.cancel_token.is_cancelled() {
                 break 'react;
             }
@@ -503,7 +514,7 @@ For example, do not flag SQL injection if the ORM listed here auto-parameterises
             ));
         }
         if !completed_normally {
-            let message = format!("scanner exhausted the maximum of {MAX_ITERATIONS} iterations");
+            let message = format!("scanner exhausted the maximum of {max_iterations} iterations");
             self.tx
                 .send(ScanEvent::Error {
                     scanner: self.scanner_type,
@@ -520,6 +531,84 @@ For example, do not flag SQL injection if the ORM listed here auto-parameterises
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::{CompletionRequest, CompletionResponse, TokenUsage, ToolCall};
+    use async_trait::async_trait;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct EndlessToolProvider {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl LLMProvider for EndlessToolProvider {
+        async fn complete(&self, _req: CompletionRequest) -> Result<CompletionResponse> {
+            unreachable!("ScannerAgent only calls complete_with_tools")
+        }
+
+        async fn complete_with_tools(
+            &self,
+            _system: &str,
+            _messages: &[AgentMessage],
+            _tools: &[crate::provider::ToolDefinition],
+            _max_tokens: u32,
+            _cancel_token: Option<&CancellationToken>,
+        ) -> Result<CompletionResponse> {
+            let round = self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(CompletionResponse {
+                content: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: format!("list-files-{round}"),
+                    name: "list_files".to_string(),
+                    arguments: serde_json::json!({"dir": "."}),
+                }],
+                usage: TokenUsage::default(),
+            })
+        }
+
+        fn context_window(&self) -> u32 {
+            200_000
+        }
+
+        fn model_name(&self) -> &str {
+            "endless-test-provider"
+        }
+    }
+
+    #[test]
+    fn iteration_policy_extends_only_sast() {
+        assert_eq!(max_iterations_for(ScannerType::Sast), 50);
+        assert_eq!(max_iterations_for(ScannerType::ApiScan), 30);
+    }
+
+    #[tokio::test]
+    async fn sast_exhaustion_uses_fifty_rounds_and_reports_fifty() {
+        let provider = Arc::new(EndlessToolProvider {
+            calls: AtomicUsize::new(0),
+        });
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let registry = Arc::new(ToolRegistry::new());
+        let writer = Arc::new(StateWriter::new(temp_dir.path()).unwrap());
+        let (tx, mut rx) = mpsc::channel(128);
+        let agent = ScannerAgent::new(
+            ScannerType::Sast,
+            provider.clone(),
+            registry,
+            writer,
+            tx,
+            None,
+            CancellationToken::new(),
+        );
+
+        let error = agent.run().await.unwrap_err();
+
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 50);
+        assert!(error.to_string().contains("maximum of 50 iterations"));
+        let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(events.iter().any(|event| {
+            matches!(event, ScanEvent::Error { scanner: ScannerType::Sast, message }
+                if message.contains("maximum of 50 iterations"))
+        }));
+    }
 
     #[test]
     fn initial_prompt_unchanged_for_full_scan() {

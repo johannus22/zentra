@@ -216,15 +216,21 @@ async fn run_once(
 
     // Resume: load the checkpoint when --resume is set, so the orchestrator can
     // skip scanners that completed successfully in a prior (crashed) run.
-    // A fresh (non-resume) scan clears any stale checkpoint so it starts clean.
+    // A fresh (non-resume) scan treats a stale regular checkpoint as abandoned.
+    // It is not replaced until the durable fresh runtime is prepared below: pack
+    // dry-runs and preflight failures must leave the one-shot full-scan trigger.
+    let abandoned_checkpoint_present = if resume {
+        false
+    } else {
+        detect_abandoned_checkpoint(&zentra_dir)
+            .context("Cannot start scan: failed to inspect stale checkpoint")?
+    };
     let resume_checkpoint = if resume {
         Some(
             Checkpoint::load_strict(&zentra_dir)
                 .context("Cannot resume: checkpoint.json is missing or corrupt")?,
         )
     } else {
-        Checkpoint::clear_strict(&zentra_dir)
-            .context("Cannot start scan: failed to clear stale checkpoint")?;
         None
     };
 
@@ -244,17 +250,22 @@ async fn run_once(
     let is_git = head_commit.is_some() || git_is_repo(&target_root);
     let engine_version = env!("CARGO_PKG_VERSION");
     let model_id = format!("{} · {}", profile.model, profile_name);
-    let decision = decide_mode(ModeInputs {
-        // Pack mode sends the whole repository, so an incremental baseline has
-        // nothing to narrow. The two modes are mutually exclusive by definition.
-        // Resume replays completed scanner state. It must never enter the
-        // incremental reconciliation path.
-        forced_full: full || pack_options.pack || resume,
-        is_git_repo: is_git,
-        current_engine_version: engine_version,
-        current_model_id: &model_id,
-        prior: prior_manifest.as_ref(),
-    });
+    let abandoned_checkpoint_forces_full =
+        abandoned_checkpoint_present && !full && !pack_options.pack && !resume;
+    let decision = decide_scan_mode(
+        ModeInputs {
+            // Pack mode sends the whole repository, so an incremental baseline has
+            // nothing to narrow. The two modes are mutually exclusive by definition.
+            // Resume replays completed scanner state. It must never enter the
+            // incremental reconciliation path.
+            forced_full: full || pack_options.pack || resume || abandoned_checkpoint_forces_full,
+            is_git_repo: is_git,
+            current_engine_version: engine_version,
+            current_model_id: &model_id,
+            prior: prior_manifest.as_ref(),
+        },
+        abandoned_checkpoint_forces_full,
+    );
     // Pack mode forces a full scan through `forced_full`, but reporting the
     // `--full` reason would name a flag the operator did not pass.
     if pack_options.pack {
@@ -367,7 +378,8 @@ async fn run_once(
 
     // Establish the complete interactive runtime identity before either the
     // coordinator or orchestrator can observe it. In particular, a fresh
-    // checkpoint is durable before chat can accept a confirmation.
+    // checkpoint replaces any abandoned checkpoint only here, immediately
+    // before the scan task can be launched.
     let prepared_chat = prepare_chat_runtime(
         &zentra_dir,
         resume_checkpoint.clone(),
@@ -676,6 +688,35 @@ fn canonical_scanner_names(selected: &[ScannerType]) -> Result<Vec<String>> {
         bail!("interactive scan selected duplicate scanners");
     }
     Ok(names)
+}
+
+/// Detect a stale checkpoint without treating its contents as resume authority.
+/// We inspect the link itself, rather than following it, so only a regular file
+/// is considered an abandoned checkpoint for the one-shot full-scan policy.
+/// Replacement occurs later through `Checkpoint::save_strict` when the fresh
+/// interactive runtime is durably initialized.
+fn detect_abandoned_checkpoint(zentra_dir: &Path) -> Result<bool> {
+    let checkpoint_path = zentra_dir.join("checkpoint.json");
+    let abandoned_regular_checkpoint = match std::fs::symlink_metadata(&checkpoint_path) {
+        Ok(metadata) => metadata.file_type().is_file(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
+    Ok(abandoned_regular_checkpoint)
+}
+
+/// Determine the mode for one invocation. A detected regular checkpoint is a
+/// one-shot full-scan trigger; later fresh scans may use the manifest written by
+/// a successful completion as normal.
+fn decide_scan_mode(
+    mode_inputs: ModeInputs<'_>,
+    abandoned_checkpoint_forces_full: bool,
+) -> crate::incremental::ModeDecision {
+    let mut decision = decide_mode(mode_inputs);
+    if abandoned_checkpoint_forces_full {
+        decision.reason = "abandoned checkpoint present — running full scan".to_string();
+    }
+    decision
 }
 
 /// Return the one scanner set that all interactive participants share. On a
@@ -1078,12 +1119,163 @@ mod tests {
         }
     }
 
+    fn matching_prior_manifest() -> ScanManifest {
+        ScanManifest {
+            last_scan_commit: Some("old-successful-commit".to_string()),
+            was_dirty: false,
+            scanned_at: "2026-01-01T00:00:00Z".to_string(),
+            scanner_set: vec!["threat_model".to_string()],
+            engine_version: "test-engine".to_string(),
+            model_id: "test-model".to_string(),
+            mode: "full".to_string(),
+            file_hashes: None,
+        }
+    }
+
+    fn mode_for_test(
+        prior: &ScanManifest,
+        full: bool,
+        resume: bool,
+        abandoned_checkpoint_present: bool,
+    ) -> crate::incremental::ModeDecision {
+        let abandoned_checkpoint_forces_full = abandoned_checkpoint_present && !full && !resume;
+        decide_scan_mode(
+            ModeInputs {
+                forced_full: full || resume || abandoned_checkpoint_forces_full,
+                is_git_repo: true,
+                current_engine_version: "test-engine",
+                current_model_id: "test-model",
+                prior: Some(prior),
+            },
+            abandoned_checkpoint_forces_full,
+        )
+    }
+
+    fn simulated_pre_runtime_failure() -> Result<()> {
+        bail!("simulated pre-runtime setup failure")
+    }
+
     #[test]
-    fn fresh_chat_runtime_persists_one_session_and_canonical_snapshot() {
+    fn fresh_scan_without_checkpoint_keeps_automatic_incremental_mode() {
         let temp = tempfile::TempDir::new().unwrap();
         let zentra_dir = temp.path().join(".zentra");
         std::fs::create_dir_all(&zentra_dir).unwrap();
+        matching_prior_manifest().save(&zentra_dir).unwrap();
+        let prior = ScanManifest::load(&zentra_dir).unwrap();
 
+        assert!(!detect_abandoned_checkpoint(&zentra_dir).unwrap());
+        assert_eq!(
+            mode_for_test(&prior, false, false, false).mode,
+            ScanMode::Incremental
+        );
+    }
+
+    #[test]
+    fn abandoned_checkpoint_survives_pack_dry_run_and_forces_full_scan() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let zentra_dir = temp.path().join(".zentra");
+        std::fs::create_dir_all(&zentra_dir).unwrap();
+        matching_prior_manifest().save(&zentra_dir).unwrap();
+        std::fs::write(zentra_dir.join("checkpoint.json"), "abandoned checkpoint").unwrap();
+        let prior = ScanManifest::load(&zentra_dir).unwrap();
+        let requested = vec![ScannerType::ThreatModel, ScannerType::Report];
+        let selected = effective_scanners_for_run(&requested, None, true).unwrap();
+
+        // Pack dry-run returns before fresh runtime preparation, so detection
+        // must not consume the checkpoint or its one-shot full-scan policy.
+        assert!(detect_abandoned_checkpoint(&zentra_dir).unwrap());
+        assert!(zentra_dir.join("checkpoint.json").is_file());
+        assert_eq!(
+            mode_for_test(&prior, false, false, true).mode,
+            ScanMode::Full
+        );
+        assert!(selected.contains(&ScannerType::ThreatModel));
+    }
+
+    #[test]
+    fn abandoned_checkpoint_survives_pre_runtime_failure_and_still_forces_full() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let zentra_dir = temp.path().join(".zentra");
+        std::fs::create_dir_all(&zentra_dir).unwrap();
+        let prior = matching_prior_manifest();
+        std::fs::write(zentra_dir.join("checkpoint.json"), "abandoned checkpoint").unwrap();
+
+        assert!(detect_abandoned_checkpoint(&zentra_dir).unwrap());
+        assert!(simulated_pre_runtime_failure().is_err());
+        assert!(zentra_dir.join("checkpoint.json").is_file());
+        assert_eq!(
+            mode_for_test(&prior, false, false, true).mode,
+            ScanMode::Full
+        );
+    }
+
+    #[test]
+    fn resume_and_explicit_full_keep_their_full_mode_behavior() {
+        let prior = matching_prior_manifest();
+        assert_eq!(
+            mode_for_test(&prior, false, true, false).mode,
+            ScanMode::Full
+        );
+        assert_eq!(
+            mode_for_test(&prior, true, false, false).mode,
+            ScanMode::Full
+        );
+    }
+
+    #[test]
+    fn corrupt_regular_checkpoint_is_retained_until_fresh_runtime_handoff() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let zentra_dir = temp.path().join(".zentra");
+        std::fs::create_dir_all(&zentra_dir).unwrap();
+        let manifest_path = zentra_dir.join("scan-manifest.json");
+        std::fs::write(&manifest_path, "prior manifest").unwrap();
+        std::fs::write(zentra_dir.join("checkpoint.json"), "not checkpoint json").unwrap();
+
+        assert!(detect_abandoned_checkpoint(&zentra_dir).unwrap());
+        assert_eq!(
+            std::fs::read_to_string(zentra_dir.join("checkpoint.json")).unwrap(),
+            "not checkpoint json"
+        );
+        assert_eq!(
+            std::fs::read_to_string(manifest_path).unwrap(),
+            "prior manifest"
+        );
+    }
+
+    #[test]
+    fn nonregular_checkpoint_is_not_trusted_or_removed_before_fresh_handoff() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let zentra_dir = temp.path().join(".zentra");
+        let checkpoint_path = zentra_dir.join("checkpoint.json");
+        std::fs::create_dir_all(&checkpoint_path).unwrap();
+
+        assert!(!detect_abandoned_checkpoint(&zentra_dir).unwrap());
+        assert!(prepare_chat_runtime(&zentra_dir, None, &selected_scanners(), "fresh").is_err());
+        assert!(checkpoint_path.is_dir());
+    }
+
+    #[test]
+    fn fresh_chat_runtime_replaces_abandoned_checkpoint_state_and_persists_new_session() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let zentra_dir = temp.path().join(".zentra");
+        std::fs::create_dir_all(&zentra_dir).unwrap();
+        let stale_action = ConfirmedChatAction::new(
+            uuid::Uuid::new_v4(),
+            1,
+            ChatAction::prioritize(VulnerabilityCategory::Injection),
+            selected_scanners(),
+        )
+        .unwrap();
+        let mut stale = lifecycle_checkpoint("abandoned-chat", vec![stale_action]);
+        stale.completed.insert("sast".to_string());
+        stale.save_strict(&zentra_dir).unwrap();
+        let prior = matching_prior_manifest();
+
+        assert!(detect_abandoned_checkpoint(&zentra_dir).unwrap());
+        assert_eq!(
+            mode_for_test(&prior, false, false, true).mode,
+            ScanMode::Full
+        );
         let prepared =
             prepare_chat_runtime(&zentra_dir, None, &selected_scanners(), "fresh-chat").unwrap();
 
@@ -1091,6 +1283,11 @@ mod tests {
         assert_eq!(prepared.session_id, "fresh-chat");
         assert_eq!(persisted.session_id, prepared.session_id);
         assert_eq!(persisted.scanner_set, vec!["report", "sast"]);
+        assert!(persisted.completed.is_empty());
+        assert!(persisted.confirmed_chat_actions.is_empty());
+        // If setup fails after this durable replacement but before launch, the
+        // new regular checkpoint remains a trigger for the next fresh run.
+        assert!(detect_abandoned_checkpoint(&zentra_dir).unwrap());
         assert_eq!(prepared.snapshot.session_id, prepared.session_id);
         assert_eq!(prepared.snapshot.selected_scanners, vec!["report", "sast"]);
         assert!(prepared

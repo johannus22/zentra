@@ -3,7 +3,8 @@
 //! Zentra uses agentic exploration, so nothing guarantees an agent visits every
 //! file. Three limits shape the path it takes: `list_files` returns directory
 //! counts instead of names above 200 entries, `read_file` refuses files over
-//! 100,000 bytes, and the ReAct loop stops after 30 iterations. In a large
+//! 100,000 bytes, and the ReAct loop stops after a scanner-specific budget
+//! (30 iterations normally; 50 for SAST). In a large
 //! repository an agent can spend the whole budget on navigation and never open a
 //! source file. Before this ledger existed, that scan reported success.
 //!
@@ -198,9 +199,21 @@ mod tests {
     #[test]
     fn counts_distinct_reads_once() {
         let mut l = CoverageLedger::default();
-        l.record_read(ScannerType::Sast, "src/a.rs", ReadOutcome::Read { bytes: 10 });
-        l.record_read(ScannerType::Sast, "src/a.rs", ReadOutcome::Read { bytes: 10 });
-        l.record_read(ScannerType::Sast, "src/b.rs", ReadOutcome::Read { bytes: 10 });
+        l.record_read(
+            ScannerType::Sast,
+            "src/a.rs",
+            ReadOutcome::Read { bytes: 10 },
+        );
+        l.record_read(
+            ScannerType::Sast,
+            "src/a.rs",
+            ReadOutcome::Read { bytes: 10 },
+        );
+        l.record_read(
+            ScannerType::Sast,
+            "src/b.rs",
+            ReadOutcome::Read { bytes: 10 },
+        );
 
         let s = l.summary(4);
         assert_eq!(s.distinct_read, 2);
@@ -212,7 +225,11 @@ mod tests {
     #[test]
     fn distinct_read_is_a_union_across_scanners() {
         let mut l = CoverageLedger::default();
-        l.record_read(ScannerType::Sast, "src/a.rs", ReadOutcome::Read { bytes: 1 });
+        l.record_read(
+            ScannerType::Sast,
+            "src/a.rs",
+            ReadOutcome::Read { bytes: 1 },
+        );
         l.record_read(
             ScannerType::ApiScan,
             "src/a.rs",
@@ -232,8 +249,16 @@ mod tests {
     #[test]
     fn windows_and_posix_paths_count_once() {
         let mut l = CoverageLedger::default();
-        l.record_read(ScannerType::Sast, "src\\a.rs", ReadOutcome::Read { bytes: 1 });
-        l.record_read(ScannerType::Sast, "src/a.rs", ReadOutcome::Read { bytes: 1 });
+        l.record_read(
+            ScannerType::Sast,
+            "src\\a.rs",
+            ReadOutcome::Read { bytes: 1 },
+        );
+        l.record_read(
+            ScannerType::Sast,
+            "src/a.rs",
+            ReadOutcome::Read { bytes: 1 },
+        );
         assert_eq!(l.summary(1).distinct_read, 1);
     }
 
@@ -274,7 +299,11 @@ mod tests {
     #[test]
     fn percent_rounds_down() {
         let mut l = CoverageLedger::default();
-        l.record_read(ScannerType::Sast, "src/a.rs", ReadOutcome::Read { bytes: 1 });
+        l.record_read(
+            ScannerType::Sast,
+            "src/a.rs",
+            ReadOutcome::Read { bytes: 1 },
+        );
         assert_eq!(l.summary(3).percent(), 33);
     }
 
@@ -282,7 +311,11 @@ mod tests {
     fn last_outcome_for_returns_the_most_recent_outcome() {
         let mut l = CoverageLedger::default();
         l.record_read(ScannerType::Sast, "src/a.rs", ReadOutcome::Failed);
-        l.record_read(ScannerType::Sast, "src/a.rs", ReadOutcome::Read { bytes: 5 });
+        l.record_read(
+            ScannerType::Sast,
+            "src/a.rs",
+            ReadOutcome::Read { bytes: 5 },
+        );
 
         assert_eq!(
             l.last_outcome_for(ScannerType::Sast, "src/a.rs"),
@@ -299,7 +332,11 @@ mod tests {
     #[test]
     fn last_outcome_for_normalizes_separators() {
         let mut l = CoverageLedger::default();
-        l.record_read(ScannerType::Sast, "src\\a.rs", ReadOutcome::Read { bytes: 5 });
+        l.record_read(
+            ScannerType::Sast,
+            "src\\a.rs",
+            ReadOutcome::Read { bytes: 5 },
+        );
         assert_eq!(
             l.last_outcome_for(ScannerType::Sast, "src/a.rs"),
             Some(ReadOutcome::Read { bytes: 5 })
@@ -309,7 +346,11 @@ mod tests {
     #[test]
     fn never_read_lists_untouched_candidates() {
         let mut l = CoverageLedger::default();
-        l.record_read(ScannerType::Sast, "src/a.rs", ReadOutcome::Read { bytes: 1 });
+        l.record_read(
+            ScannerType::Sast,
+            "src/a.rs",
+            ReadOutcome::Read { bytes: 1 },
+        );
         let candidates = vec!["src/a.rs".to_string(), "src/b.rs".to_string()];
         assert_eq!(l.never_read(&candidates), vec!["src/b.rs".to_string()]);
     }
@@ -333,7 +374,11 @@ mod tests {
     #[test]
     fn markdown_names_the_ratio_and_truncates_the_list() {
         let mut l = CoverageLedger::default();
-        l.record_read(ScannerType::Sast, "src/a.rs", ReadOutcome::Read { bytes: 1 });
+        l.record_read(
+            ScannerType::Sast,
+            "src/a.rs",
+            ReadOutcome::Read { bytes: 1 },
+        );
         let never: Vec<String> = (0..30).map(|i| format!("src/f{i}.rs")).collect();
 
         let md = render_markdown(&l.summary(31), &never);
@@ -347,7 +392,11 @@ mod tests {
     #[test]
     fn markdown_omits_the_never_opened_section_when_everything_was_read() {
         let mut l = CoverageLedger::default();
-        l.record_read(ScannerType::Sast, "src/a.rs", ReadOutcome::Read { bytes: 1 });
+        l.record_read(
+            ScannerType::Sast,
+            "src/a.rs",
+            ReadOutcome::Read { bytes: 1 },
+        );
         let md = render_markdown(&l.summary(1), &[]);
 
         assert!(md.contains("1 of 1 (100%)"), "got: {md}");

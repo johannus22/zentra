@@ -99,7 +99,10 @@ zentra scan --only iac
 
 By default, an eligible existing project uses an incremental baseline. Use
 `--full` to force a full scan, `--resume` to continue a failed or interrupted
-scan, or `--pack` to give each scanner a context-checked repository pack:
+scan, or `--pack` to give each scanner a context-checked repository pack. A
+new non-resume scan with a leftover regular checkpoint from an abandoned or
+cancelled run runs full once to replace that state; explicit `--resume` is
+unchanged:
 
 ```bash
 zentra scan --full
@@ -109,6 +112,11 @@ zentra scan --pack --dry-run  # inspect size and token estimate; no provider cal
 
 `--resume` and incremental scanning cannot be combined. The resume checkpoint
 is stored at `.zentra/checkpoint.json`; a successful complete scan removes it.
+After a successful completion, later scans can use their normal incremental
+baseline again.
+
+SAST can use up to 50 ReAct provider rounds; the other scanners use up to 30.
+This is separate from token/context limits and provider retry behavior.
 
 ### Interactive scan Chat
 
@@ -122,12 +130,14 @@ Scan-focused and remains visible for the entire Chat-enabled scan.
   rejects a proposal, then clears focused input, then returns focus to Scan; it
   never hides Chat and does not interrupt a confirmation in progress. `Ctrl+C`
   always aborts the scan.
-- On normal terminals Chat is a dedicated right pane beside Scan. On narrow
-  terminals, Chat focus uses the primary pane; Scan focus keeps a compact,
-  clickable Chat rail. You can click Scan, Chat, or the input to focus, scroll
-  the Chat transcript, and use its guarded Confirm/Reject controls. Those
-  controls require the same fully visible action review; transcript labels show
-  `You`, `Zentra`, and status/error messages.
+- On normal terminals Chat is a dedicated near-half-width right pane beside
+  Scan. On narrow terminals, Chat focus uses the primary pane; Scan focus keeps
+  a compact, clickable Chat rail. You can click Scan, Chat, or the input to
+  focus, scroll the Chat transcript, and use its guarded Confirm/Reject
+  controls. Those controls require the same fully visible action review.
+- Conversation uses distinct `You:` and `Zentra:` bubbles, with compact
+  status/error messages. Zentra answers appear progressively in the UI after
+  they are available; this is display behavior, not provider-output streaming.
 - Chat answers bounded, redacted scan and repository questions with a
   read-only profile (`list_files`, `read_file`, `grep_code`, and bounded Git
   inspection). It can propose typed focus/rerun or vulnerability-category

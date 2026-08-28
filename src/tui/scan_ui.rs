@@ -353,6 +353,7 @@ async fn run_loop(
             }
             _ = animation_ticker.tick() => {
                 state.animation_index = state.animation_index.wrapping_add(1);
+                state.chat.advance_answer_reveal();
             }
         }
 
@@ -717,55 +718,198 @@ pub fn chat_uses_primary_pane(width: u16, focus: ChatFocus) -> bool {
     width < CHAT_NARROW_WIDTH && focus == ChatFocus::Chat
 }
 
-/// Chat occupies about 43% on ordinary terminals, capped to protect scan work.
+/// Chat gets a deliberate near-half column on normal terminals, with a hard
+/// cap that leaves the scanner and findings panes genuinely usable.
 pub fn chat_pane_width(width: u16) -> u16 {
-    ((width as u32 * 43 / 100) as u16)
-        .clamp(38, 56)
+    ((width as u32 * 49 / 100) as u16)
+        .clamp(38, 68)
         .min(width.saturating_sub(42))
 }
 
 fn cell_width(text: &str) -> usize {
     text.chars()
-        .map(|ch| if ch.is_ascii() { 1 } else { 2 })
+        .map(|ch| {
+            if ch.is_ascii() || ('\u{2500}'..='\u{257f}').contains(&ch) {
+                1
+            } else {
+                2
+            }
+        })
         .sum()
 }
 
-/// Rows as rendered: sender prefix occupies the first row and continuations
-/// align under message text. This mirrors the transcript paragraph width.
+fn pad_cells(text: &str, width: usize) -> String {
+    format!(
+        "{text}{}",
+        " ".repeat(width.saturating_sub(cell_width(text)))
+    )
+}
+
+fn take_cells(text: &str, width: usize) -> String {
+    let mut output = String::new();
+    let mut used = 0;
+    for ch in text.chars() {
+        let cells = if ch.is_ascii() { 1 } else { 2 };
+        if used + cells > width {
+            break;
+        }
+        output.push(ch);
+        used += cells;
+    }
+    output
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TranscriptSpeaker {
+    You,
+    Zentra,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TranscriptRowKind {
+    BubbleBorder(TranscriptSpeaker),
+    BubbleContent {
+        speaker: TranscriptSpeaker,
+        label: bool,
+    },
+    Separator,
+    Status,
+    Error,
+}
+
+#[derive(Clone, Debug)]
+struct RenderedTranscriptRow {
+    text: String,
+    kind: TranscriptRowKind,
+}
+
+/// Rows as rendered: conversational entries are bounded bubbles with an inline
+/// sender prefix; compact lifecycle rows remain deliberately unboxed.
 pub fn transcript_rows(
     entries: &std::collections::VecDeque<crate::tui::ChatTranscriptEntry>,
     width: u16,
 ) -> Vec<String> {
+    transcript_rendered_rows(entries, width)
+        .into_iter()
+        .map(|row| row.text)
+        .collect()
+}
+
+fn transcript_rendered_rows(
+    entries: &std::collections::VecDeque<crate::tui::ChatTranscriptEntry>,
+    width: u16,
+) -> Vec<RenderedTranscriptRow> {
     let width = width.max(1) as usize;
     let mut rows = Vec::new();
+    let mut previous_was_message = false;
     for entry in entries {
-        let (label, prefix) = match entry.label.as_str() {
-            "You" | "YOU" => ("You", "› "),
-            "Zentra" | "ZENTRA" => ("Zentra", ""),
-            "CHAT ERROR" => ("Error", "! "),
-            _ => ("Status", "· "),
-        };
-        let first = format!("{prefix}{label}  ");
-        let indent = " ".repeat(cell_width(&first).min(width.saturating_sub(1)));
-        for (index, source) in sanitize_chat_text(&entry.text).split('\n').enumerate() {
-            let mut line = if index == 0 {
-                first.clone()
+        let conversational = matches!(entry.label.as_str(), "You" | "YOU" | "Zentra" | "ZENTRA");
+        if conversational {
+            if previous_was_message {
+                rows.push(RenderedTranscriptRow {
+                    text: "┄".repeat(width),
+                    kind: TranscriptRowKind::Separator,
+                });
+            }
+            let (speaker, label) = if entry.label.eq_ignore_ascii_case("you") {
+                (TranscriptSpeaker::You, "You")
             } else {
-                indent.clone()
+                (TranscriptSpeaker::Zentra, "Zentra")
             };
+            let visible = entry.revealed_chars.map_or_else(
+                || entry.text.clone(),
+                |count| entry.text.chars().take(count).collect(),
+            );
+            let user_indent = if speaker == TranscriptSpeaker::You {
+                2.min(width.saturating_sub(3))
+            } else {
+                0
+            };
+            // indent + two borders + two padding cells + content <= viewport.
+            let content_width = width.saturating_sub(user_indent + 4).max(1);
+            let indent = " ".repeat(user_indent);
+            rows.push(RenderedTranscriptRow {
+                text: format!("{indent}╭{}╮", "─".repeat(content_width + 2)),
+                kind: TranscriptRowKind::BubbleBorder(speaker),
+            });
+            let first = take_cells(&format!("{label}: "), content_width);
+            let continuation = " ".repeat(cell_width(&first).min(content_width));
+            // A label belongs to exactly one physical content row. Keeping
+            // this independent of source-line/wrap indices also covers an
+            // empty first source line and a first line that wraps immediately.
+            let mut label_pending = true;
+            for (source_index, source) in sanitize_chat_text(&visible).split('\n').enumerate() {
+                let mut line = if source_index == 0 {
+                    first.clone()
+                } else {
+                    continuation.clone()
+                };
+                let mut used = cell_width(&line);
+                for ch in source.chars() {
+                    let cells = if ch.is_ascii() { 1 } else { 2 };
+                    if used + cells > content_width && used > 0 {
+                        rows.push(RenderedTranscriptRow {
+                            text: format!("{indent}│ {} │", pad_cells(&line, content_width)),
+                            kind: TranscriptRowKind::BubbleContent {
+                                speaker,
+                                label: std::mem::replace(&mut label_pending, false),
+                            },
+                        });
+                        line = continuation.clone();
+                        used = cell_width(&line);
+                    }
+                    line.push(ch);
+                    used += cells;
+                }
+                rows.push(RenderedTranscriptRow {
+                    text: format!("{indent}│ {} │", pad_cells(&line, content_width)),
+                    kind: TranscriptRowKind::BubbleContent {
+                        speaker,
+                        label: std::mem::replace(&mut label_pending, false),
+                    },
+                });
+            }
+            rows.push(RenderedTranscriptRow {
+                text: format!("{indent}╰{}╯", "─".repeat(content_width + 2)),
+                kind: TranscriptRowKind::BubbleBorder(speaker),
+            });
+        } else {
+            let (label, prefix) = if entry.label == "CHAT ERROR" {
+                ("Error", "! ")
+            } else {
+                ("Status", "· ")
+            };
+            let first = take_cells(&format!("{prefix}{label}: "), width);
+            let indent = " ".repeat(cell_width(&first).min(width.saturating_sub(1)));
+            let mut line = first.clone();
             let mut used = cell_width(&line);
-            for ch in source.chars() {
+            for ch in sanitize_chat_text(&entry.text).chars() {
                 let cells = if ch.is_ascii() { 1 } else { 2 };
                 if used + cells > width && used > 0 {
-                    rows.push(line);
+                    rows.push(RenderedTranscriptRow {
+                        text: line,
+                        kind: if label == "Error" {
+                            TranscriptRowKind::Error
+                        } else {
+                            TranscriptRowKind::Status
+                        },
+                    });
                     line = indent.clone();
                     used = cell_width(&line);
                 }
                 line.push(ch);
                 used += cells;
             }
-            rows.push(line);
+            rows.push(RenderedTranscriptRow {
+                text: line,
+                kind: if label == "Error" {
+                    TranscriptRowKind::Error
+                } else {
+                    TranscriptRowKind::Status
+                },
+            });
         }
+        previous_was_message = conversational;
     }
     rows
 }
@@ -889,7 +1033,8 @@ fn render_chat_drawer(
         rows[0],
     );
     let visible = rows[1].height.saturating_sub(2) as usize;
-    let all_transcript_rows = transcript_rows(&chat.transcript, rows[1].width.saturating_sub(2));
+    let all_transcript_rows =
+        transcript_rendered_rows(&chat.transcript, rows[1].width.saturating_sub(2));
     let max_scroll = all_transcript_rows.len().saturating_sub(visible);
     let scroll = state.chat.transcript_scroll.min(max_scroll);
     state.chat.transcript_scroll = scroll;
@@ -899,18 +1044,7 @@ fn render_chat_drawer(
         .iter()
         .skip(start)
         .take(end.saturating_sub(start))
-        .map(|row| {
-            let color = if row.starts_with("› You") {
-                state.theme.success
-            } else if row.starts_with("Zentra") {
-                state.theme.accent
-            } else if row.starts_with("! Error") {
-                state.theme.error
-            } else {
-                state.theme.warning
-            };
-            Line::from(Span::styled(row, Style::default().fg(color)))
-        })
+        .map(|row| styled_transcript_row(row, &state.theme))
         .collect();
     frame.render_widget(
         Paragraph::new(transcript)
@@ -950,7 +1084,14 @@ fn render_chat_drawer(
         }
     }
     let prompt = if chat.focus == ChatFocus::Chat {
-        sanitize_chat_text(&format!("> {}", chat.input))
+        let cursor_on =
+            state.animation_index % 8 < 4 && !state.popup_open && !state.provider_popup_open;
+        input_display(
+            &chat.input,
+            chat.cursor,
+            rows[3].width.saturating_sub(4) as usize,
+            cursor_on,
+        )
     } else {
         "Press Tab or c to ask about this scan".to_string()
     };
@@ -1030,6 +1171,140 @@ fn render_chat_drawer(
         Paragraph::new(hint).style(Style::default().fg(state.theme.text_dim)),
         rows[4],
     );
+}
+
+fn styled_transcript_row(
+    row: &RenderedTranscriptRow,
+    theme: &crate::tui::theme::Theme,
+) -> Line<'static> {
+    let speaker_color = |speaker| match speaker {
+        TranscriptSpeaker::You => theme.success,
+        TranscriptSpeaker::Zentra => theme.accent,
+    };
+    if let TranscriptRowKind::BubbleContent {
+        speaker,
+        label: true,
+    } = row.kind
+    {
+        let label = match speaker {
+            TranscriptSpeaker::You => "You:",
+            TranscriptSpeaker::Zentra => "Zentra:",
+        };
+        if let Some(at) = row.text.find(label) {
+            let end = at + label.len();
+            Line::from(vec![
+                Span::styled(
+                    row.text[..at].to_string(),
+                    Style::default().fg(theme.border),
+                ),
+                Span::styled(
+                    label.to_string(),
+                    Style::default()
+                        .fg(speaker_color(speaker))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(row.text[end..].to_string(), Style::default().fg(theme.text)),
+            ])
+        } else {
+            Line::from(Span::styled(
+                row.text.clone(),
+                Style::default().fg(theme.text),
+            ))
+        }
+    } else {
+        let color = match row.kind {
+            TranscriptRowKind::BubbleBorder(speaker)
+            | TranscriptRowKind::BubbleContent { speaker, .. } => speaker_color(speaker),
+            TranscriptRowKind::Separator => theme.border,
+            TranscriptRowKind::Status => theme.text_dim,
+            TranscriptRowKind::Error => theme.error,
+        };
+        Line::from(Span::styled(row.text.clone(), Style::default().fg(color)))
+    }
+}
+
+/// Render a clipped, byte-safe one-line input with a visible cursor glyph.
+/// Keeping the tail nearest the edit point makes left/right editing legible on
+/// small terminals without adding a separate horizontal-scroll state.
+pub fn input_display(input: &str, cursor: usize, max_cells: usize, cursor_on: bool) -> String {
+    let (input, cursor) = sanitize_input_display(input, cursor);
+    let (before, after) = input.split_at(cursor);
+    let marker = if cursor_on { "▏" } else { " " };
+    let mut used = cell_width(marker);
+    let mut kept = Vec::new();
+    for ch in before.chars().rev() {
+        let cells = if ch.is_ascii() { 1 } else { 2 };
+        if used + cells > max_cells {
+            break;
+        }
+        kept.push(ch);
+        used += cells;
+    }
+    kept.reverse();
+    let prefix: String = kept.into_iter().collect();
+    let mut result = format!("> {prefix}{marker}");
+    for ch in after.chars() {
+        let cells = if ch.is_ascii() { 1 } else { 2 };
+        if used + cells > max_cells {
+            break;
+        }
+        result.push(ch);
+        used += cells;
+    }
+    result
+}
+
+/// Produce a one-line terminal-safe view of raw edit state and map its UTF-8
+/// cursor into that view. CSI/OSC and all C0/C1 controls are removed; ordinary
+/// line breaks and tabs become a single visible space. State is untouched.
+pub fn sanitize_input_display(input: &str, cursor: usize) -> (String, usize) {
+    let mut raw_cursor = cursor.min(input.len());
+    while raw_cursor > 0 && !input.is_char_boundary(raw_cursor) {
+        raw_cursor -= 1;
+    }
+    let mut out = String::with_capacity(input.len());
+    let mut display_cursor = 0;
+    let bytes = input.as_bytes();
+    let mut index = 0;
+    while index < input.len() {
+        let ch = input[index..].chars().next().expect("valid boundary");
+        index += ch.len_utf8();
+        if ch == '\u{1b}' {
+            if input[index..].starts_with('[') {
+                index += 1;
+                while index < input.len() {
+                    let next = input[index..].chars().next().unwrap();
+                    index += next.len_utf8();
+                    if next.is_ascii() && ('@'..='~').contains(&next) {
+                        break;
+                    }
+                }
+            } else if input[index..].starts_with(']') {
+                index += 1;
+                while index < input.len() {
+                    if bytes[index] == 0x07 {
+                        index += 1;
+                        break;
+                    }
+                    if bytes[index] == 0x1b && input[index + 1..].starts_with('\\') {
+                        index += 2;
+                        break;
+                    }
+                    let next = input[index..].chars().next().unwrap();
+                    index += next.len_utf8();
+                }
+            }
+        } else if ch == '\n' || ch == '\r' || ch == '\t' {
+            out.push(' ');
+        } else if !ch.is_control() {
+            out.push(ch);
+        }
+        if index <= raw_cursor {
+            display_cursor = out.len();
+        }
+    }
+    let display_cursor = display_cursor.min(out.len());
+    (out, display_cursor)
 }
 
 fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
@@ -1663,6 +1938,205 @@ mod tests {
         assert_eq!(state.chat.focus, ChatFocus::Chat);
         handle_chat_key(&mut state, key(KeyCode::Char('c')), Some(&mut channels));
         assert_eq!(state.chat.focus, ChatFocus::Chat);
+    }
+
+    #[test]
+    fn chat_width_is_near_half_with_a_scan_safe_cap() {
+        assert_eq!(chat_pane_width(120), 58);
+        assert_eq!(chat_pane_width(180), 68);
+        assert!(chat_pane_width(100) <= 58);
+    }
+
+    #[test]
+    fn bubbles_separate_messages_but_status_stays_a_compact_row() {
+        let mut state = UiState::new(
+            vec![],
+            "m".into(),
+            1,
+            vec![],
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+        state.chat.push("You", "question".into());
+        state.chat.push("Zentra", "answer".into());
+        state.chat.advance_answer_reveal();
+        state.chat.push("Status", "queued".into());
+        let rows = transcript_rows(&state.chat.transcript, 36);
+        assert!(rows.iter().any(|row| row.contains("╭")));
+        assert!(rows.iter().any(|row| row.contains("You:")));
+        assert!(rows.iter().any(|row| row.contains("Zentra:")));
+        assert!(rows.iter().any(|row| row.starts_with('┄')));
+        assert!(rows.iter().any(|row| row.starts_with("· Status:")));
+    }
+
+    #[test]
+    fn answer_reveal_is_utf8_safe_and_long_answers_finish_quickly() {
+        let mut state = UiState::new(
+            vec![],
+            "m".into(),
+            1,
+            vec![],
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+        state.chat.push("Zentra", "é界".repeat(300));
+        for _ in 0..20 {
+            state.chat.advance_answer_reveal();
+        }
+        let entry = state.chat.transcript.back().unwrap();
+        assert_eq!(entry.revealed_chars, Some(entry.text.chars().count()));
+        let visible: String = entry
+            .text
+            .chars()
+            .take(entry.revealed_chars.unwrap())
+            .collect();
+        assert!(visible.is_char_boundary(visible.len()));
+    }
+
+    #[test]
+    fn focused_input_has_a_blinking_cursor_and_unfocused_input_does_not() {
+        assert!(input_display("é", "é".len(), 12, true).contains('▏'));
+        assert!(!input_display("é", "é".len(), 12, false).contains('▏'));
+    }
+
+    #[test]
+    fn input_display_strips_terminal_sequences_and_maps_utf8_cursor() {
+        let raw = "é\u{1b}[31m\t界\u{1b}]title\u{7}x\n";
+        let cursor = raw.find('界').unwrap() + '界'.len_utf8();
+        let (safe, mapped) = sanitize_input_display(raw, cursor);
+        assert_eq!(safe, "é 界x ");
+        assert!(safe.is_char_boundary(mapped));
+        assert_eq!(&safe[..mapped], "é 界");
+        assert!(!input_display(raw, cursor, 30, true).contains('\u{1b}'));
+    }
+
+    #[test]
+    fn test_backend_never_receives_raw_input_controls_or_modal_cursor() {
+        let mut state = UiState::new(
+            vec![],
+            "m".into(),
+            1,
+            vec![],
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+        state.chat.focus = ChatFocus::Chat;
+        state.chat.input = "ok\u{1b}[31m\nnext".into();
+        state.chat.cursor = state.chat.input.len();
+        state.animation_index = 0;
+        let (_, visible) = render_for_test(&mut state, 120, 28);
+        assert!(!visible.contains('\u{1b}'));
+        assert!(visible.contains("ok next"));
+        assert!(visible.contains('▏'));
+        state.popup_open = true;
+        let (_, modal) = render_for_test(&mut state, 120, 28);
+        assert!(!modal.contains('▏'));
+    }
+
+    #[test]
+    fn bubble_rows_are_exactly_viewport_width_and_keep_blank_lines() {
+        let mut state = UiState::new(
+            vec![],
+            "m".into(),
+            1,
+            vec![],
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+        state.chat.push("You", "one\n\ntwo ".repeat(12));
+        state.chat.push("Zentra", "reply ".repeat(24));
+        state.chat.advance_answer_reveal();
+        let rows = transcript_rendered_rows(&state.chat.transcript, 24);
+        assert!(rows.iter().all(|row| cell_width(&row.text) <= 24));
+        assert!(rows
+            .iter()
+            .any(|row| matches!(row.kind, TranscriptRowKind::Separator)));
+        assert!(
+            rows.iter()
+                .filter(|row| matches!(row.kind, TranscriptRowKind::BubbleContent { .. }))
+                .count()
+                > 4
+        );
+    }
+
+    #[test]
+    fn speaker_style_metadata_is_not_confused_by_message_text() {
+        let mut state = UiState::new(
+            vec![],
+            "m".into(),
+            1,
+            vec![],
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+        state.chat.push("You", "Zentra: quoted".into());
+        state.chat.push("Zentra", "You: quoted".into());
+        state.chat.advance_answer_reveal();
+        let rows = transcript_rendered_rows(&state.chat.transcript, 36);
+        let speakers: Vec<_> = rows
+            .iter()
+            .filter_map(|row| match row.kind {
+                TranscriptRowKind::BubbleContent {
+                    speaker,
+                    label: true,
+                } => Some(speaker),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            speakers,
+            vec![TranscriptSpeaker::You, TranscriptSpeaker::Zentra]
+        );
+    }
+
+    #[test]
+    fn long_wrapped_bubbles_render_one_label_and_safe_continuations() {
+        for (speaker, label) in [("You", "You:"), ("Zentra", "Zentra:")] {
+            let mut state = UiState::new(
+                vec![],
+                "m".into(),
+                1,
+                vec![],
+                String::new(),
+                String::new(),
+                String::new(),
+            );
+            state.chat.push(speaker, "wrapped content ".repeat(40));
+            while state.chat.advance_answer_reveal() {}
+            let rows = transcript_rendered_rows(&state.chat.transcript, 26);
+            assert_eq!(
+                rows.iter()
+                    .filter(|row| matches!(
+                        row.kind,
+                        TranscriptRowKind::BubbleContent { label: true, .. }
+                    ))
+                    .count(),
+                1,
+                "{speaker} label count"
+            );
+            assert!(rows.iter().all(|row| cell_width(&row.text) <= 26));
+            assert!(rows.iter().any(|row| row.text.contains('╭')));
+            assert!(rows.iter().any(|row| row.text.contains('╰')));
+            assert!(
+                rows.iter()
+                    .filter(|row| matches!(row.kind, TranscriptRowKind::BubbleContent { .. }))
+                    .count()
+                    > 2
+            );
+            state.chat.transcript_scroll = usize::MAX;
+            let (_, buffer) = render_for_test(&mut state, 120, 32);
+            assert_eq!(
+                buffer.matches(label).count(),
+                1,
+                "{speaker} rendered label count"
+            );
+            assert!(buffer.contains('│'));
+        }
     }
 
     #[test]
