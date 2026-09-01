@@ -6,6 +6,8 @@ The binary is named `zentra`.
 
 ![Zentra pentest dashboard showing sandbox candidates, confirmed findings, live activity, and finding details](assets/zentra-pentest-dashboard.png)
 
+*Authorized test run against the intentionally vulnerable [OWASP Juice Shop](https://owasp.org/www-project-juice-shop/). The findings and demo credentials shown are not from a production system.*
+
 ## Features
 
 - Interactive local scan dashboard powered by `ratatui`.
@@ -84,11 +86,16 @@ Initialize Zentra in a project:
 zentra init
 ```
 
-Run the interactive local scanner:
+Launch Zentra and explore the interactive TUI:
 
 ```bash
-zentra scan
+zentra
 ```
+
+The TUI is the primary local experience for configuring providers, starting
+scans, reviewing findings, and launching authorized pentests. To start a scan
+directly, bypassing the main menu, run `zentra scan`. Headless mode is also
+available for CI and other automation.
 
 Run only one scanner family:
 
@@ -359,6 +366,21 @@ authorized testing of a running application. Docker is required.
 
 Only run this mode against systems you own, or have explicit permission to test. The `--authorized` flag is required, so an accidental scan fails closed.
 
+### Prerequisites
+
+Before starting a pentest, make sure you have:
+
+- Zentra installed and an LLM provider configured with `zentra config setup`.
+- Docker Desktop or Docker Engine installed, with the Docker daemon running.
+- Permission to pull the pinned sandbox image, or a compatible image built locally.
+- A running target that is reachable from the Docker sandbox.
+- Explicit authorization from the system owner and a narrowly defined scope.
+- Enough local disk space for the sandbox image, evidence, and generated reports.
+
+When the target runs on the host machine, use
+`http://host.docker.internal:<port>` instead of `localhost`; inside Docker,
+`localhost` refers to the sandbox container itself.
+
 ### What pentest mode does
 
 A pentest run uses three sandbox agents and report generation. It does the following:
@@ -500,6 +522,10 @@ Zentra writes project-local output under `.zentra/`:
 Do not commit secrets or scan state. The `init` command adds `.zentra/` to `.gitignore`.
 
 ## Development
+
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the
+branch workflow, coding conventions, security requirements, and required
+validation.
 
 Common development commands:
 
