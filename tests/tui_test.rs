@@ -329,6 +329,7 @@ fn pentest_ui_state_tracks_findings_and_activity() {
     });
     state.apply_event(PentestEvent::FindingAdded(PentestFinding {
         severity: PentestSeverity::High,
+        cvss: None,
         title: "IDOR".to_string(),
         impact: "Data exposure".to_string(),
         reproduction_steps: vec!["Open invoice".to_string()],
@@ -585,6 +586,7 @@ fn pentest_up_down_routes_to_findings_when_findings_focused() {
     // Add two findings via apply_event
     let finding = PentestFinding {
         severity: PentestSeverity::High,
+        cvss: None,
         title: "A".to_string(),
         impact: "".to_string(),
         reproduction_steps: vec![],
@@ -694,6 +696,7 @@ fn pentest_ui_state_evidence_and_findings_tracked_at_state_level() {
     }));
     state.apply_event(PentestEvent::FindingAdded(PentestFinding {
         severity: PentestSeverity::Low,
+        cvss: None,
         title: "Low".to_string(),
         impact: "Minor".to_string(),
         reproduction_steps: vec!["Open page".to_string()],
@@ -717,6 +720,7 @@ fn pentest_ui_state_evidence_and_findings_tracked_at_state_level() {
     multi.selected_idx = 10;
     multi.apply_event(PentestEvent::FindingAdded(PentestFinding {
         severity: PentestSeverity::Low,
+        cvss: None,
         title: "Low".to_string(),
         impact: "Minor".to_string(),
         reproduction_steps: vec!["Open page".to_string()],
@@ -725,6 +729,7 @@ fn pentest_ui_state_evidence_and_findings_tracked_at_state_level() {
     }));
     multi.apply_event(PentestEvent::FindingAdded(PentestFinding {
         severity: PentestSeverity::Critical,
+        cvss: None,
         title: "Critical".to_string(),
         impact: "Major".to_string(),
         reproduction_steps: vec!["Exploit".to_string()],

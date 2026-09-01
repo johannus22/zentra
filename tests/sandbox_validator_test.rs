@@ -55,7 +55,8 @@ async fn record_validation_emits_event_and_stores_outcomes() {
                 "confirmed":true,
                 "impact":"Database error exposes attacker input",
                 "evidence_path":"validation-1.txt",
-                "reason":"reproduced"
+                "reason":"reproduced",
+                "cvss_vector":"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N"
             }),
         )
         .await;
@@ -76,7 +77,8 @@ async fn record_validation_emits_event_and_stores_outcomes() {
                 "confirmed":false,
                 "impact":"",
                 "evidence_path":"validation-2.txt",
-                "reason":"Response did not expose the claimed data"
+                "reason":"Response did not expose the claimed data",
+                "cvss_vector":""
             }),
         )
         .await;
@@ -92,6 +94,52 @@ async fn record_validation_emits_event_and_stores_outcomes() {
         outcomes[1].reason,
         "Response did not expose the claimed data"
     );
+}
+
+#[tokio::test]
+async fn confirmed_validation_rejects_invalid_cvss_vector() {
+    let (registry, _calls, mut rx, _dir) = registry();
+    let result = registry
+        .dispatch(
+            "record_validation",
+            &json!({
+                "candidate_title":"SQL error",
+                "category":"SQL Injection",
+                "endpoint":"https://target.test/x",
+                "confirmed":true,
+                "impact":"Read one record",
+                "evidence_path":"validation-1.txt",
+                "reason":"reproduced",
+                "cvss_vector":"critical"
+            }),
+        )
+        .await;
+    assert!(result.contains("valid CVSS v3.1"));
+    assert!(registry.outcomes_snapshot().is_empty());
+    assert!(rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn confirmed_validation_rejects_zero_impact_cvss_vector() {
+    let (registry, _calls, mut rx, _dir) = registry();
+    let result = registry
+        .dispatch(
+            "record_validation",
+            &json!({
+                "candidate_title":"Version disclosed",
+                "category":"Information Disclosure",
+                "endpoint":"https://target.test/x",
+                "confirmed":true,
+                "impact":"No security impact demonstrated",
+                "evidence_path":"validation-1.txt",
+                "reason":"reproduced",
+                "cvss_vector":"CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:N"
+            }),
+        )
+        .await;
+    assert!(result.contains("positive CVSS score"));
+    assert!(registry.outcomes_snapshot().is_empty());
+    assert!(rx.try_recv().is_err());
 }
 
 #[tokio::test]

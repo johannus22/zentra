@@ -55,6 +55,25 @@ async fn scope_blocks_url_tools_before_executor() {
 }
 
 #[tokio::test]
+async fn dir_brute_uses_zentra_wordlist_and_workspace_home() {
+    let (registry, calls, _rx, _dir) = registry(String::new());
+    registry
+        .dispatch(
+            "dir_brute",
+            &json!({
+                "base_url": "https://target.test/",
+                "wordlist": "/usr/share/wordlists/dirb/common.txt"
+            }),
+        )
+        .await;
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].contains("HOME='/workspace/.home'"));
+    assert!(calls[0].contains("-w '/workspace/recon-wordlist.txt'"));
+    assert!(!calls[0].contains("/usr/share/wordlists"));
+}
+
+#[tokio::test]
 async fn shell_exec_enforces_allowlist_and_metacharacters() {
     let (registry, calls, _rx, _dir) = registry(String::new());
     let result = registry

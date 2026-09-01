@@ -368,6 +368,11 @@ A pentest run uses three sandbox agents and report generation. It does the follo
 5. Captures evidence and validated findings as the run progresses.
 6. Writes pentest reports and an executive summary in the resolved output directory.
 
+Confirmed findings include a complete CVSS v3.1 base vector. Zentra validates
+the vector, calculates the score locally, and derives the displayed severity
+from the score. Validators must score only impact reproduced during the current
+run, not hypothetical follow-on impact.
+
 ### Local sandbox image
 
 Pentest mode uses `zentra/pentest-sandbox:0.1.0` for its isolated toolchain. It
