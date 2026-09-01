@@ -140,9 +140,9 @@ Scan-focused and remains visible for the entire Chat-enabled scan.
   they are available; this is display behavior, not provider-output streaming.
 - Chat answers bounded, redacted scan and repository questions with a
   read-only profile (`list_files`, `read_file`, `grep_code`, and bounded Git
-  inspection). It can propose typed focus/rerun or vulnerability-category
-  actions, but neither model output nor a tool call can apply one: local
-  confirmation is required.
+  inspection) and up to eight tool results per request. It can propose typed
+  focus/rerun or vulnerability-category actions, but neither model output nor a
+  tool call can apply one: local confirmation is required.
 - Confirmed actions are stored in the checkpoint and applied only at
   deterministic orchestration boundaries. A target that is already too late is
   reported as deferred. Eligible late targets may receive at most one

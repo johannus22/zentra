@@ -189,15 +189,23 @@ mod chat_tests {
     #[test]
     fn coordinator_lifecycle_is_status_not_user_attribution() {
         let mut state = state();
+        let request_id = uuid::Uuid::new_v4();
         state.apply_chat_event(ChatEvent::RequestQueued {
-            request_id: uuid::Uuid::new_v4(),
+            request_id,
             position: 1,
         });
+        assert_eq!(state.chat.queued, 1);
+        assert_eq!(state.chat.status, "Queued");
+        assert_eq!(state.chat.transcript[0].label, "Status");
+        assert_eq!(state.chat.transcript[0].text, "Queued");
+        assert!(!state.chat.transcript[0]
+            .text
+            .contains(&request_id.to_string()));
         state.apply_chat_event(ChatEvent::Answer {
             request_id: uuid::Uuid::new_v4(),
             text: "reply".into(),
         });
-        assert_eq!(state.chat.transcript[0].label, "Status");
+        assert_eq!(state.chat.queued, 0);
         assert_eq!(state.chat.transcript[1].label, "Zentra");
     }
 }
@@ -676,13 +684,12 @@ impl UiState {
     pub fn apply_chat_event(&mut self, event: ChatEvent) {
         match event {
             ChatEvent::RequestQueued {
-                request_id,
+                request_id: _,
                 position,
             } => {
                 self.chat.queued = self.chat.queued.max(position);
-                self.chat.status = format!("Queued · #{position}");
-                self.chat
-                    .push("Status", format!("Request {request_id} queued"));
+                self.chat.status = "Queued".to_string();
+                self.chat.push("Status", "Queued".to_string());
             }
             ChatEvent::Answer {
                 request_id: _,

@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 pub const MAX_CHAT_REACT_ITERATIONS: usize = 8;
-pub const MAX_CHAT_TOOL_RESULTS: usize = 4;
+pub const MAX_CHAT_TOOL_RESULTS: usize = 8;
 pub const CHAT_MAX_OUTPUT_TOKENS: u32 = 1024;
 
 const CHAT_SYSTEM: &str = "You are the read-only Zentra scan chat assistant. Answer only from the supplied scan snapshot and read-only repository tools. You cannot execute scan actions. If an operator asks for a scan focus or priority change, use propose_scan_action with exactly one typed action; that proposal still requires local operator confirmation.";
@@ -233,7 +233,9 @@ impl ChatAgent {
                 if tool_results >= MAX_CHAT_TOOL_RESULTS {
                     return Err(ChatAgentError {
                         kind: ChatError::Budget,
-                        message: "chat tool-result limit reached".to_string(),
+                        message: format!(
+                            "chat tool-result limit reached ({MAX_CHAT_TOOL_RESULTS})"
+                        ),
                     });
                 }
                 if let Err(error) = gate.check(&call.name, &call.arguments) {
@@ -428,10 +430,31 @@ mod tests {
             usage: TokenUsage::default(),
         }
     }
+    fn read_calls(start: usize, count: usize) -> Vec<ToolCall> {
+        (start..start + count)
+            .map(|index| {
+                if index % 2 == 0 {
+                    ToolCall {
+                        id: format!("read-{index}"),
+                        name: "read_file".into(),
+                        arguments: serde_json::json!({"path":"Cargo.toml"}),
+                    }
+                } else {
+                    ToolCall {
+                        id: format!("list-{index}"),
+                        name: "list_files".into(),
+                        arguments: serde_json::json!({"dir":"src"}),
+                    }
+                }
+            })
+            .collect()
+    }
     fn agent(responses: Vec<CompletionResponse>, window: u32) -> ChatAgent {
         let temp = tempfile::tempdir().unwrap();
+        let mut config = SecurityConfig::trusted_local();
+        config.tool_gate = true;
         let security = SecurityContext::new(
-            SecurityConfig::trusted_local(),
+            config,
             AuditLog::new(temp.path(), "chat-test", false).unwrap(),
         );
         ChatAgent::from_raw_provider(
@@ -483,6 +506,52 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(result.answer, "read answer");
+    }
+
+    #[tokio::test]
+    async fn accepts_eight_read_only_tool_results_across_provider_rounds() {
+        let result = agent(
+            vec![
+                response("", read_calls(0, 4)),
+                response("", read_calls(4, 4)),
+                response("eight results accepted", vec![]),
+            ],
+            32_000,
+        )
+        .run(
+            Uuid::new_v4(),
+            "inspect the repository".into(),
+            ChatSnapshot::default(),
+            vec![],
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.answer, "eight results accepted");
+    }
+
+    #[tokio::test]
+    async fn rejects_ninth_read_only_tool_result_with_actual_cap() {
+        let error = agent(
+            vec![
+                response("", read_calls(0, 4)),
+                response("", read_calls(4, 5)),
+            ],
+            32_000,
+        )
+        .run(
+            Uuid::new_v4(),
+            "inspect the repository".into(),
+            ChatSnapshot::default(),
+            vec![],
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.kind, ChatError::Budget);
+        assert_eq!(error.message, "chat tool-result limit reached (8)");
     }
 
     #[tokio::test]

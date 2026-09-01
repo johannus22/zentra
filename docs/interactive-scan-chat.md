@@ -316,7 +316,7 @@ the scanner UI counters, and `.zentra/coverage.md` measure ScannerAgent work
 only.
 
 Use an independent smaller budget: fixed Chat system prompt, one snapshot, last
-12 turns, at most four tool results, 1,024 reserved output tokens, and 4 KiB
+12 turns, at most eight tool results, 1,024 reserved output tokens, and 4 KiB
 maximum user input. Apply `context_budget::estimate_tokens`, `input_budget`,
 `bound_tool_result`, and oldest-first compaction. On irreducible budget, emit
 `ChatError::Budget` and answer only from the bounded snapshot. Chat token
