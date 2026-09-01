@@ -234,7 +234,7 @@ impl ChatAgent {
                     return Err(ChatAgentError {
                         kind: ChatError::Budget,
                         message: format!(
-                            "chat tool-result limit reached ({MAX_CHAT_TOOL_RESULTS})"
+                            "Zentra stopped this message after {MAX_CHAT_TOOL_RESULTS} read-only repository tool results; your AI provider token quota was not exhausted. Ask a narrower question or continue in a follow-up"
                         ),
                     });
                 }
@@ -551,7 +551,10 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.kind, ChatError::Budget);
-        assert_eq!(error.message, "chat tool-result limit reached (8)");
+        assert_eq!(
+            error.message,
+            "Zentra stopped this message after 8 read-only repository tool results; your AI provider token quota was not exhausted. Ask a narrower question or continue in a follow-up"
+        );
     }
 
     #[tokio::test]
