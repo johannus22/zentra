@@ -11,7 +11,7 @@ use zentra_cli::tui::menu::{
     SettingsCategory, SettingsFocus, SettingsFormState,
 };
 use zentra_cli::tui::pentest_setup::build_pentest_config_from_setup_input;
-use zentra_cli::tui::pentest_ui::PentestUiState;
+use zentra_cli::tui::pentest_ui::{PentestUiState, SandboxStatus};
 use zentra_cli::tui::{ScanResult, ScanStatus, UiState};
 
 #[test]
@@ -174,6 +174,14 @@ fn pentest_setup_empty_url_returns_none() {
 }
 
 #[test]
+fn pentest_setup_rejects_loopback_with_docker_host_guidance() {
+    let error = build_pentest_config_from_setup_input("http://localhost:3000", "", "yes")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("host.docker.internal"), "msg = {error}");
+}
+
+#[test]
 fn pentest_setup_scope_hosts_append_to_target_host_from_urls() {
     let config = build_pentest_config_from_setup_input(
         "https://client-stg.app.com",
@@ -283,14 +291,15 @@ fn pentest_setup_scope_hosts_reject_unparseable_url() {
 }
 
 #[test]
-fn pentest_ui_state_agent_lifecycle_events_are_no_ops() {
+fn pentest_ui_state_shows_agent_start_without_changing_stage() {
     let mut state = PentestUiState::new(
         "https://app.example.test".to_string(),
         "gpt-4o".to_string(),
         "none".to_string(),
         None,
     );
-    // These events are no-ops in the stage-based pipeline UI
+    // Planning/completion remain stage-level details, but startup must be visible
+    // so a provider wait does not look like a frozen pentest.
     state.apply_event(PentestEvent::AgentPlanned {
         role: "Crawler".to_string(),
         objective: "Map app".to_string(),
@@ -301,8 +310,7 @@ fn pentest_ui_state_agent_lifecycle_events_are_no_ops() {
     });
     state.apply_event(PentestEvent::AgentCompleted { id: 1 });
 
-    // No side effects — activity log stays empty, no stage changes
-    assert_eq!(state.activity.len(), 0);
+    assert_eq!(state.activity, vec!["Crawler agent started"]);
     assert_eq!(state.current_stage, 0);
 }
 
@@ -321,6 +329,7 @@ fn pentest_ui_state_tracks_findings_and_activity() {
     });
     state.apply_event(PentestEvent::FindingAdded(PentestFinding {
         severity: PentestSeverity::High,
+        cvss: None,
         title: "IDOR".to_string(),
         impact: "Data exposure".to_string(),
         reproduction_steps: vec!["Open invoice".to_string()],
@@ -466,7 +475,7 @@ fn pentest_ui_state_redacts_sensitive_activity_values() {
     }));
     state.apply_event(PentestEvent::Error {
         id: None,
-        message: "failed with Cookie: secret-cookie and Authorization: Bearer secret-bearer"
+        message: "\u{1b}[31mfailed\u{1b}[0m with cookie: secret-cookie and authorization: bearer secret-bearer\u{7f}"
             .to_string(),
     });
 
@@ -475,8 +484,8 @@ fn pentest_ui_state_redacts_sensitive_activity_values() {
     assert!(activity.contains("api_key=<redacted>"));
     assert!(activity.contains("signature=<redacted>"));
     assert!(activity.contains("key=<redacted>"));
-    assert!(activity.contains("Authorization: Bearer <redacted>"));
-    assert!(activity.contains("Cookie: <redacted>"));
+    assert!(activity.contains("authorization: bearer <redacted>"));
+    assert!(activity.contains("cookie: <redacted>"));
     assert!(activity.contains("--header <redacted>"));
     assert!(activity.contains("--cookie <redacted>"));
     assert!(activity.contains("--header=<redacted>"));
@@ -486,6 +495,8 @@ fn pentest_ui_state_redacts_sensitive_activity_values() {
     assert!(!activity.contains("secret-session"));
     assert!(!activity.contains("secret-cookie"));
     assert!(!activity.contains("secret-signature"));
+    assert!(!activity.contains('\u{1b}'));
+    assert!(!activity.contains('\u{7f}'));
 }
 
 #[test]
@@ -507,9 +518,10 @@ fn pentest_ui_state_handles_error_and_completed_events() {
     state.apply_event(PentestEvent::Completed);
 
     assert!(state.completed);
+    assert_eq!(state.sandbox_status, SandboxStatus::Failed);
     assert!(state.error_stages.contains(&7));
-    assert!(state.activity[0].contains("Authorization: Bearer <redacted>"));
-    assert!(!state.activity[0].contains("secret-token"));
+    assert!(state.activity[1].contains("Authorization: Bearer <redacted>"));
+    assert!(!state.activity[1].contains("secret-token"));
 }
 
 #[test]
@@ -574,6 +586,7 @@ fn pentest_up_down_routes_to_findings_when_findings_focused() {
     // Add two findings via apply_event
     let finding = PentestFinding {
         severity: PentestSeverity::High,
+        cvss: None,
         title: "A".to_string(),
         impact: "".to_string(),
         reproduction_steps: vec![],
@@ -683,6 +696,7 @@ fn pentest_ui_state_evidence_and_findings_tracked_at_state_level() {
     }));
     state.apply_event(PentestEvent::FindingAdded(PentestFinding {
         severity: PentestSeverity::Low,
+        cvss: None,
         title: "Low".to_string(),
         impact: "Minor".to_string(),
         reproduction_steps: vec!["Open page".to_string()],
@@ -706,6 +720,7 @@ fn pentest_ui_state_evidence_and_findings_tracked_at_state_level() {
     multi.selected_idx = 10;
     multi.apply_event(PentestEvent::FindingAdded(PentestFinding {
         severity: PentestSeverity::Low,
+        cvss: None,
         title: "Low".to_string(),
         impact: "Minor".to_string(),
         reproduction_steps: vec!["Open page".to_string()],
@@ -714,6 +729,7 @@ fn pentest_ui_state_evidence_and_findings_tracked_at_state_level() {
     }));
     multi.apply_event(PentestEvent::FindingAdded(PentestFinding {
         severity: PentestSeverity::Critical,
+        cvss: None,
         title: "Critical".to_string(),
         impact: "Major".to_string(),
         reproduction_steps: vec!["Exploit".to_string()],

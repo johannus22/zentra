@@ -16,6 +16,7 @@ fn finding(
         endpoint: endpoint.to_string(),
         finding: PentestFinding {
             severity,
+            cvss: None,
             title: title.to_string(),
             impact: "impact".to_string(),
             reproduction_steps: vec!["step".to_string()],

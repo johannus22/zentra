@@ -368,6 +368,25 @@ A pentest run uses three sandbox agents and report generation. It does the follo
 5. Captures evidence and validated findings as the run progresses.
 6. Writes pentest reports and an executive summary in the resolved output directory.
 
+Confirmed findings include a complete CVSS v3.1 base vector. Zentra validates
+the vector, calculates the score locally, and derives the displayed severity
+from the score. Validators must score only impact reproduced during the current
+run, not hypothetical follow-on impact.
+
+### Local sandbox image
+
+Pentest mode uses `zentra/pentest-sandbox:0.1.0` for its isolated toolchain. It
+uses an existing image with that exact local tag and only pulls when the image
+is missing. To build it locally without publishing this repository or the image:
+
+```bash
+./docker/pentest-sandbox/build.sh
+zentra pentest --url http://host.docker.internal:3000 --authorized
+```
+
+Set `ZENTRA_SANDBOX_IMAGE` and `ZENTRA_SANDBOX_VERSION` when using a different
+local image name or tag.
+
 Pentest mode may read previous static findings from `.zentra/detailed-findings.md`.
 In project mode, output is under `.zentra/pentest/`. In standalone mode, output
 uses the configured base directory.

@@ -381,7 +381,7 @@ pub fn sanitize_chat_text(input: &str) -> String {
     crate::logging::redact(&strip_terminal_controls(input))
 }
 
-fn strip_terminal_controls(input: &str) -> String {
+pub(crate) fn strip_terminal_controls(input: &str) -> String {
     let mut output = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
     while let Some(ch) = chars.next() {
