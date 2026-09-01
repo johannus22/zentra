@@ -1,0 +1,25 @@
+name: Branch flow
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-source:
+    name: develop is source for main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the repository develop branch
+        env:
+          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          if [[ "$HEAD_BRANCH" != "develop" || "$HEAD_REPOSITORY" != "$REPOSITORY" ]]; then
+            echo "Pull requests to main must come from $REPOSITORY:develop."
+            exit 1
+          fi
