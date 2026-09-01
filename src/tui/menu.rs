@@ -2225,7 +2225,7 @@ fn render_settings_about(frame: &mut Frame, area: Rect, state: &MenuState) {
         Line::from(vec![
             Span::styled("Repo:    ", Style::default().fg(state.theme.text)),
             Span::styled(
-                "https://github.com/johannus22/zentra-cli",
+                "https://github.com/johannus22/zentra",
                 Style::default().fg(state.theme.text_dim),
             ),
         ]),

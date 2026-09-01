@@ -348,7 +348,7 @@ pub fn write_sarif(findings: &[Finding]) -> serde_json::Value {
                 driver: SarifDriver {
                     name: "zentra".to_string(),
                     version: env!("CARGO_PKG_VERSION").to_string(),
-                    information_uri: "https://github.com/kestrel-sec/zentra".to_string(),
+                    information_uri: "https://github.com/johannus22/zentra".to_string(),
                     rules,
                 },
             },

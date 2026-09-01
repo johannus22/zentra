@@ -25,13 +25,13 @@ This method uses prebuilt binaries. You do not need the Rust toolchain, a reposi
 **Linux and macOS:**
 
 ```sh
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/johannus22/zentra-cli/releases/latest/download/zentra-cli-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/johannus22/zentra/releases/latest/download/zentra-cli-installer.sh | sh
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/johannus22/zentra-cli/releases/latest/download/zentra-cli-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/johannus22/zentra/releases/latest/download/zentra-cli-installer.ps1 | iex"
 ```
 
 The installer detects your operating system and CPU architecture. It downloads the matching release binary. It installs `zentra` and adds it to your `PATH`. Open a new terminal window afterward, or follow the on-screen instructions, so `zentra` is available. Then verify the install:
@@ -40,7 +40,7 @@ The installer detects your operating system and CPU architecture. It downloads t
 zentra --help
 ```
 
-To install by hand, download a build from the [Releases page](https://github.com/johannus22/zentra-cli/releases). Extract the `zentra` binary.
+To install by hand, download a build from the [Releases page](https://github.com/johannus22/zentra/releases). Extract the `zentra` binary.
 
 > **Linux note:** The binary links to `libdbus` at runtime, for access to the OS keyring. Most desktop distributions already include it. On a minimal or headless image, install it first (`sudo apt-get install -y libdbus-1-3`, or the equivalent command for your distribution). Or set `ZENTRA_NO_OS_KEYCHAIN=1` to use the encrypted file-based credential store instead.
 

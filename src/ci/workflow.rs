@@ -50,7 +50,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Install Zentra CLI
-        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/johannus22/zentra-cli/releases/latest/download/zentra-cli-installer.sh | sh
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/johannus22/zentra/releases/latest/download/zentra-cli-installer.sh | sh
       - name: Run Zentra CI
         env:
           ZENTRA_API_KEY: ${{ secrets.ZENTRA_API_KEY }}
