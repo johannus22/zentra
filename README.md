@@ -4,6 +4,8 @@ Zentra is an AI-powered application security CLI for developers. It scans a code
 
 The binary is named `zentra`.
 
+![Zentra pentest dashboard showing sandbox candidates, confirmed findings, live activity, and finding details](assets/zentra-pentest-dashboard.png)
+
 ## Features
 
 - Interactive local scan dashboard powered by `ratatui`.
