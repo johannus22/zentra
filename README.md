@@ -373,6 +373,12 @@ the vector, calculates the score locally, and derives the displayed severity
 from the score. Validators must score only impact reproduced during the current
 run, not hypothetical follow-on impact.
 
+The interactive pentest dashboard keeps the sandbox chain, validated findings,
+and live activity visible together. Use `Tab` or click a pane to focus it; arrow
+keys or the mouse wheel navigate its contents. The title bar reports the Zentra
+version and cumulative provider token usage, while the detail pane shows the
+selected finding or sandbox candidate.
+
 ### Local sandbox image
 
 Pentest mode uses `zentra/pentest-sandbox:0.1.0` for its isolated toolchain. It

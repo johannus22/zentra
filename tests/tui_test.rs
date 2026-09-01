@@ -1,3 +1,4 @@
+use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Layout, Rect};
 use tempfile::TempDir;
 use zentra_cli::agent::{ScanEvent, ScannerType};
@@ -11,7 +12,9 @@ use zentra_cli::tui::menu::{
     SettingsCategory, SettingsFocus, SettingsFormState,
 };
 use zentra_cli::tui::pentest_setup::build_pentest_config_from_setup_input;
-use zentra_cli::tui::pentest_ui::{PentestUiState, SandboxStatus};
+use zentra_cli::tui::pentest_ui::{
+    handle_pentest_mouse, PentestFocus, PentestHitRegions, PentestUiState, SandboxStatus,
+};
 use zentra_cli::tui::{ScanResult, ScanStatus, UiState};
 
 #[test]
@@ -560,7 +563,6 @@ fn pentest_focus_defaults_to_findings() {
 
 #[test]
 fn pentest_tab_toggles_focus() {
-    use zentra_cli::tui::pentest_ui::PentestFocus;
     let mut state = PentestUiState::new(
         "https://t.test".to_string(),
         "model".to_string(),
@@ -571,6 +573,57 @@ fn pentest_tab_toggles_focus() {
     state.handle_tab();
     assert_eq!(state.focus, PentestFocus::Activity);
     state.handle_tab();
+    assert_eq!(state.focus, PentestFocus::Sandbox);
+    state.handle_tab();
+    assert_eq!(state.focus, PentestFocus::Findings);
+}
+
+#[test]
+fn pentest_tracks_cumulative_provider_tokens() {
+    let mut state = PentestUiState::new(
+        "https://t.test".to_string(),
+        "model".to_string(),
+        "none".to_string(),
+        None,
+    );
+    state.apply_event(PentestEvent::TokensUsed {
+        input: 1_200,
+        output: 300,
+    });
+    state.apply_event(PentestEvent::TokensUsed {
+        input: 800,
+        output: 200,
+    });
+
+    assert_eq!(state.input_tokens, 2_000);
+    assert_eq!(state.output_tokens, 500);
+}
+
+#[test]
+fn pentest_mouse_click_focuses_each_main_pane() {
+    let mut state = PentestUiState::new(
+        "https://t.test".to_string(),
+        "model".to_string(),
+        "none".to_string(),
+        None,
+    );
+    let hits = PentestHitRegions {
+        sandbox: Some(Rect::new(0, 0, 20, 8)),
+        findings: Some(Rect::new(20, 0, 30, 8)),
+        activity: Some(Rect::new(50, 0, 30, 8)),
+    };
+    let click = |column| MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row: 2,
+        modifiers: KeyModifiers::NONE,
+    };
+
+    assert!(handle_pentest_mouse(&mut state, click(55), &hits));
+    assert_eq!(state.focus, PentestFocus::Activity);
+    assert!(handle_pentest_mouse(&mut state, click(5), &hits));
+    assert_eq!(state.focus, PentestFocus::Sandbox);
+    assert!(handle_pentest_mouse(&mut state, click(25), &hits));
     assert_eq!(state.focus, PentestFocus::Findings);
 }
 
