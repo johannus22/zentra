@@ -38,9 +38,9 @@ pub fn clip_with_ellipsis(s: &str, max_width: usize) -> String {
 const ACTION_RUN_FULL_SCAN: usize = 0;
 const ACTION_RESUME_SCAN: usize = 1;
 const ACTION_CLONE_AND_SCAN: usize = 2;
-const ACTION_RUN_PENTEST: usize = 3;
-const ACTION_SELECT_SCANNERS: usize = 4;
-const ACTION_VIEW_RESULTS: usize = 5;
+const ACTION_SELECT_SCANNERS: usize = 3;
+const ACTION_VIEW_RESULTS: usize = 4;
+const ACTION_RUN_PENTEST: usize = 5;
 const ACTION_SETTINGS: usize = 6;
 const ACTION_EXIT: usize = 7;
 
@@ -53,7 +53,7 @@ const MAX_MENU_ACTION: usize = 7;
 const MENU_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(25);
 
 /// Whether a resumable scan checkpoint exists in `.zentra/checkpoint.json`.
-/// The menu uses this to enable the "Resume Last Scan" item. An empty but
+/// The menu uses this to enable the "Resume Last SAST Scan" item. An empty but
 /// valid checkpoint is a resumable scan with no completed scanners.
 fn checkpoint_available() -> bool {
     crate::agent::checkpoint::Checkpoint::load_strict(std::path::Path::new(".zentra")).is_ok()
@@ -61,15 +61,19 @@ fn checkpoint_available() -> bool {
 
 pub fn main_menu_actions() -> &'static [&'static str] {
     &[
-        "Run Full Scan (this directory)",
-        "Resume Last Scan",
-        "Clone Repo & Scan",
-        "Run Pentest",
-        "Select Scanners",
-        "View Last Results",
+        "Run SAST Scan (this directory)",
+        "Resume Last SAST Scan",
+        "Clone Repo & Run SAST Scan",
+        "Select SAST Scanners",
+        "View Last SAST Results",
+        "Run Pentest on Live Site",
         "Settings",
         "Exit",
     ]
+}
+
+pub fn main_menu_groups() -> &'static [(&'static str, usize)] {
+    &[("SAST", 0), ("DAST", ACTION_RUN_PENTEST), ("Misc.", ACTION_SETTINGS)]
 }
 
 pub fn centered_middle_column(area: Rect) -> Rect {
@@ -1695,7 +1699,7 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
     let chunks = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(HEADER_HEIGHT),
-        Constraint::Min(12),   // menu list
+        Constraint::Min(15),   // grouped menu list
         Constraint::Length(1), // error summary (blank when no error)
         Constraint::Length(1), // key hints
         Constraint::Fill(1),   // expanded error details
@@ -1711,26 +1715,32 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
 
     render_banner_header(frame, header_center, state);
 
-    let items: Vec<ListItem> = main_menu_actions()
-        .iter()
-        .enumerate()
-        .map(|(action, label)| {
-            let enabled = state.is_item_enabled(action);
-            let selected = state.selected_idx == action;
-            let prefix = if selected { "▶ " } else { "  " };
-            let style = if !enabled {
-                Style::default().fg(state.theme.text_muted)
-            } else if selected {
-                Style::default()
-                    .fg(state.theme.selection_fg)
-                    .bg(state.theme.selection_bg)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(state.theme.text)
-            };
-            ListItem::new(format!("{}{}", prefix, label)).style(style)
-        })
-        .collect();
+    let mut items = Vec::with_capacity(main_menu_actions().len() + main_menu_groups().len());
+    for (action, label) in main_menu_actions().iter().enumerate() {
+        if let Some((group, _)) = main_menu_groups().iter().find(|(_, start)| *start == action) {
+            items.push(
+                ListItem::new(format!("  {group}")).style(
+                    Style::default()
+                        .fg(state.theme.text_muted)
+                        .add_modifier(Modifier::DIM),
+                ),
+            );
+        }
+        let enabled = state.is_item_enabled(action);
+        let selected = state.selected_idx == action;
+        let prefix = if selected { "▶ " } else { "  " };
+        let style = if !enabled {
+            Style::default().fg(state.theme.text_muted)
+        } else if selected {
+            Style::default()
+                .fg(state.theme.selection_fg)
+                .bg(state.theme.selection_bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(state.theme.text)
+        };
+        items.push(ListItem::new(format!("{}{}", prefix, label)).style(style));
+    }
 
     let list = List::new(items).block(
         Block::default()
