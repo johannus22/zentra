@@ -73,11 +73,7 @@ pub fn main_menu_actions() -> &'static [&'static str] {
 }
 
 pub fn main_menu_groups() -> &'static [(&'static str, usize)] {
-    &[
-        ("SAST", 0),
-        ("DAST", ACTION_RUN_PENTEST),
-        ("Misc.", ACTION_SETTINGS),
-    ]
+    &[("SAST", 0), ("DAST", ACTION_RUN_PENTEST), ("Misc.", ACTION_SETTINGS)]
 }
 
 pub fn centered_middle_column(area: Rect) -> Rect {
@@ -598,11 +594,7 @@ impl ProviderFormState {
             context_window: Some(cw),
             reasoning_effort: {
                 let t = self.reasoning_effort.trim();
-                if t.is_empty() {
-                    None
-                } else {
-                    Some(t.to_string())
-                }
+                if t.is_empty() { None } else { Some(t.to_string()) }
             },
             // The form has no temperature field. The prior value is carried
             // forward below, once the config file is loaded.
@@ -728,10 +720,7 @@ impl MenuState {
             last_error: None,
             error_expanded: false,
             theme: crate::tui::theme::resolve(
-                crate::config::GlobalConfig::load()
-                    .ok()
-                    .and_then(|g| g.theme)
-                    .as_deref(),
+                crate::config::GlobalConfig::load().ok().and_then(|g| g.theme).as_deref(),
             ),
             settings_open: false,
             settings_category_idx: 0,
@@ -819,9 +808,7 @@ impl MenuState {
     }
 
     pub fn settings_category(&self) -> SettingsCategory {
-        SettingsCategory::ALL[self
-            .settings_category_idx
-            .min(SettingsCategory::ALL.len() - 1)]
+        SettingsCategory::ALL[self.settings_category_idx.min(SettingsCategory::ALL.len() - 1)]
     }
 
     /// Open the Settings hub, reloading every sub-state from disk.
@@ -1219,10 +1206,10 @@ impl MenuState {
                 Ok(tokens) => {
                     use crate::config::keychain;
 
-                    let profile_name = match self
-                        .form
-                        .save_with_oauth(|| Ok(tokens), keychain::set_oauth_tokens)
-                    {
+                    let profile_name = match self.form.save_with_oauth(
+                        || Ok(tokens),
+                        keychain::set_oauth_tokens,
+                    ) {
                         Ok(profile_name) => profile_name,
                         Err(err) => {
                             self.finish_oauth_modal_error(err.to_string());
@@ -1369,9 +1356,7 @@ fn run_menu_loop(
                                 SettingsFocus::Nav => match key.code {
                                     KeyCode::Up => state.settings_nav_up(),
                                     KeyCode::Down => state.settings_nav_down(),
-                                    KeyCode::Right | KeyCode::Enter => {
-                                        state.settings_enter_detail()
-                                    }
+                                    KeyCode::Right | KeyCode::Enter => state.settings_enter_detail(),
                                     KeyCode::Esc => state.close_settings(),
                                     _ => {}
                                 },
@@ -1397,9 +1382,7 @@ fn run_menu_loop(
                                                 }
                                             }
                                         }
-                                        KeyCode::Left | KeyCode::Esc => {
-                                            state.settings_leave_detail()
-                                        }
+                                        KeyCode::Left | KeyCode::Esc => state.settings_leave_detail(),
                                         _ => {}
                                     },
                                     DetailMode::ProviderForm => {
@@ -1415,12 +1398,8 @@ fn run_menu_loop(
                                                         state.form.cycle_provider(1);
                                                     }
                                                 }
-                                                KeyCode::Tab | KeyCode::Down => {
-                                                    state.form.next_field()
-                                                }
-                                                KeyCode::BackTab | KeyCode::Up => {
-                                                    state.form.prev_field()
-                                                }
+                                                KeyCode::Tab | KeyCode::Down => state.form.next_field(),
+                                                KeyCode::BackTab | KeyCode::Up => state.form.prev_field(),
                                                 KeyCode::Char(c) => state.form.append_char(c),
                                                 KeyCode::Backspace => state.form.backspace(),
                                                 KeyCode::Enter => {
@@ -1482,9 +1461,7 @@ fn run_menu_loop(
                                                 ));
                                             }
                                         }
-                                        KeyCode::Left | KeyCode::Esc => {
-                                            state.settings_leave_detail()
-                                        }
+                                        KeyCode::Left | KeyCode::Esc => state.settings_leave_detail(),
                                         _ => {}
                                     },
                                     DetailMode::OutputEdit => match key.code {
@@ -1499,13 +1476,13 @@ fn run_menu_loop(
                                             }
                                             Err(e) => {
                                                 state.settings.error = Some(e.to_string());
-                                                state.settings_status =
-                                                    Some((false, format!("Could not save: {e}")));
+                                                state.settings_status = Some((
+                                                    false,
+                                                    format!("Could not save: {e}"),
+                                                ));
                                             }
                                         },
-                                        KeyCode::Left | KeyCode::Esc => {
-                                            state.settings_leave_detail()
-                                        }
+                                        KeyCode::Left | KeyCode::Esc => state.settings_leave_detail(),
                                         _ => {}
                                     },
                                     DetailMode::CweEdit => match key.code {
@@ -1520,19 +1497,17 @@ fn run_menu_loop(
                                             }
                                             Err(e) => {
                                                 state.settings.error = Some(e.to_string());
-                                                state.settings_status =
-                                                    Some((false, format!("Could not save: {e}")));
+                                                state.settings_status = Some((
+                                                    false,
+                                                    format!("Could not save: {e}"),
+                                                ));
                                             }
                                         },
-                                        KeyCode::Left | KeyCode::Esc => {
-                                            state.settings_leave_detail()
-                                        }
+                                        KeyCode::Left | KeyCode::Esc => state.settings_leave_detail(),
                                         _ => {}
                                     },
                                     DetailMode::About => match key.code {
-                                        KeyCode::Left | KeyCode::Esc => {
-                                            state.settings_leave_detail()
-                                        }
+                                        KeyCode::Left | KeyCode::Esc => state.settings_leave_detail(),
                                         _ => {}
                                     },
                                 },
@@ -1540,51 +1515,51 @@ fn run_menu_loop(
                             continue;
                         }
                         match key.code {
-                            KeyCode::Up => state.prev(),
-                            KeyCode::Down => state.next(),
-                            KeyCode::Enter => {
-                                if !state.is_item_enabled(state.selected_idx) {
-                                    continue;
-                                }
-                                match state.selected_idx {
-                                    ACTION_RUN_FULL_SCAN => {
-                                        return Ok(MenuAction::RunScan(vec![
-                                            ScannerType::ThreatModel,
-                                            ScannerType::Sast,
-                                            ScannerType::SupplyChain,
-                                            ScannerType::ApiScan,
-                                            ScannerType::IacScan,
-                                            ScannerType::Report,
-                                        ]));
-                                    }
-                                    ACTION_RESUME_SCAN => {
-                                        if checkpoint_available() {
-                                            return Ok(MenuAction::ResumeScan);
-                                        }
-                                        // No checkpoint — stay in menu, do nothing.
-                                    }
-                                    ACTION_CLONE_AND_SCAN => {
-                                        state.last_error = None;
-                                        state.error_expanded = false;
-                                        state.open_repo_input();
-                                    }
-                                    ACTION_RUN_PENTEST => return Ok(MenuAction::RunPentest),
-                                    ACTION_SELECT_SCANNERS => {
-                                        state.screen = MenuScreen::ScannerSelector;
-                                        state.scanner_idx = 0;
-                                        state.selected_idx = 0;
-                                    }
-                                    ACTION_VIEW_RESULTS => return Ok(MenuAction::ViewLastResults),
-                                    ACTION_SETTINGS => state.open_settings(),
-                                    ACTION_EXIT => return Ok(MenuAction::Exit),
-                                    _ => {}
-                                }
+                        KeyCode::Up => state.prev(),
+                        KeyCode::Down => state.next(),
+                        KeyCode::Enter => {
+                            if !state.is_item_enabled(state.selected_idx) {
+                                continue;
                             }
-                            KeyCode::Char('q') => return Ok(MenuAction::Exit),
-                            KeyCode::Char('e') => state.toggle_error_expanded(),
-                            KeyCode::Char('x') => state.dismiss_error(),
-                            KeyCode::Esc => state.dismiss_error(),
-                            _ => {}
+                            match state.selected_idx {
+                                ACTION_RUN_FULL_SCAN => {
+                                    return Ok(MenuAction::RunScan(vec![
+                                        ScannerType::ThreatModel,
+                                        ScannerType::Sast,
+                                        ScannerType::SupplyChain,
+                                        ScannerType::ApiScan,
+                                        ScannerType::IacScan,
+                                        ScannerType::Report,
+                                    ]));
+                                }
+                                ACTION_RESUME_SCAN => {
+                                    if checkpoint_available() {
+                                        return Ok(MenuAction::ResumeScan);
+                                    }
+                                    // No checkpoint — stay in menu, do nothing.
+                                }
+                                ACTION_CLONE_AND_SCAN => {
+                                    state.last_error = None;
+                                    state.error_expanded = false;
+                                    state.open_repo_input();
+                                }
+                                ACTION_RUN_PENTEST => return Ok(MenuAction::RunPentest),
+                                ACTION_SELECT_SCANNERS => {
+                                    state.screen = MenuScreen::ScannerSelector;
+                                    state.scanner_idx = 0;
+                                    state.selected_idx = 0;
+                                }
+                                ACTION_VIEW_RESULTS => return Ok(MenuAction::ViewLastResults),
+                                ACTION_SETTINGS => state.open_settings(),
+                                ACTION_EXIT => return Ok(MenuAction::Exit),
+                                _ => {}
+                            }
+                        }
+                        KeyCode::Char('q') => return Ok(MenuAction::Exit),
+                        KeyCode::Char('e') => state.toggle_error_expanded(),
+                        KeyCode::Char('x') => state.dismiss_error(),
+                        KeyCode::Esc => state.dismiss_error(),
+                        _ => {}
                         }
                     }
                     MenuScreen::ScannerSelector => match key.code {
@@ -1649,8 +1624,7 @@ pub(crate) const HEADER_HEIGHT: u16 = 7;
 fn render_menu(frame: &mut Frame, state: &MenuState) {
     // Paint the whole frame with the theme background first.
     frame.render_widget(
-        ratatui::widgets::Block::default()
-            .style(ratatui::style::Style::default().bg(state.theme.bg)),
+        ratatui::widgets::Block::default().style(ratatui::style::Style::default().bg(state.theme.bg)),
         frame.area(),
     );
 
@@ -1743,10 +1717,7 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
 
     let mut items = Vec::with_capacity(main_menu_actions().len() + main_menu_groups().len());
     for (action, label) in main_menu_actions().iter().enumerate() {
-        if let Some((group, _)) = main_menu_groups()
-            .iter()
-            .find(|(_, start)| *start == action)
-        {
+        if let Some((group, _)) = main_menu_groups().iter().find(|(_, start)| *start == action) {
             items.push(
                 ListItem::new(format!("  {group}")).style(
                     Style::default()
@@ -1783,11 +1754,7 @@ fn render_main_menu(frame: &mut Frame, area: ratatui::layout::Rect, state: &Menu
     // Collapsible error summary line.
     if let Some(err) = &state.last_error {
         let first_line = err.lines().next().unwrap_or("");
-        let toggle = if state.error_expanded {
-            "collapse"
-        } else {
-            "expand"
-        };
+        let toggle = if state.error_expanded { "collapse" } else { "expand" };
         let summary_area = centered_middle_column(chunks[3]);
         // Reserve room for the "✗ {} · e {toggle} · x dismiss" chrome (20 fixed
         // chars + the toggle word) so the dismiss hint isn't truncated on
@@ -1837,8 +1804,7 @@ fn render_settings_hub(frame: &mut Frame, area: Rect, state: &MenuState) {
     let w = (area.width.saturating_mul(8) / 10)
         .min(90)
         .clamp(60.min(area.width).max(1), area.width.max(1));
-    let h =
-        (area.height.saturating_mul(8) / 10).clamp(16.min(area.height).max(1), area.height.max(1));
+    let h = (area.height.saturating_mul(8) / 10).clamp(16.min(area.height).max(1), area.height.max(1));
     let popup = centered_fixed(w, h, area);
     frame.render_widget(Clear, popup);
 
@@ -1964,18 +1930,8 @@ fn render_settings_provider_list(frame: &mut Frame, area: Rect, state: &MenuStat
     //  separator and the active green dot line up without floating to the far
     //  pane edge. Models only clip if they genuinely exceed the pane.
     let inner_w = chunks[1].width as usize;
-    let longest_name = state
-        .profiles
-        .iter()
-        .map(|(n, _)| n.chars().count())
-        .max()
-        .unwrap_or(0);
-    let longest_model = state
-        .profiles
-        .iter()
-        .map(|(_, m)| m.chars().count())
-        .max()
-        .unwrap_or(0);
+    let longest_name = state.profiles.iter().map(|(n, _)| n.chars().count()).max().unwrap_or(0);
+    let longest_model = state.profiles.iter().map(|(_, m)| m.chars().count()).max().unwrap_or(0);
     // budget = cursor(2) + name_col + " │ "(3) + model_col + " ●"(2)
     let name_col = longest_name.clamp(1, inner_w.saturating_sub(9).max(1));
     let model_budget = inner_w.saturating_sub(2 + name_col + 3 + 2).max(1);
@@ -2003,22 +1959,12 @@ fn render_settings_provider_list(frame: &mut Frame, area: Rect, state: &MenuStat
                 }
                 st
             };
-            let name_fg = if selected {
-                state.theme.selection_fg
-            } else {
-                state.theme.text
-            };
-            let model_fg = if selected {
-                state.theme.selection_fg
-            } else {
-                state.theme.text_dim
-            };
-            let padded_name = format!("{:<w$}", clip_with_ellipsis(name, name_col), w = name_col);
-            let padded_model = format!(
-                "{:<w$}",
-                clip_with_ellipsis(model, model_col),
-                w = model_col
-            );
+            let name_fg = if selected { state.theme.selection_fg } else { state.theme.text };
+            let model_fg = if selected { state.theme.selection_fg } else { state.theme.text_dim };
+            let padded_name =
+                format!("{:<w$}", clip_with_ellipsis(name, name_col), w = name_col);
+            let padded_model =
+                format!("{:<w$}", clip_with_ellipsis(model, model_col), w = model_col);
             let dot = if is_active { " ●" } else { "  " };
             ListItem::new(Line::from(vec![
                 Span::styled(cursor, with_bg(name_fg, selected)),
@@ -2058,13 +2004,7 @@ fn render_settings_provider_form(frame: &mut Frame, area: Rect, state: &MenuStat
             Style::default().fg(state.theme.text_dim)
         }
     };
-    let cursor = |idx: usize| {
-        if form.focused_field == idx {
-            "▶ "
-        } else {
-            "  "
-        }
-    };
+    let cursor = |idx: usize| if form.focused_field == idx { "▶ " } else { "  " };
     let pad = |s: String| format!("{:width$}", s, width = max_field_width);
 
     let title = match &form.editing {
@@ -2080,18 +2020,12 @@ fn render_settings_provider_form(frame: &mut Frame, area: Rect, state: &MenuStat
         Line::from(vec![
             Span::raw(cursor(1)),
             Span::styled("Model      ", field_style(1)),
-            Span::styled(
-                pad(clip_with_ellipsis(&form.model, max_field_width)),
-                field_style(1),
-            ),
+            Span::styled(pad(clip_with_ellipsis(&form.model, max_field_width)), field_style(1)),
         ]),
         Line::from(vec![
             Span::raw(cursor(2)),
             Span::styled("Base URL   ", field_style(2)),
-            Span::styled(
-                pad(clip_with_ellipsis(&form.base_url, max_field_width)),
-                field_style(2),
-            ),
+            Span::styled(pad(clip_with_ellipsis(&form.base_url, max_field_width)), field_style(2)),
         ]),
         Line::from(vec![
             Span::raw(cursor(form.reasoning_field_idx())),
@@ -2155,10 +2089,7 @@ fn render_settings_provider_form(frame: &mut Frame, area: Rect, state: &MenuStat
             Style::default().fg(state.theme.error),
         )));
     }
-    frame.render_widget(
-        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
-        area,
-    );
+    frame.render_widget(Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }), area);
 }
 
 fn render_settings_theme_list(frame: &mut Frame, area: Rect, state: &MenuState) {
@@ -2285,9 +2216,7 @@ fn render_settings_about(frame: &mut Frame, area: Rect, state: &MenuState) {
     let lines = vec![
         Line::from(Span::styled(
             format!("Zentra CLI v{}", env!("CARGO_PKG_VERSION")),
-            Style::default()
-                .fg(state.theme.accent)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(state.theme.accent).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(Span::styled(
@@ -2301,10 +2230,7 @@ fn render_settings_about(frame: &mut Frame, area: Rect, state: &MenuState) {
         ]),
         Line::from(vec![
             Span::styled("Themes:  ", Style::default().fg(state.theme.text)),
-            Span::styled(
-                "~/.zentra/themes/*.toml",
-                Style::default().fg(state.theme.text_dim),
-            ),
+            Span::styled("~/.zentra/themes/*.toml", Style::default().fg(state.theme.text_dim)),
         ]),
         Line::from(vec![
             Span::styled("Repo:    ", Style::default().fg(state.theme.text)),
@@ -2323,10 +2249,7 @@ fn render_settings_about(frame: &mut Frame, area: Rect, state: &MenuState) {
             Style::default().fg(state.theme.text_dim),
         )),
     ];
-    frame.render_widget(
-        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }),
-        area,
-    );
+    frame.render_widget(Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }), area);
 }
 
 fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state: &MenuState) {
@@ -2414,8 +2337,8 @@ fn render_scanner_selector(frame: &mut Frame, area: ratatui::layout::Rect, state
     let list_area = centered_middle_column(chunks[2]);
     frame.render_widget(list, list_area);
 
-    let keys = Paragraph::new(scanner_selector_footer_hint())
-        .style(Style::default().fg(state.theme.text_dim));
+    let keys =
+        Paragraph::new(scanner_selector_footer_hint()).style(Style::default().fg(state.theme.text_dim));
     frame.render_widget(keys, centered_middle_column(chunks[3]));
 }
 
