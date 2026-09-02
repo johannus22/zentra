@@ -7,7 +7,7 @@ use zentra_cli::pentest::{PentestEvent, PentestEvidence, PentestFinding, Pentest
 use zentra_cli::state::{Finding, Severity};
 use zentra_cli::tools::fs_tools::ReadOutcome;
 use zentra_cli::tui::menu::{
-    centered_middle_column, main_menu_actions, provider_selector_footer_hint,
+    centered_middle_column, main_menu_actions, main_menu_groups, provider_selector_footer_hint,
     scanner_selector_footer_hint, DetailMode, MenuScreen, MenuState, OAuthModalPhase,
     SettingsCategory, SettingsFocus, SettingsFormState,
 };
@@ -935,8 +935,7 @@ fn menu_state_navigate_wraps() {
         String::new(),
         String::new(),
     );
-    // 8 items: RunFull(0), Resume(1), Clone(2), RunPentest(3), SelectScanners(4),
-    // ViewResults(5), Settings(6), Exit(7)
+    // Group headers are not selectable; the eight action indexes stay contiguous.
     state.next();
     assert_eq!(state.selected_idx, 1);
     state.next(); // 2
@@ -965,12 +964,12 @@ fn menu_state_disabled_items_when_unconfigured() {
         String::new(),
         String::new(),
     ); // no provider, no project
-    assert!(!state.is_item_enabled(0)); // Run Full Scan
-    assert!(!state.is_item_enabled(1)); // Resume Last Scan (no checkpoint)
-    assert!(!state.is_item_enabled(2)); // Clone Repo & Scan
-    assert!(state.is_item_enabled(3)); // Run Pentest
-    assert!(!state.is_item_enabled(4)); // Select Scanners
-    assert!(state.is_item_enabled(5)); // View Last Results
+    assert!(!state.is_item_enabled(0)); // Run SAST Scan
+    assert!(!state.is_item_enabled(1)); // Resume Last SAST Scan (no checkpoint)
+    assert!(!state.is_item_enabled(2)); // Clone Repo & Run SAST Scan
+    assert!(!state.is_item_enabled(3)); // Select SAST Scanners
+    assert!(state.is_item_enabled(4)); // View Last SAST Results
+    assert!(state.is_item_enabled(5)); // Run Pentest on Live Site
     assert!(state.is_item_enabled(6)); // Settings
     assert!(state.is_item_enabled(7)); // Exit
 }
@@ -1259,10 +1258,10 @@ fn menu_state_navigate_new_max_is_9() {
 #[test]
 fn menu_state_main_menu_has_clone_action() {
     let actions = main_menu_actions();
-    assert_eq!(actions[0], "Run Full Scan (this directory)");
-    assert_eq!(actions[1], "Resume Last Scan");
-    assert_eq!(actions[2], "Clone Repo & Scan");
-    assert_eq!(actions[3], "Run Pentest");
+    assert_eq!(actions[0], "Run SAST Scan (this directory)");
+    assert_eq!(actions[1], "Resume Last SAST Scan");
+    assert_eq!(actions[2], "Clone Repo & Run SAST Scan");
+    assert_eq!(actions[5], "Run Pentest on Live Site");
 }
 
 #[test]
@@ -1296,15 +1295,19 @@ fn menu_state_main_menu_has_eight_actions() {
     assert_eq!(
         main_menu_actions(),
         &[
-            "Run Full Scan (this directory)",
-            "Resume Last Scan",
-            "Clone Repo & Scan",
-            "Run Pentest",
-            "Select Scanners",
-            "View Last Results",
+            "Run SAST Scan (this directory)",
+            "Resume Last SAST Scan",
+            "Clone Repo & Run SAST Scan",
+            "Select SAST Scanners",
+            "View Last SAST Results",
+            "Run Pentest on Live Site",
             "Settings",
             "Exit",
         ]
+    );
+    assert_eq!(
+        main_menu_groups(),
+        &[("SAST", 0), ("DAST", 5), ("Misc.", 6)]
     );
 }
 

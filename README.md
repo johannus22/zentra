@@ -97,6 +97,10 @@ scans, reviewing findings, and launching authorized pentests. To start a scan
 directly, bypassing the main menu, run `zentra scan`. Headless mode is also
 available for CI and other automation.
 
+The main menu groups static application security testing (SAST), dynamic
+application security testing (DAST), and miscellaneous actions so each workflow
+is clear before you start it.
+
 Run only one scanner family:
 
 ```bash

@@ -1,6 +1,6 @@
 [package]
 name = "zentra-cli"
-version = "0.15.2"
+version = "0.15.3"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/johannus22/zentra"
@@ -17,9 +17,9 @@ path = "src/lib.rs"
 aes-gcm = "0.10"
 anyhow = "1"
 base64 = "0.22"
-crossterm = "0.28"
+crossterm = "0.29"
 futures = "0.3"
-ratatui = "0.29"
+ratatui = "0.30.2"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
