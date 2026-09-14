@@ -1,0 +1,47 @@
+name: Zentra Security Scan
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+  packages: read
+
+jobs:
+  zentra-ci:
+    name: Zentra CI (dogfood)
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/kestrel-sec/zentra:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Debug workspace
+        run: |
+          pwd
+          ls -la
+          git status || true
+          git config --global --add safe.directory "$(pwd)" || true
+          git status || true
+
+      - name: Run Zentra CI scan
+        env:
+          ZENTRA_API_KEY: ${{ secrets.ZENTRA_API_KEY }}
+          ZENTRA_PROVIDER_BASE_URL: ${{ secrets.ZENTRA_PROVIDER_BASE_URL }}
+          ZENTRA_PROVIDER_MODEL: ${{ secrets.ZENTRA_PROVIDER_MODEL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: zentra ci
+
+      - name: Upload Zentra CI report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zentra-ci-report
+          path: |
+            .zentra/ci-report.md
+            .zentra/ci-report.json
+          if-no-files-found: ignore
