@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
+  <title id="title">Zentra — application security, centred</title>
+  <desc id="desc">Banner for Zentra, an AI-powered application security CLI.</desc>
+  <rect width="1200" height="420" rx="24" fill="#0A1020"/>
+  <path d="M0 340 360 0h140L140 420H0zM875 420l325-307v307z" fill="#111D35"/>
+  <path d="M100 70h180v36H100zM244 106h36v36h-36zM208 142h36v36h-36zM172 178h36v36h-36zM136 214h36v36h-36zM100 250h36v-36h36v36h108v-36H100z" fill="#08D9C4"/>
+  <path d="M136 106h108v18H136zM118 124h108v18H118zM136 142h72v18h-72zM154 160h72v18h-72zM172 178h90v18h-90zM154 196h90v18h-90z" fill="#0A1020"/>
+  <g fill="#F3F7FF" transform="translate(335 92) scale(.76)">
+    <path d="M0 0h120v25L44 92h78v28H-4V95l77-67H0z"/>
+    <path d="M147 0h95q25 0 25 25v40h-91v19q0 10 10 10h81v26h-92q-28 0-28-28V28q0-28 28-28zm29 26v15h62v-5q0-10-10-10z"/>
+    <path d="M290 0h91q28 0 28 28v92h-29V32q0-7-8-7h-53v95h-29z"/>
+    <path d="M432 0h120v27h-45v93h-30V27h-45z"/>
+    <path d="M576 0h30v120h-30zM606 0h66q28 0 28 28v38h-29V32q0-7-8-7h-57zM635 66h65v28h-65z"/>
+    <path d="M724 0h108q28 0 28 28v92h-29V90h-68v30h-29V28q0-28 28-28zm10 64h68V32q0-7-8-7h-52q-8 0-8 7z"/>
+  </g>
+  <g fill="#90A3C5"><path d="M337 326h258v8H337zM337 344h144v8H337zM337 362h206v8H337z"/></g>
+  <circle cx="1064" cy="334" r="7" fill="#08D9C4"/><path d="M1082 333h62v3h-62z" fill="#08D9C4"/>
+</svg>

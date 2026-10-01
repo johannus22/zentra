@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Zentra symbol</title>
+  <desc id="desc">A centred Z-shaped security signal made from three precise cyan segments.</desc>
+  <!-- Built on a 16px grid. The open joins keep the mark clear at favicon scale. -->
+  <g fill="#08D9C4">
+    <path d="M48 48h160v32H48z"/>
+    <path d="M176 80h32v32h-32zM144 112h32v32h-32zM112 144h32v32h-32zM80 176h32v32H80zM48 208v-32h32v32z"/>
+    <path d="M48 208h160v-32H48z"/>
+  </g>
+  <path fill="#0A1020" d="M80 80h96v16h-96zM64 96h96v16H64zM80 112h64v16H80zM96 128h64v16H96zM112 144h80v16h-80zM96 160h80v16H96z"/>
+</svg>
