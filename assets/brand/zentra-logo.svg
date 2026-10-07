@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 256" role="img" aria-labelledby="title desc">
+  <title id="title">Zentra</title>
+  <desc id="desc">Zentra application security logo.</desc>
+  <g fill="#08D9C4">
+    <path d="M24 48h160v32H24z"/>
+    <path d="M152 80h32v32h-32zM120 112h32v32h-32zM88 144h32v32H88zM56 176h32v32H56zM24 208v-32h32v32z"/>
+    <path d="M24 208h160v-32H24z"/>
+  </g>
+  <path fill="#0A1020" d="M56 80h96v16H56zM40 96h96v16H40zM56 112h64v16H56zM72 128h64v16H72zM88 144h80v16H88zM72 160h80v16H72z"/>
+  <!-- Custom, outline-only wordmark; the clipped terminals echo the signal mark. -->
+  <g fill="#0A1020">
+    <path d="M250 82h120v25l-76 67h78v28H246v-25l77-67h-73z"/>
+    <path d="M397 82h95q25 0 25 25v40h-91v19q0 10 10 10h81v26h-92q-28 0-28-28v-64q0-28 28-28zm29 26v15h62v-5q0-10-10-10z"/>
+    <path d="M540 82h91q28 0 28 28v92h-29v-88q0-7-8-7h-53v95h-29z"/>
+    <path d="M682 82h120v27h-45v93h-30v-93h-45z"/>
+    <path d="M827 82h29v120h-29zM856 82h66q28 0 28 28v38h-29v-34q0-7-8-7h-57zM885 148h65v28h-65z"/>
+    <path d="M974 82h108q28 0 28 28v92h-29v-30h-68v30h-29v-92q0-28 28-28zm10 64h68v-32q0-7-8-7h-52q-8 0-8 7z"/>
+  </g>
+</svg>

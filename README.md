@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/brand/zentra-readme-banner.svg" alt="Zentra — AI-powered application security CLI" width="100%" />
+</p>
+
 # Zentra CLI
 
 Zentra is an AI-powered application security CLI for developers. It scans a codebase for security risks with framework analysis, threat modeling, static analysis (SAST), supply-chain, API, and infrastructure-as-code scanners. You can run Zentra locally with an interactive terminal interface, or headlessly in CI.
