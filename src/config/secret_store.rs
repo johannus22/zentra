@@ -4,7 +4,7 @@
 //!
 //! On Unix (Linux/macOS), secrets are sealed with AES-256-GCM under a random
 //! data-encryption key (DEK) that lives in the OS secret store (Secret Service
-//! on Linux, Keychain on macOS) via the `keyring` crate — envelope encryption
+//! on Linux, Keychain on macOS) via explicit keyring stores — envelope encryption
 //! that mirrors DPAPI: the file on disk is useless without the local OS store.
 //! When the OS store is unavailable (headless/SSH/CI, locked keyring) we fall
 //! back to writing plaintext, still guarded by 0o600 file permissions.
@@ -22,7 +22,7 @@ pub fn write_secret(path: &Path, plaintext: &[u8]) -> Result<()> {
     {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
-        use std::os::unix::fs::PermissionsExt; // for Permissions::from_mode
+        use std::os::unix::fs::PermissionsExt;
         // Create with 0o600 from the start — no world-readable TOCTOU window.
         let mut f = std::fs::OpenOptions::new()
             .create(true)
@@ -149,29 +149,44 @@ mod envelope {
             .map_err(|e| anyhow::anyhow!("Failed to decrypt secret (wrong key or corrupted): {e}"))
     }
 
-    fn dek_entry() -> Result<keyring::Entry> {
-        keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
+    fn dek_entry() -> Result<crate::config::credential_store::Entry> {
+        crate::config::credential_store::Entry::new(KEYRING_SERVICE, KEYRING_USER)
             .context("Failed to access OS secret store for the data key")
     }
 
     /// Fetch the existing DEK, or generate and store a new one. Errors only if the
     /// OS secret store is unavailable (callers treat that as "fall back to plaintext").
     pub(super) fn load_or_create_dek() -> Result<[u8; KEY_LEN]> {
-        if let Some(key) = load_dek()? {
+        load_or_create_dek_with(load_dek, |encoded| {
+            dek_entry()?
+                .set_password(encoded)
+                .context("Failed to store data key in OS secret store")
+        })
+    }
+
+    pub(super) fn load_or_create_dek_with(
+        load: impl FnOnce() -> Result<Option<[u8; KEY_LEN]>>,
+        store: impl FnOnce(&str) -> Result<()>,
+    ) -> Result<[u8; KEY_LEN]> {
+        if let Some(key) = load()? {
             return Ok(key);
         }
         let mut key = [0u8; KEY_LEN];
         rand::thread_rng().fill_bytes(&mut key);
-        dek_entry()?
-            .set_password(&base64::engine::general_purpose::STANDARD.encode(key))
-            .context("Failed to store data key in OS secret store")?;
+        store(&base64::engine::general_purpose::STANDARD.encode(key))?;
         Ok(key)
     }
 
     /// Fetch the DEK. `Ok(None)` if it was never created; `Err` if the store is
     /// unavailable or the stored value is malformed.
     pub(super) fn load_dek() -> Result<Option<[u8; KEY_LEN]>> {
-        match dek_entry()?.get_password() {
+        decode_dek(dek_entry()?.get_password())
+    }
+
+    pub(super) fn decode_dek(
+        result: keyring_core::Result<String>,
+    ) -> Result<Option<[u8; KEY_LEN]>> {
+        match result {
             Ok(encoded) => {
                 let raw = base64::engine::general_purpose::STANDARD
                     .decode(encoded.trim())
@@ -182,7 +197,7 @@ mod envelope {
                     .map_err(|_| anyhow::anyhow!("Stored data key has the wrong length"))?;
                 Ok(Some(key))
             }
-            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(keyring_core::Error::NoEntry) => Ok(None),
             Err(e) => Err(anyhow::anyhow!("OS secret store read failed: {e}")),
         }
     }
@@ -255,8 +270,8 @@ fn looks_like_dpapi(bytes: &[u8]) -> bool {
     // DPAPI blobs start with dwVersion (0x00000001 LE) followed by the default
     // provider GUID {df9d8cd0-1115-11d1-8c7a-00c04fc297eb}.
     const DPAPI_MAGIC: [u8; 20] = [
-        0x01, 0x00, 0x00, 0x00, 0xd0, 0x8c, 0x9d, 0xdf, 0x01, 0x15, 0xd1, 0x11, 0x8c, 0x7a,
-        0x00, 0xc0, 0x4f, 0xc2, 0x97, 0xeb,
+        0x01, 0x00, 0x00, 0x00, 0xd0, 0x8c, 0x9d, 0xdf, 0x01, 0x15, 0xd1, 0x11, 0x8c, 0x7a, 0x00,
+        0xc0, 0x4f, 0xc2, 0x97, 0xeb,
     ];
     bytes.len() >= DPAPI_MAGIC.len() && bytes[..DPAPI_MAGIC.len()] == DPAPI_MAGIC
 }
@@ -265,6 +280,185 @@ fn looks_like_dpapi(bytes: &[u8]) -> bool {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn dek_errors_and_malformed_values_are_not_absence() {
+        use super::envelope::decode_dek;
+        assert!(decode_dek(Err(keyring_core::Error::NoEntry))
+            .unwrap()
+            .is_none());
+        assert!(decode_dek(Err(keyring_core::Error::Ambiguous(Vec::new()))).is_err());
+        assert!(decode_dek(Ok("not base64!".into())).is_err());
+        assert!(decode_dek(Ok("YQ==".into())).is_err());
+    }
+
+    #[test]
+    fn existing_dek_is_reused_and_errors_never_create_a_replacement() {
+        use super::envelope::load_or_create_dek_with;
+        assert_eq!(
+            load_or_create_dek_with(|| Ok(Some([7; 32])), |_| panic!("must reuse")).unwrap(),
+            [7; 32]
+        );
+        assert!(load_or_create_dek_with(
+            || anyhow::bail!("locked or malformed"),
+            |_| panic!("must not overwrite")
+        )
+        .is_err());
+        assert!(load_or_create_dek_with(|| Ok(None), |_| anyhow::bail!("write failed")).is_err());
+        let key = load_or_create_dek_with(
+            || Ok(None),
+            |encoded| {
+                assert!(super::envelope::decode_dek(Ok(encoded.to_owned()))?.is_some());
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(key.len(), 32);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    #[ignore = "run scripts/test-keyring-compat.sh with an isolated synthetic Secret Service"]
+    fn v3_credentials_remain_usable() {
+        use crate::config::credential_store::Entry;
+        use std::process::Command;
+        assert_eq!(
+            std::env::var("ZENTRA_ISOLATED_CREDENTIAL_TEST").unwrap(),
+            "1"
+        );
+        #[cfg(target_os = "macos")]
+        {
+            #[link(name = "Security", kind = "framework")]
+            extern "C" {
+                fn SecKeychainSetUserInteractionAllowed(state: u8) -> i32;
+            }
+            // Test-only public API: unexpected authorization must fail, not prompt.
+            assert_eq!(unsafe { SecKeychainSetUserInteractionAllowed(0) }, 0);
+        }
+        let service = std::env::var("ZENTRA_CREDENTIAL_TEST_SERVICE").unwrap();
+        assert!(service.starts_with("zentra-test-"));
+        let fixture = std::env::var("ZENTRA_KEYRING_V3_FIXTURE").unwrap();
+        let dir = TempDir::new().unwrap();
+        struct Cleanup<'a>(&'a str, &'a str, &'a Path);
+        impl Drop for Cleanup<'_> {
+            fn drop(&mut self) {
+                let _ = Command::new(self.0)
+                    .arg("cleanup")
+                    .arg(self.1)
+                    .arg(self.2)
+                    .status();
+            }
+        }
+        let _cleanup = Cleanup(&fixture, &service, dir.path());
+        let run_old = |command| {
+            assert!(Command::new(&fixture)
+                .arg(command)
+                .arg(&service)
+                .arg(dir.path())
+                .status()
+                .unwrap()
+                .success());
+        };
+        run_old("seed");
+        let dek = Entry::new(&service, "secret-store-key-v1").unwrap();
+        let key = super::envelope::decode_dek(dek.get_password())
+            .unwrap()
+            .unwrap();
+        assert_eq!(key, [7; 32]);
+        let old_blob = std::fs::read(dir.path().join("old.key")).unwrap();
+        assert_eq!(
+            super::envelope::open(&key, &old_blob).unwrap(),
+            b"old-envelope-secret"
+        );
+        let reused = super::envelope::load_or_create_dek_with(
+            || super::envelope::decode_dek(dek.get_password()),
+            |_| panic!("existing DEK must not be replaced"),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("new.key"),
+            super::envelope::seal(&reused, b"new-envelope-secret").unwrap(),
+        )
+        .unwrap();
+        let api = Entry::new(&service, "api_key").unwrap();
+        assert_eq!(api.get_password().unwrap(), "old-api-key");
+        api.set_password("new-api-key").unwrap();
+        let oauth = Entry::new(&service, "oauth_tokens").unwrap();
+        assert_eq!(oauth.get_password().unwrap(), "old-oauth-tokens");
+        oauth.delete_credential().unwrap();
+        assert!(matches!(
+            oauth.get_password(),
+            Err(keyring_core::Error::NoEntry)
+        ));
+        let legacy = Entry::new(&format!("{service}-legacy"), "api_key").unwrap();
+        assert_eq!(legacy.get_password().unwrap(), "old-targetless-key");
+        legacy.set_password("new-targetless-key").unwrap();
+        Entry::new(&service, "new_user")
+            .unwrap()
+            .set_password("new-credential")
+            .unwrap();
+        let fresh = Entry::new(&service, "new-only-user").unwrap();
+        assert!(matches!(
+            fresh.get_password(),
+            Err(keyring_core::Error::NoEntry)
+        ));
+        fresh.set_password("new-only-credential").unwrap();
+        assert_eq!(fresh.get_password().unwrap(), "new-only-credential");
+        fresh.delete_credential().unwrap();
+        run_old("verify");
+        legacy.delete_credential().unwrap();
+        assert!(matches!(
+            legacy.get_password(),
+            Err(keyring_core::Error::NoEntry)
+        ));
+        #[cfg(target_os = "linux")]
+        {
+            use dbus_secret_service::{EncryptionType, SecretService};
+            use std::collections::HashMap;
+            let ss = SecretService::connect(EncryptionType::Dh).unwrap();
+            let collection = ss.get_default_collection().unwrap();
+            // Ambiguity must not broaden lookup, overwrite a DEK, or delete
+            // arbitrary items. Exercise both primary and legacy lookup paths.
+            for modern in [false, true] {
+                let user = if modern {
+                    "ambiguous-modern"
+                } else {
+                    "ambiguous-legacy"
+                };
+                let mut attributes =
+                    HashMap::from([("service", service.as_str()), ("username", user)]);
+                if modern {
+                    attributes.insert("target", "default");
+                }
+                let first = collection
+                    .create_item(
+                        "first synthetic item",
+                        attributes.clone(),
+                        b"first",
+                        false,
+                        "text/plain",
+                    )
+                    .unwrap();
+                let second = collection
+                    .create_item(
+                        "second synthetic item",
+                        attributes,
+                        b"second",
+                        false,
+                        "text/plain",
+                    )
+                    .unwrap();
+                let entry = Entry::new(&service, user).unwrap();
+                assert!(entry.get_password().is_err());
+                assert!(entry.set_password("must-not-overwrite").is_err());
+                assert!(entry.delete_credential().is_err());
+                assert_eq!(first.get_secret().unwrap(), b"first");
+                assert_eq!(second.get_secret().unwrap(), b"second");
+                first.delete().unwrap();
+                second.delete().unwrap();
+            }
+        }
+    }
 
     #[test]
     fn write_then_read_roundtrips() {
@@ -282,7 +476,11 @@ mod tests {
         let plaintext = b"sk-secret-value-xyz";
         let blob = super::envelope::seal(&key, plaintext).unwrap();
         assert!(super::envelope::looks_like_envelope(&blob));
-        assert_ne!(blob.as_slice(), plaintext.as_slice(), "sealed blob must not be plaintext");
+        assert_ne!(
+            blob.as_slice(),
+            plaintext.as_slice(),
+            "sealed blob must not be plaintext"
+        );
         assert_eq!(super::envelope::open(&key, &blob).unwrap(), plaintext);
     }
 
@@ -292,13 +490,19 @@ mod tests {
         let mut blob = super::envelope::seal(&key, b"a-real-secret").unwrap();
         let last = blob.len() - 1;
         blob[last] ^= 0xff;
-        assert!(super::envelope::open(&key, &blob).is_err(), "corrupted tag must fail auth");
+        assert!(
+            super::envelope::open(&key, &blob).is_err(),
+            "corrupted tag must fail auth"
+        );
     }
 
     #[test]
     fn envelope_open_rejects_wrong_key() {
         let blob = super::envelope::seal(&[1u8; 32], b"x").unwrap();
-        assert!(super::envelope::open(&[2u8; 32], &blob).is_err(), "wrong key must fail auth");
+        assert!(
+            super::envelope::open(&[2u8; 32], &blob).is_err(),
+            "wrong key must fail auth"
+        );
     }
 
     #[cfg(not(windows))]
@@ -345,7 +549,10 @@ mod tests {
         let i = bytes.len() - 5;
         bytes[i] ^= 0xff;
         std::fs::write(&path, &bytes).unwrap();
-        assert!(read_secret(&path).is_err(), "corrupted DPAPI blob must error, not return garbage");
+        assert!(
+            read_secret(&path).is_err(),
+            "corrupted DPAPI blob must error, not return garbage"
+        );
     }
 
     #[cfg(windows)]

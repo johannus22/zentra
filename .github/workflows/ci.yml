@@ -54,3 +54,20 @@ jobs:
       # carry a local `#[allow]` with the reason next to the code.
       - name: Clippy
         run: cargo clippy --all-targets --locked -- -D warnings
+
+  credential-compatibility:
+    name: credential compatibility (${{ matrix.os }})
+    timeout-minutes: 10
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - name: Install isolated Secret Service test prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config gnome-keyring
+      - name: Verify old/new credentials and encrypted envelopes
+        shell: bash
+        run: bash scripts/test-keyring-compat.sh

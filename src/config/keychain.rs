@@ -1,3 +1,4 @@
+use crate::config::credential_store::Entry;
 use crate::config::secret_store;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
@@ -72,7 +73,7 @@ pub fn set_key(profile: &str, api_key: &str) -> Result<KeyStorage> {
 
     // Best-effort: drop any stale keychain entry left by an older version so it can't
     // linger in the OS credential store or confuse `config list`. Ignore all errors.
-    if let Ok(entry) = keyring::Entry::new(&service_name(profile), "api_key") {
+    if let Ok(entry) = Entry::new(&service_name(profile), "api_key") {
         let _ = entry.delete_credential();
     }
 
@@ -117,7 +118,7 @@ pub fn get_key(profile: &str) -> Result<Option<String>> {
     // older version. The file above is the source of truth; the keychain is unreliable
     // and may be entirely unavailable (headless Linux with no secret-service daemon,
     // locked keyring), so any failure degrades to "no key" rather than erroring.
-    if let Ok(entry) = keyring::Entry::new(&service_name(profile), "api_key") {
+    if let Ok(entry) = Entry::new(&service_name(profile), "api_key") {
         if let Ok(key) = entry.get_password() {
             return Ok(Some(key));
         }
@@ -129,7 +130,7 @@ pub fn delete_key(profile: &str) -> Result<()> {
     // Best-effort: drop any stale keychain entry from an older version. The keychain
     // may be unavailable (headless Linux with no secret-service, locked keyring), so
     // ignore errors — removing the key file below is the authoritative operation.
-    if let Ok(entry) = keyring::Entry::new(&service_name(profile), "api_key") {
+    if let Ok(entry) = Entry::new(&service_name(profile), "api_key") {
         let _ = entry.delete_credential();
     }
     if let Some(path) = key_file_path(profile) {
@@ -164,7 +165,7 @@ pub fn set_oauth_tokens(profile: &str, tokens: &crate::auth::OAuthTokens) -> Res
         .context("Could not determine OAuth token file path (no home directory)")?;
     set_oauth_tokens_at(&path, tokens)?;
     // Best-effort: drop any stale keychain entry from an older version.
-    if let Ok(entry) = keyring::Entry::new(&service_name(profile), "oauth_tokens") {
+    if let Ok(entry) = Entry::new(&service_name(profile), "oauth_tokens") {
         let _ = entry.delete_credential();
     }
     Ok(())
@@ -179,7 +180,7 @@ pub fn get_oauth_tokens(profile: &str) -> Result<Option<crate::auth::OAuthTokens
     // Backward compatibility: best-effort read of tokens left in the OS keychain by an
     // older version. The keychain is unreliable (the reason tokens moved to files), so
     // any failure here degrades to "no tokens" rather than failing the whole operation.
-    if let Ok(entry) = keyring::Entry::new(&service_name(profile), "oauth_tokens") {
+    if let Ok(entry) = Entry::new(&service_name(profile), "oauth_tokens") {
         if let Ok(json) = entry.get_password() {
             if let Ok(tokens) = serde_json::from_str(&json) {
                 return Ok(Some(tokens));
@@ -199,7 +200,7 @@ pub fn delete_oauth_tokens(profile: &str) -> Result<()> {
     }
     // Best-effort stale-entry cleanup, same rationale as delete_key: the keychain
     // may be unavailable, and the file removal above is the authoritative operation.
-    if let Ok(entry) = keyring::Entry::new(&service_name(profile), "oauth_tokens") {
+    if let Ok(entry) = Entry::new(&service_name(profile), "oauth_tokens") {
         let _ = entry.delete_credential();
     }
     Ok(())
@@ -221,7 +222,10 @@ mod tests {
 
     #[test]
     fn parse_key_bytes_trims_and_returns_valid_key() {
-        assert_eq!(parse_key_bytes(b"  sk-abc123\n".to_vec()).unwrap(), "sk-abc123");
+        assert_eq!(
+            parse_key_bytes(b"  sk-abc123\n".to_vec()).unwrap(),
+            "sk-abc123"
+        );
     }
 
     #[test]

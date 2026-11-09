@@ -1,6 +1,6 @@
 [package]
 name = "zentra-cli"
-version = "0.15.4"
+version = "0.15.5"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/johannus22/zentra"
@@ -25,7 +25,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 dirs = "5"
 ignore = "0.4"
-keyring = "3"
+keyring-core = "1.0.1"
 open = "5"
 rand = "0.8"
 rayon = "1"
@@ -52,18 +52,16 @@ windows = { version = "0.58", features = [
     "Win32_Foundation",
 ] }
 
-# Real OS secret-store backends for the envelope-encryption data key (src/config/secret_store.rs).
-# keyring 3.x is a no-op mock unless a backend feature is enabled; on Windows the base
-# `keyring = "3"` dep stays featureless (DPAPI is used instead, so the mock is harmless).
-# NOTE: in keyring 3.6 `sync-secret-service` = the blocking `dbus-secret-service` backend, which
-# links the system libdbus (`libdbus-1-dev` at build time). We use the sync backend deliberately —
-# keyring's API is called synchronously from inside the tokio runtime, and the async/zbus backend
-# would require block-on-in-runtime. CI installs libdbus-1-dev on Linux (see ci.yml).
+# Explicit platform stores avoid keyring v3's unused async/zbus dependency chain.
+# The Linux store always negotiates DH-encrypted sessions. Keep the blocking
+# backend: calls run synchronously inside Tokio. libdbus-1-dev is required.
+# The direct backend dependency supports keyring v3's collection-scoped legacy lookup.
 [target.'cfg(target_os = "linux")'.dependencies]
-keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+dbus-secret-service-keyring-store = { version = "1.0.1", features = ["crypto-rust"] }
+dbus-secret-service = { version = "4.1.0", features = ["crypto-rust"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-keyring = { version = "3", features = ["apple-native"] }
+apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
 
 # The profile that 'dist' will build with
 [profile.dist]
