@@ -1,6 +1,6 @@
 [package]
 name = "zentra-cli"
-version = "0.15.4"
+version = "0.15.5"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/johannus22/zentra"
@@ -55,12 +55,15 @@ windows = { version = "0.58", features = [
 # Real OS secret-store backends for the envelope-encryption data key (src/config/secret_store.rs).
 # keyring 3.x is a no-op mock unless a backend feature is enabled; on Windows the base
 # `keyring = "3"` dep stays featureless (DPAPI is used instead, so the mock is harmless).
-# NOTE: in keyring 3.6 `sync-secret-service` = the blocking `dbus-secret-service` backend, which
-# links the system libdbus (`libdbus-1-dev` at build time). We use the sync backend deliberately —
-# keyring's API is called synchronously from inside the tokio runtime, and the async/zbus backend
-# would require block-on-in-runtime. CI installs libdbus-1-dev on Linux (see ci.yml).
+# `sync-secret-service` uses the blocking dbus-secret-service backend and system libdbus.
+# Enable crypto-rust directly on that backend: keyring's crypto-rust feature also forwards
+# to its unused optional async backend, retaining unmaintained zbus crates in Cargo.lock.
+# Cargo unifies the backend's features, so Secret Service transport stays encrypted without
+# changing credential lookup or the DEK. Keep this direct dependency even if it looks unused.
+# The blocking backend avoids block-on-in-runtime; CI installs libdbus-1-dev on Linux.
 [target.'cfg(target_os = "linux")'.dependencies]
-keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }
+keyring = { version = "3", features = ["sync-secret-service"] }
+dbus-secret-service = { version = "4.1.0", features = ["crypto-rust"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", features = ["apple-native"] }

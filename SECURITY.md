@@ -70,3 +70,11 @@ API keys and OAuth tokens live under `~/.zentra/keys/`. On **Windows**, Zentra e
 Zentra creates these files atomically, at mode `0600`. There is no world-readable window during creation. In memory, Zentra wraps provider API keys and the pentest password in `zeroize::Zeroizing`. This wipes the process's own copies on drop. This is defense-in-depth, not a guarantee: transient copies, for example inside the HTTP client, may still linger.
 
 Set `ZENTRA_NO_OS_KEYCHAIN=1` to skip the OS secret store entirely, and use the `0600`-plaintext fallback instead. Use this in headless or CI environments, where the keychain is unusable. macOS shows an interactive "allow access" prompt, which blocks with no GUI to answer it. Headless Linux has no secret-service daemon at all. CI sets this variable so the `secret_store` tests stay deterministic.
+
+On Linux, `keyring` uses its blocking `sync-secret-service` backend. Zentra enables
+`crypto-rust` directly on `dbus-secret-service` so Cargo's feature unification keeps
+Secret Service transport encrypted without retaining keyring's unused async/zbus
+dependency chain (issues #94–#96). This direct dependency is intentional; do not
+remove it as unused or move the crypto feature back onto `keyring`.
+`tests/dependency_policy_test.rs` guards this wiring and the removed unmaintained
+packages. No credential-backend migration or encrypted-file conversion is needed.
