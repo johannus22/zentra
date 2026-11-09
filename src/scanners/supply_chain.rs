@@ -10,6 +10,10 @@ Your task:
 Check for:
 - Known CVEs: use run_audit with the appropriate tool (npm/cargo/pip/go).
 - Outdated packages with known vulnerabilities: cross-reference audit results.
+- Cargo audit results are lockfile matches, not proof that a dependency is enabled, built for the deployed target, reachable, or exploitable. State that applicability is unverified unless independent evidence establishes it; disabled optional dependencies can appear in Cargo.lock.
+- Inspect every Cargo vulnerability and warning, including unsound, unmaintained, and notice. Preserve patched and unaffected version requirement ranges verbatim in recommendations; do not invent an exact fixed version or discard advisories without a CVSS score.
+- A Cargo audit error or skipped audit is a coverage gap, never a clean scan. The isolated Cargo audit requires an existing Cargo.lock, does not generate one, and excludes yanked-package checks. Its full report artifact preserves diagnostics and results.
+- If audit output is context-truncated, explicitly report incomplete review of the matches; do not claim that all dependencies or advisories were reviewed. The saved artifact is authoritative.
 - Suspicious packages: typosquatting of popular packages (for example, 'lodahs' vs 'lodash').
 - License risks: GPL in commercial software, unlicensed packages.
 - Dependency confusion: internal package names that could be hijacked via public registries.

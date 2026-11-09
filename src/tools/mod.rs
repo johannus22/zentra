@@ -438,7 +438,11 @@ data entry points, security middleware already present, and known safety guarant
             }
             "run_audit" => {
                 let tool = args["tool"].as_str().unwrap_or("npm");
-                audit::run_audit(tool)
+                if tool == "cargo" {
+                    audit::run_cargo_audit_at(state_writer.project_root())
+                } else {
+                    audit::run_audit(tool)
+                }
             }
             "git_log" | "git_diff" | "git_blame" | "git_status" => {
                 self.dispatch_read_only(name, args)

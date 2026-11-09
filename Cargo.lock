@@ -4374,7 +4374,7 @@ dependencies = [
 
 [[package]]
 name = "zentra-cli"
-version = "0.15.3"
+version = "0.15.4"
 dependencies = [
  "aes-gcm",
  "anyhow",

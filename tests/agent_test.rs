@@ -526,6 +526,44 @@ async fn tool_registry_dispatches_write_finding() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn cargo_audit_dispatch_uses_writer_root_and_requires_existing_lockfile() {
+    let _guard = cwd_lock().lock().unwrap_or_else(|e| e.into_inner());
+    let target = TempDir::new().unwrap();
+    let unrelated = TempDir::new().unwrap();
+    std::fs::write(unrelated.path().join("Cargo.lock"), "not a lockfile").unwrap();
+    let original = std::env::current_dir().unwrap();
+    std::env::set_current_dir(unrelated.path()).unwrap();
+    let writer = StateWriter::new(target.path()).unwrap();
+    let registry = zentra_cli::tools::ToolRegistry::new();
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+    let result = registry
+        .dispatch(
+            "run_audit",
+            &serde_json::json!({"tool": "cargo"}),
+            &writer,
+            &tx,
+            ScannerType::SupplyChain,
+        )
+        .await;
+    std::env::set_current_dir(original).unwrap();
+    let response: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(response["status"], "error", "{result}");
+    assert!(
+        response["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("Existing regular Cargo.lock required:"),
+        "{result}"
+    );
+    assert!(!target.path().join("Cargo.lock").exists());
+    assert_eq!(
+        std::fs::read_to_string(unrelated.path().join("Cargo.lock")).unwrap(),
+        "not a lockfile"
+    );
+}
+
+#[tokio::test]
 async fn write_finding_captures_cwe_cvss_owasp() {
     let dir = TempDir::new().unwrap();
     let writer = Arc::new(StateWriter::new(dir.path()).unwrap());

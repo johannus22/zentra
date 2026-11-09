@@ -114,6 +114,21 @@ zentra scan --only api
 zentra scan --only iac
 ```
 
+Rust supply-chain audits require an installed `cargo-audit` executable on an
+absolute `PATH` entry outside the scanned project, plus an existing regular
+`Cargo.lock`. Zentra copies the lockfile to a private temporary directory and
+invokes `cargo-audit` directly with isolated configuration. It fetches the public
+RustSec advisory database for each invocation; network access is required.
+Project/user audit ignore rules are not applied, lockfiles are never generated,
+and yanked-package checks are disabled. This isolates the execution path; it is
+not an OS sandbox for the audit executable or its parsers.
+
+Full audit output and diagnostics are retained in unique JSON artifacts under
+`.zentra/reports/`. Matches describe the lockfile, not confirmed use in a deployed
+build: disabled optional dependencies may appear. Warnings and patched/unaffected
+version ranges are included. Audit errors and context-truncated reviews are
+coverage gaps rather than clean results.
+
 By default, an eligible existing project uses an incremental baseline. Use
 `--full` to force a full scan, `--resume` to continue a failed or interrupted
 scan, or `--pack` to give each scanner a context-checked repository pack. A

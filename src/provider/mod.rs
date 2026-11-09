@@ -211,6 +211,8 @@ pub enum AgentMessage {
     },
 }
 
+// The locked async-trait macro adds must_use to its already must-use Future.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait LLMProvider: Send + Sync {
     async fn complete(&self, req: CompletionRequest) -> Result<CompletionResponse>;
