@@ -7,6 +7,15 @@ use aes_gcm::{
 use base64::Engine;
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    {
+        #[link(name = "Security", kind = "framework")]
+        extern "C" {
+            fn SecKeychainSetUserInteractionAllowed(state: u8) -> i32;
+        }
+        // Test-only public API: fail instead of hanging on an unexpected ACL prompt.
+        assert_eq!(unsafe { SecKeychainSetUserInteractionAllowed(0) }, 0);
+    }
     let args: Vec<String> = std::env::args().collect();
     let (command, service, dir) = (&args[1], &args[2], std::path::Path::new(&args[3]));
     assert!(

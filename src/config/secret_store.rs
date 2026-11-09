@@ -326,6 +326,15 @@ mod tests {
             std::env::var("ZENTRA_ISOLATED_CREDENTIAL_TEST").unwrap(),
             "1"
         );
+        #[cfg(target_os = "macos")]
+        {
+            #[link(name = "Security", kind = "framework")]
+            extern "C" {
+                fn SecKeychainSetUserInteractionAllowed(state: u8) -> i32;
+            }
+            // Test-only public API: unexpected authorization must fail, not prompt.
+            assert_eq!(unsafe { SecKeychainSetUserInteractionAllowed(0) }, 0);
+        }
         let service = std::env::var("ZENTRA_CREDENTIAL_TEST_SERVICE").unwrap();
         assert!(service.starts_with("zentra-test-"));
         let fixture = std::env::var("ZENTRA_KEYRING_V3_FIXTURE").unwrap();
@@ -388,6 +397,14 @@ mod tests {
             .unwrap()
             .set_password("new-credential")
             .unwrap();
+        let fresh = Entry::new(&service, "new-only-user").unwrap();
+        assert!(matches!(
+            fresh.get_password(),
+            Err(keyring_core::Error::NoEntry)
+        ));
+        fresh.set_password("new-only-credential").unwrap();
+        assert_eq!(fresh.get_password().unwrap(), "new-only-credential");
+        fresh.delete_credential().unwrap();
         run_old("verify");
         legacy.delete_credential().unwrap();
         assert!(matches!(

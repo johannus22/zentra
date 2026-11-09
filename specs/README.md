@@ -128,14 +128,20 @@ Regular CI's headless fallback tests alone do not establish these properties.
 
 The same script on macOS temporarily makes a disposable keychain the User/login
 default, restores the previous default on exit, and checks both envelope
-directions and legacy credentials there. Linux additionally checks ambiguous
+directions and legacy credentials there. Public Keychain tools pre-create
+synthetic placeholders trusting both ad-hoc signed test binaries; the old
+library then writes the actual test values. This checks old-written data and
+identity compatibility, **not** creator-only ACL preservation or prompt-free
+authorization of an upgraded user binary. Both binaries disable interactive
+prompts during tests. Linux additionally checks ambiguous
 primary and legacy matches cannot be read, overwritten, or arbitrarily deleted.
 Both jobs compile the exact production credential modules in a temporary minimal
 harness using versions from the application's lockfile; the separate regular
 platform jobs test and lint the full application.
 
 Local implementation evidence (Windows Rust 1.94.1 and Linux WSL): the 23-test
-targeted configuration suite passed; the isolated Linux compatibility check
+targeted configuration suite passed, then the full Windows suite passed 1,027
+tests (two opt-in tests ignored) and Clippy passed with warnings denied. The isolated Linux compatibility check
 passed, including primary/legacy ambiguity rejection and DH-only negotiation.
 macOS live compatibility is checked by the dedicated CI job, not inferred from
 Windows or Linux results. A full Linux CLI build on WSL requires additional

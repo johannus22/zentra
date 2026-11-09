@@ -97,12 +97,37 @@ apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
 TOML
 cp "$root/Cargo.lock" "$tmp/new/Cargo.lock"
 cargo update --workspace --quiet --manifest-path "$tmp/new/Cargo.toml"
+cargo test --lib --no-run --locked --manifest-path "$tmp/new/Cargo.toml" --message-format=json > "$tmp/build.json"
+new_bin=$(sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' "$tmp/build.json")
+[[ -x $new_bin ]]
+if [[ $os == Darwin ]]; then
+    # Public APIs only: create placeholder items already trusting both test
+    # binaries. The old library, not this setup, writes all expected test data.
+    # This tests old-written data, not preservation of old creator-only ACLs.
+    codesign --force --sign - --timestamp=none "$ZENTRA_KEYRING_V3_FIXTURE"
+    codesign --force --sign - --timestamp=none "$new_bin"
+    old_hash=$(codesign -d --verbose=4 "$ZENTRA_KEYRING_V3_FIXTURE" 2>&1 | sed -n 's/^CDHash=//p')
+    new_hash=$(codesign -d --verbose=4 "$new_bin" 2>&1 | sed -n 's/^CDHash=//p')
+    [[ $old_hash =~ ^[0-9a-f]{40}$ && $new_hash =~ ^[0-9a-f]{40}$ ]]
+    authorize_item() {
+        security add-generic-password -s "$1" -a "$2" \
+            -T "$ZENTRA_KEYRING_V3_FIXTURE" -T "$new_bin" \
+            -w 'uninitialized-synthetic-placeholder' "$test_keychain"
+        security set-generic-password-partition-list -s "$1" -a "$2" \
+            -S "apple-tool:,cdhash:$old_hash,cdhash:$new_hash" \
+            -k zentra-test-password "$test_keychain" > /dev/null
+    }
+    for account in secret-store-key-v1 api_key oauth_tokens new_user; do
+        authorize_item "$ZENTRA_CREDENTIAL_TEST_SERVICE" "$account"
+    done
+    authorize_item "$ZENTRA_CREDENTIAL_TEST_SERVICE-legacy" api_key
+fi
 if [[ $os == Linux ]]; then
 dbus-monitor --session "type='method_call',interface='org.freedesktop.Secret.Service',member='OpenSession'" \
     > "$tmp/sessions.log" 2> "$tmp/monitor.log" &
 monitor_pid=$!
 fi
-cargo test --manifest-path "$tmp/new/Cargo.toml" --locked v3_credentials_remain_usable -- --ignored --nocapture
+"$new_bin" --exact config::secret_store::tests::v3_credentials_remain_usable --ignored --nocapture
 if [[ $os == Linux ]]; then
 kill "$monitor_pid"
 wait "$monitor_pid" || true
