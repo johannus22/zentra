@@ -15,6 +15,10 @@ allow-dirty = ["ci"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 
+[dist.github-custom-runners]
+# The default macos-14 ARM64 runner is no longer supported by GitHub.
+aarch64-apple-darwin = "macos-15"
+
 # System dependencies the Linux build needs at build time. The keyring
 # `sync-secret-service` backend links libdbus (see Cargo.toml), so the Ubuntu
 # runner must have the dev headers + pkg-config, mirroring ci.yml.
