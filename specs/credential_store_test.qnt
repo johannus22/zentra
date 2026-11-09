@@ -1,0 +1,23 @@
+module credential_store_test {
+  import credential_store.* from "./credential_store"
+  run upgradeReadsExistingTest = start(1, 1, true).then(upgrade).then(read)
+    .expect(s.outcome == ReadOk and s.dek == 1 and safety)
+  run reuseExistingTest = start(1, 1, true).then(upgrade).then(write(true))
+    .expect(s.outcome == Encrypted and s.dek == 1 and s.creates == 0 and safety)
+  run persistBeforeEncryptTest = start(0, 0, true).then(upgrade).then(write(true))
+    .expect(s.outcome == Encrypted and s.dek == 2 and safety)
+  run failedPersistenceTest = start(0, 0, true).then(upgrade).then(write(false))
+    .expect(s.outcome == Plaintext and s.dek == 0 and safety)
+  run malformedIsNotReplacedTest = start(-1, 1, true).then(upgrade).then(write(true))
+    .expect(s.outcome == Plaintext and s.dek == -1 and safety)
+  run unavailableWriteTest = start(1, 1, false).then(upgrade).then(write(true))
+    .expect(s.outcome == Plaintext and s.dek == 1 and safety)
+  run unavailableEncryptedReadTest = start(1, 1, false).then(upgrade).then(read)
+    .expect(s.outcome == ReadError and s.dek == 1 and safety)
+  run missingEncryptedReadTest = start(0, 1, true).then(upgrade).then(read)
+    .expect(s.outcome == ReadError and s.dek == 0 and safety)
+  run plaintextReadTest = start(0, 0, false).then(upgrade).then(read)
+    .expect(s.outcome == ReadOk and s.creates == 0 and safety)
+  run cleanupKeepsDekTest = start(1, 1, true).then(upgrade).then(cleanupLegacy).then(read)
+    .expect(not(s.legacy) and s.outcome == ReadOk and s.dek == 1 and safety)
+}
