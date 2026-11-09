@@ -58,7 +58,7 @@ Zentra tracks the items below but does not change them in code, for now. Each is
 |------|-------------------|------------------|
 | **`ring` unmaintained** (RUSTSEC-2025-0029) | This is a transitive dependency, via `rustls` then `reqwest`. It is in maintenance mode, with no known CVE. The weekly `audit.yml` workflow monitors it, and `.cargo/audit.toml` waives it. | Migrate to `aws-lc-rs`, once the rustls stack supports it cleanly. Reviewed 2026-06-10. |
 | **System OpenSSL via `native-tls`** | The real TLS posture depends on the host OpenSSL, which is an opaque surface. | Switch `reqwest` to `rustls-tls`, to drop the system-OpenSSL dependency. Deferred, since this is a broad-impact backend change. |
-| **`keyring` v3 (not v4)** | Version 3.6 has no known CVE. Zentra uses it only as a read fallback in `keychain`, and to hold the Unix envelope data key. | Evaluate the v4 migration, which breaks the API. Test it on all three platforms. |
+| **Platform credential stores** | Zentra uses `keyring-core` with explicit blocking Secret Service and login Keychain stores; Windows primary storage remains DPAPI. | Preserve existing DEK identity and legacy lookup compatibility when updating stores. See `specs/README.md`. |
 | **SHA-1 TOTP** (`pentest/auth.rs`) | Some services issue SHA-1 TOTP (time-based one-time password) secrets. This is the dominant case, so Zentra must interoperate with it. | Make the algorithm configurable (SHA-256 or SHA-512), with SHA-1 as a compatibility fallback. |
 | **Hardcoded OAuth client ID** (`auth.rs`) | A client ID in an OAuth 2.0 PKCE (Proof Key for Code Exchange) flow is public by design. It is not a secret. | Make it configurable, for enterprise registrations and graceful rotation. |
 | **Pentest credentials via environment variables** | Zentra passes `ZENTRA_USER` and `ZENTRA_PASS` to the Node Playwright child process through the environment. Only same-user processes can read them (through `/proc/<pid>/environ`). This fits the local-tool trust model. Zentra never writes these values to disk or logs. | Pass them via stdin, or an unlinked `0600` temp file, if the threat model tightens. |
@@ -70,3 +70,12 @@ API keys and OAuth tokens live under `~/.zentra/keys/`. On **Windows**, Zentra e
 Zentra creates these files atomically, at mode `0600`. There is no world-readable window during creation. In memory, Zentra wraps provider API keys and the pentest password in `zeroize::Zeroizing`. This wipes the process's own copies on drop. This is defense-in-depth, not a guarantee: transient copies, for example inside the HTTP client, may still linger.
 
 Set `ZENTRA_NO_OS_KEYCHAIN=1` to skip the OS secret store entirely, and use the `0600`-plaintext fallback instead. Use this in headless or CI environments, where the keychain is unusable. macOS shows an interactive "allow access" prompt, which blocks with no GUI to answer it. Headless Linux has no secret-service daemon at all. CI sets this variable so the `secret_store` tests stay deterministic.
+
+The explicit Linux store and its legacy compatibility path request DH-encrypted
+Secret Service sessions. Merely enabling `crypto-rust` on a low-level dependency
+does not establish encrypted transport: callers must also select DH sessions.
+The opt-in isolated live test in `scripts/test-keyring-compat.sh` checks session
+negotiation and old/new credential interoperability. No DEK rotation or file
+conversion is performed. macOS continues to use the User/login Keychain (not the
+protected-data store). Windows retains nonpersistent mock legacy entries; this
+change does not enable Windows Credential Manager.

@@ -74,3 +74,70 @@ build output. Unix-only symlink tests are included but were not executed on this
 Windows host. Independent review led to stricter metadata, filter, and exit-status
 consistency checks; schema rejection is conservative when an incompatible tool
 version returns a different format.
+
+## Credential-store migration contract
+
+`credential_store.qnt` and `credential_store_test.qnt` cover sequential Unix DEK
+reuse/creation, legacy cleanup, encrypted reads, plaintext fallback, and failed
+persistence. A single cohesive state record models one client and an abstract
+store. Existing/malformed keys must never be replaced; encrypted reads cannot
+create keys or succeed without the original key. Successful key creation is
+reachable only after persistence succeeds. Operations terminate intentionally.
+
+| Model | Implementation/evidence |
+| --- | --- |
+| upgrade | `config/credential_store.rs`: explicit platform stores, unchanged identities; old/new live compatibility fixture |
+| read | `secret_store::decrypt`, `envelope::decode_dek` and `open`; missing/malformed/ambiguous key tests |
+| write | `load_or_create_dek_with`, `encrypt`, `seal`; reuse and failed-persistence tests |
+| cleanupLegacy | `keychain` stale-entry deletion; live synthetic API/OAuth/targetless credential tests |
+
+The model does **not** prove cryptography, encrypted D-Bus negotiation, OS-store
+attribute matching, macOS access controls, file-write atomicity, concurrent
+first-key creation, or implementation conformance. Those require implementation
+tests and source review. Linux keeps keyring 3.6.3's exact lookup order:
+service-wide `service+username+target=default`, then only on no matches a
+default-collection search omitting target. That old fallback does not filter
+target-bearing items in the default collection; this migration does not tighten
+or broaden it. Errors/ambiguity never trigger a broader search or key replacement.
+
+```powershell
+npx --yes --package @informalsystems/quint@0.33.0 quint typecheck specs/credential_store_test.qnt
+npx --yes --package @informalsystems/quint@0.33.0 quint test specs/credential_store_test.qnt --backend typescript
+npx --yes --package @informalsystems/quint@0.33.0 quint run specs/credential_store.qnt --backend typescript --invariant safety --witnesses upgradedWitness readWitness writeWitness createWitness fallbackWitness cleanupWitness --max-samples 1000 --max-steps 3 --seed 42
+```
+
+Phase 0: typecheck passed, ten scenarios passed, 1,000 sampled traces had no safety
+violation. Witness counts: upgraded 1,000; read 347; encrypted write 154; create
+53; plaintext fallback 499; cleanup 255. This is sampled simulation, not exhaustive
+model checking. Update and revalidate before changing these transitions.
+
+Linux live compatibility (approved test prerequisites: libdbus development files,
+pkg-config, gnome-keyring, dbus-run-session, dbus-monitor, dbus-send):
+
+```bash
+bash scripts/test-keyring-compat.sh
+```
+
+The script creates a fresh D-Bus session and temporary keyring directories. It
+builds the frozen keyring 3.6.3 writer in a separate temporary project, never in
+Zentra's dependency graph. Only unique `zentra-test-*` credentials are accessed.
+It checks old/new DEK reuse, both envelope directions, API/OAuth credentials,
+targetless fallback, updates/deletion, and new credentials visible to the old
+client. A D-Bus monitor must observe DH negotiation and no plaintext session.
+Regular CI's headless fallback tests alone do not establish these properties.
+
+The same script on macOS temporarily makes a disposable keychain the User/login
+default, restores the previous default on exit, and checks both envelope
+directions and legacy credentials there. Linux additionally checks ambiguous
+primary and legacy matches cannot be read, overwritten, or arbitrarily deleted.
+Both jobs compile the exact production credential modules in a temporary minimal
+harness using versions from the application's lockfile; the separate regular
+platform jobs test and lint the full application.
+
+Local implementation evidence (Windows Rust 1.94.1 and Linux WSL): the 23-test
+targeted configuration suite passed; the isolated Linux compatibility check
+passed, including primary/legacy ambiguity rejection and DH-only negotiation.
+macOS live compatibility is checked by the dedicated CI job, not inferred from
+Windows or Linux results. A full Linux CLI build on WSL requires additional
+OpenSSL development headers; the live harness deliberately compiles only the
+unchanged copies of production credential modules, not a substitute backend.

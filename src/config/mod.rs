@@ -1,3 +1,4 @@
+pub(crate) mod credential_store;
 pub mod custom_providers;
 pub mod global;
 pub mod keychain;
