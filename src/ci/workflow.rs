@@ -58,12 +58,15 @@ jobs:
           ZENTRA_PROVIDER_MODEL: ${{ vars.ZENTRA_PROVIDER_MODEL }}
         run: zentra ci
       - name: Upload Zentra CI report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: zentra-ci-report
           path: |
             .zentra/ci-report.md
             .zentra/ci-report.json
+            .zentra/verification.json
+            .zentra/verification.md
 "#;
 
 const GITLAB_WORKFLOW: &str = r#"zentra_security_scan:
@@ -79,6 +82,8 @@ const GITLAB_WORKFLOW: &str = r#"zentra_security_scan:
     paths:
       - .zentra/ci-report.md
       - .zentra/ci-report.json
+      - .zentra/verification.json
+      - .zentra/verification.md
 
 zentra_full_scan_staging:
   stage: test
@@ -94,4 +99,6 @@ zentra_full_scan_staging:
     paths:
       - .zentra/ci-report.md
       - .zentra/ci-report.json
+      - .zentra/verification.json
+      - .zentra/verification.md
 "#;

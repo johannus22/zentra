@@ -29,7 +29,9 @@ struct CiJsonReport<'a> {
     context: CiJsonContext<'a>,
     fail_threshold: String,
     summary: SeverityCounts,
-    findings: &'a [Finding],
+    findings: Vec<&'a Finding>,
+    candidates: Vec<&'a Finding>,
+    verification_complete: bool,
 }
 
 #[derive(Serialize)]
@@ -71,7 +73,21 @@ pub fn write_ci_artifacts(
             context: json_context(context),
             fail_threshold: fail_threshold.to_string(),
             summary: severity_counts(findings),
-            findings,
+            findings: findings.iter().filter(|f| f.is_source_verified()).collect(),
+            candidates: findings
+                .iter()
+                .filter(|f| !f.is_source_verified())
+                .collect(),
+            verification_complete: findings.iter().all(|f| {
+                matches!(
+                    f.screening,
+                    Some(
+                        crate::state::finding::Screening::SourceVerified
+                            | crate::state::finding::Screening::NeedsValidation
+                            | crate::state::finding::Screening::Rejected
+                    )
+                )
+            }),
         })?,
     )?;
     fs::write(&sarif, crate::state::sarif::render_sarif(findings))?;
@@ -111,7 +127,7 @@ fn render_html_report(
 
 pub fn severity_counts(findings: &[Finding]) -> SeverityCounts {
     let mut counts = SeverityCounts::default();
-    for finding in findings {
+    for finding in findings.iter().filter(|f| f.is_source_verified()) {
         match finding.severity {
             Severity::Critical => counts.critical += 1,
             Severity::High => counts.high += 1,
@@ -165,7 +181,8 @@ fn render_markdown_report(
         return report;
     }
 
-    for finding in findings {
+    report.push_str("Severity totals include only source-verified findings, not runtime reproductions. See verification.json for the evidence records and run status.\n\n");
+    for finding in findings.iter().filter(|f| f.is_source_verified()) {
         report.push_str(&format!(
             "### [{}] {}\n\nScanner: {}\nLocation: {}\n\n{}\n\nRecommendation: {}\n\n",
             finding.severity,
@@ -177,6 +194,21 @@ fn render_markdown_report(
         ));
     }
 
+    report.push_str("## Other candidate dispositions\n\n");
+    for finding in findings.iter().filter(|f| !f.is_source_verified()) {
+        report.push_str(&format!(
+            "- {} — {}: {}\n",
+            finding
+                .screening
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "unverified".into()),
+            finding.title,
+            finding
+                .evidence
+                .as_deref()
+                .unwrap_or("Verification has not completed")
+        ));
+    }
     report
 }
 

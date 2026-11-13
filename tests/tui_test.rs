@@ -401,10 +401,10 @@ fn pentest_ui_sandbox_exploit_marks_success_and_failure() {
 fn pentest_ui_sandbox_validation_marks_confirmed() {
     let mut state = sandbox_state();
     state.apply_event(candidate_event("Confirmed issue"));
-    state.apply_event(PentestEvent::ValidationCompleted {
+    state.apply_event(PentestEvent::VerificationCompleted {
         title: "Confirmed issue".to_string(),
         endpoint: "/search".to_string(),
-        confirmed: true,
+        verdict: "runtime_verified".into(),
     });
 
     assert_eq!(state.sandbox_candidates[0].validated, Some(true));
@@ -414,13 +414,32 @@ fn pentest_ui_sandbox_validation_marks_confirmed() {
 fn pentest_ui_sandbox_validation_marks_rejected() {
     let mut state = sandbox_state();
     state.apply_event(candidate_event("Rejected issue"));
-    state.apply_event(PentestEvent::ValidationCompleted {
+    state.apply_event(PentestEvent::VerificationCompleted {
         title: "Rejected issue".to_string(),
         endpoint: "/search".to_string(),
-        confirmed: false,
+        verdict: "rejected".into(),
     });
 
     assert_eq!(state.sandbox_candidates[0].validated, Some(false));
+}
+
+#[test]
+fn pentest_ui_unresolved_and_incomplete_are_not_rejections() {
+    for verdict in ["needs_validation", "incomplete"] {
+        let mut state = sandbox_state();
+        state.apply_event(candidate_event("Unresolved issue"));
+        state.apply_event(PentestEvent::VerificationCompleted {
+            title: "Unresolved issue".into(),
+            endpoint: "/search".into(),
+            verdict: verdict.into(),
+        });
+        assert_eq!(state.sandbox_candidates[0].validated, None);
+        assert_eq!(
+            state.sandbox_candidates[0].verification.as_deref(),
+            Some(verdict)
+        );
+        assert!(state.findings.is_empty());
+    }
 }
 
 #[test]

@@ -9,6 +9,8 @@ cargo-dist-version = "0.32.0"
 ci = "github"
 # The installers to generate for each app
 installers = ["shell", "powershell"]
+# Preserve attribution in binary distributions, not only the source archive.
+include = ["NOTICE", "LICENSES"]
 # release.yml intentionally drops the pull_request trigger (CI only runs on
 # merge to main, not every PR) -- tell dist not to treat that as drift.
 allow-dirty = ["ci"]

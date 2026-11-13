@@ -28,7 +28,7 @@ pub fn render_findings_html(findings: &[Finding]) -> String {
 pub fn render_report_html(findings: &[Finding], title: &str, meta: &[(&str, &str)]) -> String {
     let sorted = sorted_findings(findings);
     let counts = severity_counts(findings);
-    let total = findings.len();
+    let total = findings.iter().filter(|f| f.is_source_verified()).count();
 
     let meta_html = meta
         .iter()
@@ -55,6 +55,7 @@ pub fn render_report_html(findings: &[Finding], title: &str, meta: &[(&str, &str
             .map(|f| render_finding_card(f))
             .collect::<String>()
     };
+    let findings_html = format!("<p>Severity totals count source-verified findings only. Source verification is not runtime reproduction. Other candidate dispositions are shown without assessed severity. See verification.json for evidence and run completeness.</p>{findings_html}");
 
     format!(
         r#"<!DOCTYPE html>
@@ -115,7 +116,7 @@ fn sorted_findings(findings: &[Finding]) -> Vec<&Finding> {
 
 fn severity_counts(findings: &[Finding]) -> [usize; 5] {
     let mut counts = [0usize; 5];
-    for finding in findings {
+    for finding in findings.iter().filter(|f| f.is_source_verified()) {
         counts[finding.severity.order() as usize] += 1;
     }
     counts
@@ -165,8 +166,21 @@ fn render_empty_state() -> String {
 }
 
 fn render_finding_card(finding: &Finding) -> String {
-    let severity_class = severity_css_class(finding.severity);
-    let severity_label = escape_html(&finding.severity.to_string());
+    let severity_class = if finding.is_source_verified() {
+        severity_css_class(finding.severity)
+    } else {
+        "severity-info"
+    };
+    let severity_label = if finding.is_source_verified() {
+        escape_html(&finding.severity.to_string())
+    } else {
+        escape_html(
+            &finding
+                .screening
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "unverified".into()),
+        )
+    };
     let title = escape_html(&finding.title);
     let scanner = escape_html(&finding.scanner);
 
@@ -272,6 +286,11 @@ fn render_finding_card(finding: &Finding) -> String {
         corroboration.unwrap_or_default(),
         description,
         recommendation,
+        finding
+            .evidence
+            .as_deref()
+            .map(|e| render_field("Verification evidence", &paragraphs(e)))
+            .unwrap_or_default(),
     ]
     .concat();
 
@@ -326,6 +345,9 @@ fn severity_css_class(severity: Severity) -> &'static str {
 
 fn screening_css_class(screening: Screening) -> &'static str {
     match screening {
+        Screening::SourceVerified => "confirmed",
+        Screening::Rejected => "disputed",
+        Screening::NeedsValidation | Screening::Incomplete => "unclear",
         Screening::Confirmed => "confirmed",
         Screening::Disputed => "disputed",
         Screening::Unclear => "unclear",
@@ -938,7 +960,7 @@ mod tests {
             cvss_score: Some(9.8),
             owasp: Some("A03:2021-Injection".to_string()),
             confidence: Some(85),
-            screening: Some(Screening::Confirmed),
+            screening: Some(Screening::SourceVerified),
             evidence: None,
         }
     }
