@@ -315,7 +315,7 @@ fn build_result(finding: &Finding) -> SarifResult {
 /// Results are sorted by severity (Critical first), then location, then title.
 pub fn write_sarif(findings: &[Finding]) -> serde_json::Value {
     // Sort findings deterministically: severity, then location, then title.
-    let mut sorted: Vec<&Finding> = findings.iter().collect();
+    let mut sorted: Vec<&Finding> = findings.iter().filter(|f| f.is_source_verified()).collect();
     sorted.sort_by(|a, b| {
         a.severity
             .order()
@@ -389,7 +389,7 @@ mod tests {
             cvss_score: Some(9.8),
             owasp: Some("A03:2021-Injection".to_string()),
             confidence: Some(85),
-            screening: Some(Screening::Confirmed),
+            screening: Some(Screening::SourceVerified),
             evidence: Some("reachable from the HTTP handler".to_string()),
         }
     }
@@ -403,7 +403,9 @@ mod tests {
         assert_eq!(json["runs"].as_array().unwrap().len(), 1);
         let results = json["runs"][0]["results"].as_array().unwrap();
         assert!(results.is_empty(), "results must be empty for no findings");
-        let rules = json["runs"][0]["tool"]["driver"]["rules"].as_array().unwrap();
+        let rules = json["runs"][0]["tool"]["driver"]["rules"]
+            .as_array()
+            .unwrap();
         assert!(rules.is_empty(), "rules must be empty for no findings");
     }
 
@@ -446,7 +448,7 @@ mod tests {
         assert!(props["cvssVector"].is_string());
         assert_eq!(props["owasp"], "A03:2021-Injection");
         assert_eq!(props["recommendation"], "Use parameterized queries");
-        assert_eq!(props["screening"], "confirmed");
+        assert_eq!(props["screening"], "source_verified");
         assert_eq!(props["confidence"], 85);
         assert_eq!(props["evidence"], "reachable from the HTTP handler");
         assert_eq!(props["corroboratedBy"][0], "supply-chain");
@@ -454,15 +456,19 @@ mod tests {
         // The rule has a helpUri pointing at the CWE page.
         let rule = &json["runs"][0]["tool"]["driver"]["rules"][0];
         assert_eq!(rule["id"], "CWE-89");
-        assert_eq!(rule["helpUri"], "https://cwe.mitre.org/data/definitions/89.html");
-        assert_eq!(rule["defaultConfiguration"]["level"], "error");
-        assert!(rule["properties"]["tags"].as_array().unwrap().contains(&serde_json::Value::from("high")));
-        assert!(
-            rule["properties"]["tags"]
-                .as_array()
-                .unwrap()
-                .contains(&serde_json::Value::from("A03:2021-Injection"))
+        assert_eq!(
+            rule["helpUri"],
+            "https://cwe.mitre.org/data/definitions/89.html"
         );
+        assert_eq!(rule["defaultConfiguration"]["level"], "error");
+        assert!(rule["properties"]["tags"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::Value::from("high")));
+        assert!(rule["properties"]["tags"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::Value::from("A03:2021-Injection")));
     }
 
     // 2b. A finding without evidence omits the property entirely (backward
@@ -618,7 +624,9 @@ mod tests {
             ..sample_finding()
         };
         let json = write_sarif(&[f1, f2]);
-        let rules = json["runs"][0]["tool"]["driver"]["rules"].as_array().unwrap();
+        let rules = json["runs"][0]["tool"]["driver"]["rules"]
+            .as_array()
+            .unwrap();
         assert_eq!(rules.len(), 1, "one rule per unique CWE id");
         let results = json["runs"][0]["results"].as_array().unwrap();
         assert_eq!(results.len(), 2, "two results for two findings");

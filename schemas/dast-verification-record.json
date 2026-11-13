@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Zentra independent DAST verification record",
+  "type": "object", "additionalProperties": false,
+  "required": ["candidate_title", "category", "endpoint", "verdict", "principal", "boundary", "expected", "impact", "controls_reviewed", "evidence", "reason", "cvss_vector", "next_step"],
+  "properties": {
+    "candidate_title": {"type":"string", "minLength":1, "maxLength":4096},
+    "category": {"type":"string", "minLength":1, "maxLength":4096},
+    "endpoint": {"type":"string", "minLength":1, "maxLength":4096},
+    "verdict": {"enum":["runtime_verified", "needs_validation", "rejected"]},
+    "principal": {"type":"string", "maxLength":4096},
+    "boundary": {"type":"string", "maxLength":4096},
+    "expected": {"type":"string", "maxLength":4096},
+    "impact": {"type":"string", "maxLength":4096},
+    "controls_reviewed": {"type":"string", "maxLength":4096},
+    "evidence": {"type":"array", "maxItems":8, "items": {
+      "type":"object", "additionalProperties":false, "required":["id", "quote"],
+      "properties":{"id":{"type":"string"}, "quote":{"type":"string", "minLength":1, "maxLength":4096}}
+    }},
+    "reason": {"type":"string", "minLength":1, "maxLength":4096},
+    "cvss_vector": {"type":"string"},
+    "next_step": {"type":"string", "maxLength":4096}
+  }
+}

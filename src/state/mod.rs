@@ -2,6 +2,7 @@ pub mod cvss;
 pub mod finding;
 pub mod html;
 pub mod sarif;
+pub mod verification;
 pub use finding::{Finding, Severity};
 
 use anyhow::{bail, Result};

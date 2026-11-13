@@ -19,6 +19,7 @@ The binary is named `zentra`.
 - LLM-backed scanner orchestration with Anthropic, OpenAI-compatible, Claude CLI, and experimental Codex CLI providers.
 - Focused PR/MR scanning with changed-file impact analysis.
 - Incremental scans, resumable checkpoints, coverage reporting, and SARIF output.
+- Independent source verification with fresh final-record review and evidence-backed CI gates.
 - Dynamic browser pentest mode for authorized targets.
 - Markdown, JSON, SARIF, and styled HTML output under `.zentra/`.
 - Encrypted-at-rest credential storage (DPAPI on Windows, `0600` files on Unix).
@@ -215,7 +216,42 @@ zentra ci
 
 ### Fail threshold (blocking severity)
 
-By default, `zentra ci` blocks the PR/MR on any **Critical or High** finding. Medium, Low, and Info findings are reported but do not fail the job.
+By default, `zentra ci` blocks the PR/MR on **source-verified Critical or High** findings. Medium, Low, and Info source-verified findings are reported but do not fail the job. Incomplete verification fails ordinary CI as an execution error. Report-only mode retains its non-blocking policy.
+
+### Independent finding verification
+
+Every static candidate receives a fresh read-only source review and a separate
+fresh final-record review. Reviewers can inspect additional repository files,
+challenge mitigations, and return typed evidence records. The runtime checks
+record structure, exact source citations, reviewer separation, and source hashes.
+A changed record requires another fresh reviewer; a second disagreement leaves
+verification incomplete. The same configured model may perform both reviews;
+independent conversations do not guarantee independent model errors.
+
+- `source_verified`: independently supported by source, eligible for CI severity
+  gates. **This does not mean runtime reproduction.**
+- `needs_validation`: source-grounded lead with an exact unresolved fact and next
+  step; no assessed severity.
+- `rejected`: source-backed rejection, retained for inspection; no assessed severity.
+- Incomplete: provider, schema, citation, budget, cancellation, or source-change
+  failures. These cannot become successful verification or a clean ordinary CI run.
+
+The authoritative artifacts are `.zentra/verification.json` and
+`.zentra/verification.md`. Reports are rendered from these records; SARIF exports
+only source-verified findings. `detailed-findings.md` retains all candidates and
+their dispositions for compatibility; non-verified severity values there are
+original scanner proposals, not assessed risk. The live TUI initially shows
+provisional discoveries, then replaces them with source-verified findings.
+
+Verification runs after discovery even with `--only`, and repeats on resume and
+for carried incremental candidates. It adds provider usage: normally two review
+sessions per candidate, at most three for a replacement, with 12 provider rounds
+per session, 50 candidates and 120 sessions per run. Exceeding a limit is reported
+as incomplete. The verifier never executes target code or makes target network
+requests. DAST uses the runtime-evidence review described below.
+
+Methodology adapted from Cloudflare's MIT-licensed security-audit skill; see
+[the verification contract and evidence](specs/finding-verification.md) and `NOTICE`.
 
 The threshold is configurable, in order of precedence:
 
@@ -406,19 +442,48 @@ When the target runs on the host machine, use
 
 ### What pentest mode does
 
-A pentest run uses three sandbox agents and report generation. It does the following:
+A pentest run uses sandbox agents followed by independent final-record review:
 
 1. Validates the target URL and explicit authorization.
 2. Builds an in-scope target model, from the allowed hosts and paths.
 3. Checks Docker and the pinned sandbox toolchain.
 4. Runs Recon, Exploit, and Validator agents in the sandbox.
-5. Captures evidence and validated findings as the run progresses.
-6. Writes pentest reports and an executive summary in the resolved output directory.
+5. Captures host-owned execution receipts and proposes a typed validation record.
+6. Uses a fresh read-only reviewer to inspect the receipts and approve the exact record.
+7. Persists dispositions, then writes reports, SARIF, and dashboard findings.
 
 Confirmed findings include a complete CVSS v3.1 base vector. Zentra validates
 the vector, calculates the score locally, and derives the displayed severity
 from the score. Validators must score only impact reproduced during the current
 run, not hypothetical follow-on impact.
+
+### Independent DAST verification
+
+The reproduction validator must cite exact output from HTTP/payload executions
+captured by Zentra. Model-written evidence notes and exploit success flags cannot
+confirm a finding. A fresh read-only reviewer must independently read every cited
+receipt and accept the exact record digest. One replacement is allowed and needs
+a third fresh review; further disagreement is incomplete.
+
+- `runtime_verified`: reproduced impact supported by captured execution evidence
+  and independent review; eligible for confirmed findings and SARIF.
+- `needs_validation`: unresolved runtime hypothesis with a specific blocker and
+  next step; no assessed severity.
+- `rejected`: observed evidence contradicts the claim; no assessed severity.
+- Incomplete: execution/provider failures, invalid records, changed receipts,
+  cancellation, persistence failures, or exhausted budgets. The run returns an
+  error rather than completing cleanly; already verified findings may be retained.
+
+The run directory contains `verification.json`, `verification.md`, and receipt
+files under `evidence/runtime/`. Reports and the dashboard retain all dispositions;
+only finalized runtime-verified records become findings. Empty finding lists do
+not establish that an incomplete run is clean.
+
+Review adds provider usage: up to 20 candidates and 60 fresh sessions, with 20
+rounds for reproduction and 12 per final review. The same model may perform all
+reviews; separate conversations do not guarantee independent judgment. Captured
+output establishes what executed and was observed, not mechanical proof that an
+exploit succeeded. See [the DAST contract and checks](specs/dast-verification.md).
 
 The interactive pentest dashboard keeps the sandbox chain, validated findings,
 and live activity visible together. Use `Tab` or click a pane to focus it; arrow

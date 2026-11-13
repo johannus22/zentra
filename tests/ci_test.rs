@@ -14,7 +14,7 @@ use zentra_cli::ci::{
     prepare_comment_request_from_env, publish_triage_issue_best_effort, redact_token,
     resolve_fail_threshold, select_impact_files, select_sticky_comment_action, severity_counts,
     should_fail_ci, write_ci_artifacts, CiCommentPlan, CiContext, CiPlatformKind, GitlabAuthHeader,
-    StickyCommentAction, TRIAGE_ISSUE_MARKER, FAIL_THRESHOLD_ENV,
+    StickyCommentAction, FAIL_THRESHOLD_ENV, TRIAGE_ISSUE_MARKER,
 };
 use zentra_cli::commands::ci::{
     build_ci_focus_context, run_headless_scan_with_provider, select_ci_scanners,
@@ -92,7 +92,7 @@ fn sample_finding(severity: Severity, title: &str) -> Finding {
         cvss_score: None,
         owasp: None,
         confidence: None,
-        screening: None,
+        screening: Some(zentra_cli::state::finding::Screening::SourceVerified),
         evidence: None,
     }
 }
@@ -142,7 +142,10 @@ fn writes_ci_markdown_and_json_artifacts_with_summary_shape() {
         paths.json,
         dir.path().join(".zentra").join("ci-report.json")
     );
-    assert_eq!(paths.html, dir.path().join(".zentra").join("ci-report.html"));
+    assert_eq!(
+        paths.html,
+        dir.path().join(".zentra").join("ci-report.html")
+    );
 
     let markdown = std::fs::read_to_string(paths.markdown).unwrap();
     let html = std::fs::read_to_string(paths.html).unwrap();
@@ -929,7 +932,11 @@ fn fingerprint_is_stable_across_calls_and_distinct_across_inputs() {
 
     let mut moved = f.clone();
     moved.title = "SQL injection v2".to_string();
-    assert_ne!(finding_fingerprint(&moved), fp1, "title change must change fp");
+    assert_ne!(
+        finding_fingerprint(&moved),
+        fp1,
+        "title change must change fp"
+    );
 
     let mut moved = f.clone();
     moved.location = Some("src/db.rs:99".to_string());
@@ -1070,9 +1077,15 @@ fn gitlab_ci_workflow_includes_staging_full_scan_job() {
 
     let workflow = std::fs::read_to_string(dir.path().join(".gitlab-ci.yml")).unwrap();
     assert!(workflow.contains("zentra_full_scan_staging:"), "{workflow}");
-    assert!(workflow.contains("CI_COMMIT_BRANCH == \"staging\""), "{workflow}");
+    assert!(
+        workflow.contains("CI_COMMIT_BRANCH == \"staging\""),
+        "{workflow}"
+    );
     assert!(workflow.contains("allow_failure: true"), "{workflow}");
-    assert!(workflow.contains("zentra ci --full --report-only"), "{workflow}");
+    assert!(
+        workflow.contains("zentra ci --full --report-only"),
+        "{workflow}"
+    );
     // Original MR job is still present.
     assert!(workflow.contains("zentra_security_scan:"), "{workflow}");
     assert!(workflow.contains("merge_request_event"), "{workflow}");
@@ -1093,7 +1106,10 @@ fn ci_report_includes_triage_note_line_when_provided() {
     .unwrap();
 
     let markdown = std::fs::read_to_string(paths.markdown).unwrap();
-    assert!(markdown.contains("Triage ticket: created issue #99"), "{markdown}");
+    assert!(
+        markdown.contains("Triage ticket: created issue #99"),
+        "{markdown}"
+    );
 }
 
 #[test]
@@ -1133,7 +1149,9 @@ async fn triage_creates_issue_when_no_sticky_exists() {
     wiremock::Mock::given(method("GET"))
         .and(path("/user"))
         .and(header("Authorization", "Bearer glpat-secret"))
-        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(r#"{"id":55,"username":"sec"}"#))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_string(r#"{"id":55,"username":"sec"}"#),
+        )
         .mount(&server)
         .await;
 
@@ -1141,8 +1159,7 @@ async fn triage_creates_issue_when_no_sticky_exists() {
     wiremock::Mock::given(method("POST"))
         .and(path("/projects/42/issues"))
         .respond_with(
-            wiremock::ResponseTemplate::new(201)
-                .set_body_string(r#"{"iid":12,"title":"x"}"#),
+            wiremock::ResponseTemplate::new(201).set_body_string(r#"{"iid":12,"title":"x"}"#),
         )
         .mount(&server)
         .await;
@@ -1151,7 +1168,11 @@ async fn triage_creates_issue_when_no_sticky_exists() {
     let env_set = env_with_token("glpat-secret", &server.uri());
     let _guard = set_triage_env(&env_set);
 
-    let findings = vec![triage_finding(Severity::High, "Missing authz", "src/api.rs:4")];
+    let findings = vec![triage_finding(
+        Severity::High,
+        "Missing authz",
+        "src/api.rs:4",
+    )];
     let note = publish_triage_issue_best_effort(&context, &findings)
         .await
         .unwrap();
@@ -1168,7 +1189,10 @@ async fn triage_creates_issue_when_no_sticky_exists() {
         .collect();
     assert_eq!(posts.len(), 1);
     let body = String::from_utf8_lossy(&posts[0].body);
-    assert!(body.contains("\"labels\":\"security,zentra-triage\""), "{body}");
+    assert!(
+        body.contains("\"labels\":\"security,zentra-triage\""),
+        "{body}"
+    );
     assert!(body.contains("\"assignee_ids\":[55]"), "{body}");
     assert!(body.contains(TRIAGE_ISSUE_MARKER), "{body}");
 }
@@ -1227,8 +1251,9 @@ async fn triage_updates_existing_sticky_issue() {
     // Exactly one PUT to the right iid, and no POST (no create).
     let requests = server.received_requests().await.unwrap();
     assert!(
-        requests.iter().any(|r| r.method.as_str() == "PUT"
-            && r.url.as_str().contains("/projects/42/issues/33")),
+        requests.iter().any(
+            |r| r.method.as_str() == "PUT" && r.url.as_str().contains("/projects/42/issues/33")
+        ),
         "expected a PUT to /projects/42/issues/33"
     );
     assert!(
@@ -1262,9 +1287,7 @@ async fn triage_assignee_resolution_uses_env_username_lookup() {
 
     wiremock::Mock::given(method("POST"))
         .and(path("/projects/42/issues"))
-        .respond_with(
-            wiremock::ResponseTemplate::new(201).set_body_string(r#"{"iid":5}"#),
-        )
+        .respond_with(wiremock::ResponseTemplate::new(201).set_body_string(r#"{"iid":5}"#))
         .mount(&server)
         .await;
 
@@ -1343,7 +1366,9 @@ async fn triage_proceeds_with_only_zentra_gitlab_token_set() {
     wiremock::Mock::given(method("GET"))
         .and(path("/user"))
         .and(header("Authorization", "Bearer zentra-pat-secret"))
-        .respond_with(wiremock::ResponseTemplate::new(200).set_body_string(r#"{"id":9,"username":"owner"}"#))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_string(r#"{"id":9,"username":"owner"}"#),
+        )
         .mount(&server)
         .await;
 
@@ -1368,7 +1393,11 @@ async fn triage_proceeds_with_only_zentra_gitlab_token_set() {
 
     let note = publish_triage_issue_best_effort(
         &context,
-        &[triage_finding(Severity::High, "Missing authz", "src/api.rs:4")],
+        &[triage_finding(
+            Severity::High,
+            "Missing authz",
+            "src/api.rs:4",
+        )],
     )
     .await
     .unwrap();
@@ -1382,7 +1411,10 @@ async fn triage_proceeds_with_only_zentra_gitlab_token_set() {
     assert!(
         requests.iter().any(|r| r.method.as_str() == "POST"),
         "expected a POST create request; got: {:?}",
-        requests.iter().map(|r| r.method.as_str().to_string()).collect::<Vec<_>>()
+        requests
+            .iter()
+            .map(|r| r.method.as_str().to_string())
+            .collect::<Vec<_>>()
     );
 }
 
@@ -1401,7 +1433,9 @@ async fn triage_skips_creation_when_no_findings_and_no_sticky() {
     let env_set = env_with_token("glpat-secret", &server.uri());
     let _guard = set_triage_env(&env_set);
 
-    let note = publish_triage_issue_best_effort(&context, &[]).await.unwrap();
+    let note = publish_triage_issue_best_effort(&context, &[])
+        .await
+        .unwrap();
     assert_eq!(note, "skipped (no findings)");
 
     let requests = server.received_requests().await.unwrap();
@@ -1453,10 +1487,7 @@ fn set_triage_env(env: &HashMap<String, String>) -> TriageEnvGuard {
     for (k, v) in env {
         std::env::set_var(k, v);
     }
-    TriageEnvGuard {
-        _lock: lock,
-        saved,
-    }
+    TriageEnvGuard { _lock: lock, saved }
 }
 
 impl Drop for TriageEnvGuard {

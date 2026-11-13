@@ -285,6 +285,19 @@ pub async fn run_headless_scan_with_provider(
 
     let summary = scan_task.await??;
 
+    // Discovery events precede deduplication and verification. Replace them with
+    // the current finalized projection; CI must never gate on the raw stream.
+    let finalized = events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            ScanEvent::FindingsVerified(findings) => Some(findings.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    events.retain(|event| !matches!(event, ScanEvent::FindingAdded(_)));
+    events.extend(finalized.into_iter().map(ScanEvent::FindingAdded));
+
     // Report coverage before the failure check below can bail: a thin scan is
     // exactly the case where the operator needs the number.
     let coverage = &summary.coverage;

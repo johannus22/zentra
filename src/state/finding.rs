@@ -74,20 +74,24 @@ pub struct Finding {
     /// OWASP Top 10 category, e.g. "A03:2021-Injection". Model-supplied (best-effort).
     #[serde(default)]
     pub owasp: Option<String>,
-    /// Screening confidence, 0-100. Set by the audit pass (`agent::screening`),
-    /// never by the scanner that reported the finding — a scanner grading its own
-    /// work is not evidence. `None` means the finding was never screened.
+    /// Legacy screening confidence, 0-100. Independent verification clears this;
+    /// model confidence is not an evidence credential.
     #[serde(default)]
     pub confidence: Option<u8>,
-    /// What the audit pass concluded. `None` means it never ran on this finding.
+    /// Verification disposition, or a legacy screening annotation.
     #[serde(default)]
     pub screening: Option<Screening>,
-    /// Screening evidence: the one-sentence reason the audit pass gave for its
-    /// verdict, captured from the screening tool's `reason` argument. `None`
-    /// when the pass never ran or supplied no reason. Kept separate from
-    /// `screening` so a verdict can exist without a reason and vice versa.
+    /// Compatibility summary of the verdict or incomplete reason. Full independent
+    /// review records and citations live in verification.json.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
+}
+
+impl Finding {
+    /// Legacy screening and discovery severity never satisfy the verification gate.
+    pub fn is_source_verified(&self) -> bool {
+        self.screening == Some(Screening::SourceVerified)
+    }
 }
 
 /// The audit pass verdict on one finding.
@@ -97,6 +101,13 @@ pub struct Finding {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Screening {
+    /// Two independent source reviews; no runtime reproduction is implied.
+    #[serde(rename = "source_verified")]
+    SourceVerified,
+    #[serde(rename = "needs_validation")]
+    NeedsValidation,
+    Rejected,
+    Incomplete,
     /// Reachable from untrusted input with no mitigation in the way.
     Confirmed,
     /// The pass could not show reachability, or found a mitigation.
@@ -108,6 +119,10 @@ pub enum Screening {
 impl fmt::Display for Screening {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Screening::SourceVerified => write!(f, "source_verified"),
+            Screening::NeedsValidation => write!(f, "needs_validation"),
+            Screening::Rejected => write!(f, "rejected"),
+            Screening::Incomplete => write!(f, "incomplete"),
             Screening::Confirmed => write!(f, "confirmed"),
             Screening::Disputed => write!(f, "disputed"),
             Screening::Unclear => write!(f, "unclear"),
@@ -118,6 +133,10 @@ impl fmt::Display for Screening {
 impl Screening {
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
+            "source_verified" => Some(Screening::SourceVerified),
+            "needs_validation" => Some(Screening::NeedsValidation),
+            "rejected" => Some(Screening::Rejected),
+            "incomplete" => Some(Screening::Incomplete),
             "confirmed" => Some(Screening::Confirmed),
             "disputed" => Some(Screening::Disputed),
             "unclear" => Some(Screening::Unclear),

@@ -4,3 +4,8 @@ Copyright 2026 Johannus
 Licensed under the Apache License, Version 2.0 (the "License").
 You may obtain a copy of the License in the LICENSE file or at
 http://www.apache.org/licenses/LICENSE-2.0
+
+Independent finding verification adapts methodology from Cloudflare's
+security-audit-skill, Copyright (c) 2025-2026 Cloudflare, Inc., MIT licensed.
+https://github.com/cloudflare/security-audit-skill
+The license is reproduced in LICENSES/cloudflare-security-audit-skill-MIT.txt.

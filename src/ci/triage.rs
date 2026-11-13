@@ -111,7 +111,7 @@ pub fn build_triage_issue_body(
             for finding in sorted_new {
                 body.push_str(&format!(
                     "- [ ] {} {} — `{}`\n",
-                    finding.severity,
+                    candidate_priority(finding),
                     finding.title,
                     finding.location.as_deref().unwrap_or("N/A"),
                 ));
@@ -126,8 +126,12 @@ pub fn build_triage_issue_body(
         for finding in sorted {
             body.push_str(&format!(
                 "| {} {} | {} | {} | `{}` | {} |\n",
-                severity_emoji(&finding.severity),
-                finding.severity,
+                if finding.is_source_verified() {
+                    severity_emoji(&finding.severity)
+                } else {
+                    "—"
+                },
+                candidate_priority(finding),
                 finding.title,
                 finding.scanner,
                 finding.location.as_deref().unwrap_or("N/A"),
@@ -141,7 +145,7 @@ pub fn build_triage_issue_body(
     if let Some(sha) = &context.commit_sha {
         body.push_str(&format!("Commit: `{}`\n", sha));
     }
-    body.push_str("\nThe full findings list and recommendations are in the pipeline artifacts: `.zentra/ci-report.md`.\n\n");
+    body.push_str("\nSeverity totals cover source-verified findings only, not runtime reproduction. Other dispositions have no assessed severity. Full evidence and run completeness: `.zentra/verification.json` and `.zentra/verification.md`. The findings list is in `.zentra/ci-report.md`.\n\n");
 
     let fingerprints: Vec<String> = findings.iter().map(finding_fingerprint).collect();
     let fingerprint_json =
@@ -151,6 +155,17 @@ pub fn build_triage_issue_body(
     ));
 
     body
+}
+
+fn candidate_priority(finding: &Finding) -> String {
+    if finding.is_source_verified() {
+        finding.severity.to_string()
+    } else {
+        finding
+            .screening
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "unverified".into())
+    }
 }
 
 /// File or update the sticky GitLab triage issue for this run. Never hard-fails
@@ -220,13 +235,14 @@ async fn publish_triage_issue_with_env(
 
     let assignee_ids = resolve_assignee(&client, &api_url, env, &auth_header).await;
 
-    let existing = match fetch_open_triage_issues(&client, &api_url, &project_id, &auth_header).await {
-        Ok(issues) => issues,
-        Err(err) => {
-            println!("Zentra triage ticket skipped: failed to list open issues: {err}");
-            return Ok("not created (failed to list issues)".to_string());
-        }
-    };
+    let existing =
+        match fetch_open_triage_issues(&client, &api_url, &project_id, &auth_header).await {
+            Ok(issues) => issues,
+            Err(err) => {
+                println!("Zentra triage ticket skipped: failed to list open issues: {err}");
+                return Ok("not created (failed to list issues)".to_string());
+            }
+        };
 
     let sticky = existing
         .iter()
@@ -254,8 +270,7 @@ async fn publish_triage_issue_with_env(
                 .cloned()
                 .collect();
 
-            let body =
-                build_triage_issue_body(context, findings, &new_fingerprints);
+            let body = build_triage_issue_body(context, findings, &new_fingerprints);
 
             match update_issue(
                 &client,
@@ -283,7 +298,9 @@ async fn publish_triage_issue_with_env(
         }
         None => {
             if findings.is_empty() {
-                println!("Zentra triage ticket: no open sticky issue and no findings; not creating one.");
+                println!(
+                    "Zentra triage ticket: no open sticky issue and no findings; not creating one."
+                );
                 return Ok("skipped (no findings)".to_string());
             }
             let title = format!(
@@ -354,9 +371,7 @@ fn triage_auth_header_from_env(env: &HashMap<String, String>) -> Option<GitlabAu
 }
 
 fn triage_http_client() -> Result<Client> {
-    Ok(Client::builder()
-        .timeout(triage_http_timeout())
-        .build()?)
+    Ok(Client::builder().timeout(triage_http_timeout()).build()?)
 }
 
 /// Resolve the issue assignee. Order:
@@ -373,9 +388,7 @@ async fn resolve_assignee(
         .get("ZENTRA_TRIAGE_ASSIGNEE")
         .filter(|v| !v.trim().is_empty())
     {
-        let url = format!(
-            "{api_url}/users",
-        );
+        let url = format!("{api_url}/users",);
         match client
             .get(&url)
             .header(auth_header.name, auth_header.value.clone())
@@ -421,7 +434,8 @@ async fn resolve_assignee(
         .send()
         .await
     {
-        Ok(resp) if resp.status().is_success() => match fetch_capped_json::<GitlabUser>(resp).await {
+        Ok(resp) if resp.status().is_success() => match fetch_capped_json::<GitlabUser>(resp).await
+        {
             Ok(user) => vec![user.id],
             Err(err) => {
                 println!(
@@ -456,10 +470,7 @@ async fn fetch_open_triage_issues(
     let resp = client
         .get(&url)
         .header(auth_header.name, auth_header.value.clone())
-        .query(&[
-            ("labels", "zentra-triage"),
-            ("state", "opened"),
-        ])
+        .query(&[("labels", "zentra-triage"), ("state", "opened")])
         .send()
         .await?
         .error_for_status()?;
