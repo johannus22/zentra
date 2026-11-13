@@ -636,6 +636,22 @@ impl UiState {
                 self.findings.sort_by_key(|f| f.severity.order());
                 self.selected_idx = self.selected_idx.min(self.findings.len().saturating_sub(1));
             }
+            ScanEvent::FindingsVerified(findings) => {
+                for scanner in &mut self.scanners {
+                    scanner.critical_count = 0;
+                    scanner.high_count = 0;
+                    scanner.medium_count = 0;
+                    scanner.low_count = 0;
+                    scanner.info_count = 0;
+                }
+                let candidates = findings.iter().filter(|f| !f.is_source_verified()).count();
+                self.findings.clear();
+                for finding in findings.into_iter().filter(Finding::is_source_verified) {
+                    self.apply_event(ScanEvent::FindingAdded(finding));
+                }
+                self.selected_idx = self.selected_idx.min(self.findings.len().saturating_sub(1));
+                self.activity = format!("Source verification finished; {candidates} other candidate dispositions in .zentra/verification.md");
+            }
             ScanEvent::FileRead {
                 scanner,
                 path,

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Zentra source verification verdict v1",
+  "type": "object",
+  "$defs": {
+    "text": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "citation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "line", "quote"],
+      "properties": {
+        "path": {"$ref": "#/$defs/text"},
+        "line": {"type": "integer", "minimum": 1},
+        "quote": {"$ref": "#/$defs/text"}
+      }
+    },
+    "trace": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"$ref": "#/$defs/citation"}},
+    "evidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["principal", "input", "boundary", "resource", "impact", "controls_reviewed", "trace"],
+      "properties": {
+        "principal": {"$ref": "#/$defs/text"},
+        "input": {"$ref": "#/$defs/text"},
+        "boundary": {"$ref": "#/$defs/text"},
+        "resource": {"$ref": "#/$defs/text"},
+        "impact": {"$ref": "#/$defs/text"},
+        "controls_reviewed": {"$ref": "#/$defs/text"},
+        "trace": {"$ref": "#/$defs/trace"}
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "type": "object", "additionalProperties": false,
+      "required": ["verdict", "evidence", "severity", "rationale", "recommendation"],
+      "properties": {
+        "verdict": {"const": "source_verified"},
+        "evidence": {"$ref": "#/$defs/evidence"},
+        "severity": {"enum": ["critical", "high", "medium", "low", "info"]},
+        "rationale": {"$ref": "#/$defs/text"},
+        "recommendation": {"$ref": "#/$defs/text"}
+      }
+    },
+    {
+      "type": "object", "additionalProperties": false,
+      "required": ["verdict", "evidence", "blockers", "next_step"],
+      "properties": {
+        "verdict": {"const": "needs_validation"},
+        "evidence": {"$ref": "#/$defs/evidence"},
+        "blockers": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"$ref": "#/$defs/text"}},
+        "next_step": {"$ref": "#/$defs/text"}
+      }
+    },
+    {
+      "type": "object", "additionalProperties": false,
+      "required": ["verdict", "reason", "trace"],
+      "properties": {
+        "verdict": {"const": "rejected"},
+        "reason": {"$ref": "#/$defs/text"},
+        "trace": {"$ref": "#/$defs/trace"}
+      }
+    }
+  ]
+}

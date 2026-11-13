@@ -544,7 +544,9 @@ async fn run_once(
                     crate::incremental::detect::hash_tree(&target_root).ok()
                 },
             };
-            let _ = manifest.save(&zentra_dir);
+            if failed.is_empty() {
+                manifest.save(&zentra_dir)?;
+            }
 
             // Write a deterministic SARIF report from the findings the scan
             // produced. This is a post-step, not an LLM scanner task.

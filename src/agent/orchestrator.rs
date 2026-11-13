@@ -1614,25 +1614,44 @@ impl OrchestratorAgent {
             });
         }
 
-        // Phase 2.6: screen the deduplicated set for reachability, so the report
-        // consumes findings that carry a verdict. After correlation on purpose:
-        // screening a duplicate twice would pay for the same issue twice.
-        // Best-effort and annotate-only, like 2.5.
-        // Never skipped on resume: it may need to process findings from re-run scanners.
-        if scanners.contains(&ScannerType::Report) && !resume_snapshot_failed_closed {
+        // Phase 2.6: independently verify every current candidate, including
+        // carried/resumed findings and single-scanner runs. Report rendering
+        // cannot promote a discovery or a stale screening annotation.
+        let mut verification_report = None;
+        if scanners
+            .iter()
+            .any(|s| *s != ScannerType::FrameworkAnalysis)
+            && !resume_snapshot_failed_closed
+        {
             #[cfg(test)]
-            self.trace_pipeline("screen");
-            let raw = self.state_writer.read_findings_raw().unwrap_or_default();
+            self.trace_pipeline("verify");
+            let raw = self.state_writer.read_findings_raw()?;
             let parsed = crate::state::parse_findings(&raw);
-            if !parsed.is_empty() {
-                let screened = crate::agent::screening::screen(
-                    &self.provider,
-                    self.state_writer.project_root(),
-                    parsed,
-                    Some(&self.cancel_token),
-                )
-                .await;
-                let _ = self.state_writer.rewrite_findings(&screened);
+            let run = crate::agent::verification::verify(
+                &self.provider,
+                self.state_writer.project_root(),
+                parsed,
+                &self.security,
+                &self.cancel_token,
+                &self.tx,
+            )
+            .await?;
+            self.state_writer.rewrite_findings(&run.findings())?;
+            self.tx
+                .send(ScanEvent::FindingsVerified(run.findings()))
+                .await
+                .ok();
+            verification_report = Some(run.markdown());
+            if !run.complete() {
+                failed.push(ScannerType::Report);
+                self.tx
+                    .send(ScanEvent::Error {
+                        scanner: ScannerType::Report,
+                        message: "Finding verification incomplete; see .zentra/verification.json"
+                            .into(),
+                    })
+                    .await
+                    .ok();
             }
         }
 
@@ -1645,10 +1664,7 @@ impl OrchestratorAgent {
         }
 
         // Phase 3: Report - sequential, runs last
-        if !checkpoint.is_completed(ScannerType::Report.name())
-            && scanners.contains(&ScannerType::Report)
-            && !resume_snapshot_failed_closed
-        {
+        if scanners.contains(&ScannerType::Report) && !resume_snapshot_failed_closed {
             #[cfg(test)]
             self.trace_pipeline("report");
             chat_status.insert(ScannerType::Report, ChatScannerState::Running);
@@ -1658,10 +1674,14 @@ impl OrchestratorAgent {
                 &checkpoint,
                 &chat_focus,
             );
-            if self
-                .run_llm_scanner(ScannerType::Report, context_opt.as_deref())
+            self.tx
+                .send(ScanEvent::ScannerStarted(ScannerType::Report))
                 .await
-                .is_ok()
+                .ok();
+            if verification_report
+                .as_ref()
+                .is_some_and(|report| self.state_writer.write_report(report).is_ok())
+                && !failed.contains(&ScannerType::Report)
                 && !self.cancel_token.is_cancelled()
             {
                 self.checkpoint_mark_completed(
@@ -1671,6 +1691,10 @@ impl OrchestratorAgent {
                     &[],
                 )?;
                 chat_status.insert(ScannerType::Report, ChatScannerState::Completed);
+                self.tx
+                    .send(ScanEvent::ScannerCompleted(ScannerType::Report))
+                    .await
+                    .ok();
                 self.update_chat_snapshot(
                     PhaseBoundary::Finalized,
                     &chat_status,
@@ -1678,7 +1702,16 @@ impl OrchestratorAgent {
                     &chat_focus,
                 );
             } else {
-                failed.push(ScannerType::Report);
+                if !failed.contains(&ScannerType::Report) {
+                    failed.push(ScannerType::Report);
+                }
+                self.tx
+                    .send(ScanEvent::Error {
+                        scanner: ScannerType::Report,
+                        message: "Verified report incomplete or could not be persisted".into(),
+                    })
+                    .await
+                    .ok();
                 chat_status.insert(ScannerType::Report, ChatScannerState::Failed);
                 self.update_chat_snapshot(
                     PhaseBoundary::Finalized,
@@ -2231,8 +2264,10 @@ mod tests {
             }
             if system.starts_with("You are a security finding de-duplication engine") {
                 "correlation"
-            } else if system.starts_with("You screen security findings for reachability") {
-                "screening"
+            } else if system.starts_with("You are Zentra's independent source verifier") {
+                "verification"
+            } else if system.starts_with("You are Zentra's independent final-record verifier") {
+                "final_verification"
             } else {
                 "unknown"
             }
@@ -2320,16 +2355,46 @@ mod tests {
                     });
                 }
             }
+            if matches!(label, "verification" | "final_verification") {
+                let (name, arguments) = if messages.len() == 1 {
+                    (
+                        "read_file",
+                        serde_json::json!({"path":"verification_fixture.rs"}),
+                    )
+                } else if label == "verification" {
+                    (
+                        "submit_verification",
+                        serde_json::json!({
+                            "verdict":"rejected", "reason":"Scripted orchestration fixture disposition",
+                            "trace":[{"path":"verification_fixture.rs", "line":1,
+                                "quote":"// orchestration test source"}]
+                        }),
+                    )
+                } else {
+                    let AgentMessage::User(input) = &messages[0] else {
+                        panic!("missing review input")
+                    };
+                    let data: serde_json::Value = serde_json::from_str(input).unwrap();
+                    (
+                        "accept_verification",
+                        serde_json::json!({"digest":data["digest"]}),
+                    )
+                };
+                return Ok(CompletionResponse {
+                    content: String::new(),
+                    tool_calls: vec![ToolCall {
+                        id: "review".into(),
+                        name: name.into(),
+                        arguments,
+                    }],
+                    usage: TokenUsage::default(),
+                });
+            }
             let tool_calls = match label {
                 "correlation" => vec![ToolCall {
                     id: "clusters".to_string(),
                     name: "report_clusters".to_string(),
                     arguments: serde_json::json!({"clusters": []}),
-                }],
-                "screening" => vec![ToolCall {
-                    id: "screen".to_string(),
-                    name: "report_screening".to_string(),
-                    arguments: serde_json::json!({"verdicts": []}),
                 }],
                 _ => Vec::new(),
             };
@@ -2365,6 +2430,11 @@ mod tests {
     ) {
         let zentra = root.join(".zentra");
         std::fs::create_dir_all(&zentra).unwrap();
+        std::fs::write(
+            root.join("verification_fixture.rs"),
+            "// orchestration test source\n",
+        )
+        .unwrap();
         let session_id = {
             let mut value = checkpoint.lock().unwrap();
             if value.session_id.is_empty() {
@@ -2685,7 +2755,8 @@ mod tests {
             1,
             "calls: {labels:?}"
         );
-        assert_eq!(labels.iter().filter(|&&label| label == "report").count(), 1);
+        assert_eq!(labels.iter().filter(|&&label| label == "report").count(), 0);
+        assert!(temp.path().join(".zentra/verification.json").exists());
         assert!(provider.scanner_systems(ScannerType::ApiScan)[0].contains("## Chat Focus"));
         assert!(checkpoint.lock().unwrap().confirmed_chat_actions.is_empty());
         let mut started = Vec::new();
@@ -3044,7 +3115,10 @@ mod tests {
             .await
             .unwrap();
         assert!(clean_provider.scanner_systems(ScannerType::Sast).is_empty());
-        assert_eq!(clean_provider.scanner_systems(ScannerType::Report).len(), 1);
+        assert!(clean_provider
+            .scanner_systems(ScannerType::Report)
+            .is_empty());
+        assert!(temp.path().join(".zentra/verification.md").exists());
         let clean_labels = clean_provider.labels();
         assert_eq!(
             clean_labels
@@ -3056,9 +3130,9 @@ mod tests {
         assert_eq!(
             clean_labels
                 .iter()
-                .filter(|&&label| label == "screening")
+                .filter(|&&label| label == "verification")
                 .count(),
-            1
+            4
         );
         assert!(!temp.path().join(".zentra/checkpoint.json").exists());
         drop(clean_harness.pending_tx);
@@ -3253,7 +3327,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn final_pipeline_order_and_count_is_reconcile_correlation_screen_report_once() {
+    async fn final_pipeline_order_is_reconcile_correlation_verification_deterministic_report() {
         let temp = tempfile::tempdir().unwrap();
         let checkpoint = Arc::new(Mutex::new(Checkpoint {
             confirmed_chat_actions: vec![focused_sast_action(1)],
@@ -3297,13 +3371,23 @@ mod tests {
             1
         );
         assert_eq!(
-            labels.iter().filter(|&&label| label == "screening").count(),
-            1
+            labels
+                .iter()
+                .filter(|&&label| label == "verification")
+                .count(),
+            4
         );
-        assert_eq!(labels.iter().filter(|&&label| label == "report").count(), 1);
+        assert_eq!(
+            labels
+                .iter()
+                .filter(|&&label| label == "final_verification")
+                .count(),
+            4
+        );
+        assert_eq!(labels.iter().filter(|&&label| label == "report").count(), 0);
         assert_eq!(
             *trace.lock().unwrap(),
-            vec!["reconcile", "correlate", "screen", "report"]
+            vec!["reconcile", "correlate", "verify", "report"]
         );
         drop(harness.pending_tx);
         harness.task.await.unwrap();

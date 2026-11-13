@@ -11,9 +11,9 @@ use crate::state::{Finding, Severity};
 pub const FAIL_THRESHOLD_ENV: &str = "ZENTRA_CI_FAIL_THRESHOLD";
 
 pub fn should_fail_ci(findings: &[Finding], fail_threshold: Severity) -> bool {
-    findings
-        .iter()
-        .any(|finding| finding.severity.order() <= fail_threshold.order())
+    findings.iter().any(|finding| {
+        finding.is_source_verified() && finding.severity.order() <= fail_threshold.order()
+    })
 }
 
 /// Resolve the minimum severity that blocks the PR/MR. `ZENTRA_CI_FAIL_THRESHOLD`

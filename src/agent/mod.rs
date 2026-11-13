@@ -10,6 +10,7 @@ pub mod orchestrator;
 pub mod pack;
 pub mod scanner;
 pub mod screening;
+pub mod verification;
 
 use crate::state::Finding;
 
@@ -61,6 +62,8 @@ pub enum ScanEvent {
     ScannerStarted(ScannerType),
     ScannerCompleted(ScannerType),
     FindingAdded(Finding),
+    /// Authoritative post-verification snapshot, replacing provisional discoveries.
+    FindingsVerified(Vec<Finding>),
     ToolCall {
         scanner: ScannerType,
         tool: String,

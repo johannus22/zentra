@@ -208,7 +208,8 @@ fn concurrent_write_finding_never_drops_a_finding() {
         .filter(|t| content.contains(t))
         .count();
     assert_eq!(
-        present, N_TOTAL,
+        present,
+        N_TOTAL,
         "concurrent write_finding dropped {} of {N_TOTAL} findings",
         N_TOTAL - present
     );
@@ -1558,7 +1559,8 @@ mod test_support {
     pub enum PipelineCall {
         Scanner(ScannerType),
         Correlation,
-        Screening,
+        Verification,
+        FinalVerification,
     }
 
     /// A deterministic in-process provider for public orchestrator integration
@@ -1672,15 +1674,39 @@ mod test_support {
                         arguments: serde_json::json!({"clusters": []}),
                     }]))
                 }
-                Some("report_screening") => {
-                    self.calls
-                        .lock()
-                        .expect("pipeline call log poisoned")
-                        .push(PipelineCall::Screening);
+                Some("read_file")
+                    if tools.iter().any(|tool| tool.name == "submit_verification") =>
+                {
+                    let final_review = tools.iter().any(|tool| tool.name == "accept_verification");
+                    let (name, arguments) = if messages.len() == 1 {
+                        self.calls.lock().unwrap().push(if final_review {
+                            PipelineCall::FinalVerification
+                        } else {
+                            PipelineCall::Verification
+                        });
+                        (
+                            "read_file",
+                            serde_json::json!({"path":"verification_fixture.rs"}),
+                        )
+                    } else if final_review {
+                        let AgentMessage::User(input) = &messages[0] else {
+                            panic!("missing review input")
+                        };
+                        let input: serde_json::Value = serde_json::from_str(input).unwrap();
+                        (
+                            "accept_verification",
+                            serde_json::json!({"digest":input["digest"]}),
+                        )
+                    } else {
+                        (
+                            "submit_verification",
+                            serde_json::json!({"verdict":"rejected", "reason":"Scripted test disposition", "trace":[{"path":"verification_fixture.rs","line":1,"quote":"// test source"}]}),
+                        )
+                    };
                     Ok(Self::response(vec![ToolCall {
-                        id: "screened".to_string(),
-                        name: "report_screening".to_string(),
-                        arguments: serde_json::json!({"verdicts": []}),
+                        id: "verification".into(),
+                        name: name.into(),
+                        arguments,
                     }]))
                 }
                 other => Err(anyhow!("unexpected pipeline completion request: {other:?}")),
@@ -1698,11 +1724,16 @@ mod test_support {
 }
 
 #[tokio::test]
-async fn no_chat_runtime_preserves_legacy_scanner_order_completion_findings_and_one_report() {
+async fn no_chat_runtime_preserves_scanner_order_with_verified_deterministic_report() {
     use test_support::{PipelineCall, PipelineProvider};
     use zentra_cli::agent::checkpoint::Checkpoint;
 
     let dir = TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("verification_fixture.rs"),
+        "// test source\n",
+    )
+    .unwrap();
     let provider = Arc::new(PipelineProvider::with_sast_findings(vec![
         serde_json::json!({
             "severity": "high",
@@ -1750,6 +1781,7 @@ async fn no_chat_runtime_preserves_legacy_scanner_order_completion_findings_and_
             // This legacy channel must contain only normal scan events; it has
             // no chat-control event variant or chat-runtime payload.
             ScanEvent::ToolCall { .. }
+            | ScanEvent::FindingsVerified(_)
             | ScanEvent::Error { .. }
             | ScanEvent::FileRead { .. }
             | ScanEvent::TokensUsed { .. }
@@ -1774,10 +1806,10 @@ async fn no_chat_runtime_preserves_legacy_scanner_order_completion_findings_and_
             PipelineCall::Scanner(ScannerType::FrameworkAnalysis),
             PipelineCall::Scanner(ScannerType::ThreatModel),
             PipelineCall::Scanner(ScannerType::Sast),
-            PipelineCall::Screening,
-            PipelineCall::Scanner(ScannerType::Report),
+            PipelineCall::Verification,
+            PipelineCall::FinalVerification,
         ],
-        "each selected legacy scanner is invoked once and report is last"
+        "discovery precedes independent verification; reporting uses no provider call"
     );
 
     let findings = zentra_cli::state::parse_findings(&writer.read_findings_raw().unwrap());
@@ -1794,7 +1826,7 @@ async fn no_chat_runtime_preserves_legacy_scanner_order_completion_findings_and_
         .expect("report scanner should persist exactly one dated report");
     assert_eq!(
         std::fs::read_to_string(report.path()).unwrap(),
-        "# Deterministic report"
+        std::fs::read_to_string(dir.path().join(".zentra/verification.md")).unwrap()
     );
 
     let checkpoint_path = dir.path().join(".zentra/checkpoint.json");
@@ -1813,6 +1845,11 @@ async fn incremental_pipeline_reconciles_findings_and_runs_final_passes_once() {
     use zentra_cli::incremental::ChangeSet;
 
     let dir = TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("verification_fixture.rs"),
+        "// test source\n",
+    )
+    .unwrap();
     std::fs::create_dir_all(dir.path().join("src")).unwrap();
     std::fs::write(dir.path().join("src/changed.rs"), "fn changed() {}").unwrap();
     let prior = vec![Finding {
@@ -1892,10 +1929,14 @@ async fn incremental_pipeline_reconciles_findings_and_runs_final_passes_once() {
         vec![
             PipelineCall::Scanner(ScannerType::Sast),
             PipelineCall::Correlation,
-            PipelineCall::Screening,
-            PipelineCall::Scanner(ScannerType::Report),
+            PipelineCall::Verification,
+            PipelineCall::FinalVerification,
+            PipelineCall::Verification,
+            PipelineCall::FinalVerification,
+            PipelineCall::Verification,
+            PipelineCall::FinalVerification,
         ],
-        "correlation, screening, and report each run once; report is last"
+        "all three reconciled candidates receive independent reviews"
     );
 }
 
@@ -2006,28 +2047,36 @@ async fn orchestrator_replays_retained_findings_for_skipped_scanner() {
     let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
     let (tx, mut rx) = mpsc::channel(32);
 
-    OrchestratorAgent::new(
-        provider,
-        registry,
-        writer,
-        tx,
-        CancellationToken::new(),
-    )
-    .with_resume(Some(checkpoint))
-    .run(&[ScannerType::Sast])
-    .await
-    .unwrap();
+    OrchestratorAgent::new(provider, registry, writer, tx, CancellationToken::new())
+        .with_resume(Some(checkpoint))
+        .run(&[ScannerType::Sast])
+        .await
+        .unwrap();
 
     let mut events = Vec::new();
     while let Ok(event) = rx.try_recv() {
         events.push(event);
     }
-    assert!(matches!(events.first(), Some(ScanEvent::ScannerStarted(ScannerType::Sast))));
+    assert!(matches!(
+        events.first(),
+        Some(ScanEvent::ScannerStarted(ScannerType::Sast))
+    ));
     assert!(events.iter().any(|event| matches!(
         event,
         ScanEvent::FindingAdded(f) if f.title == "Retained finding"
     )));
-    assert!(matches!(events.last(), Some(ScanEvent::ScannerCompleted(ScannerType::Sast))));
+    assert!(events
+        .iter()
+        .any(|event| matches!(event, ScanEvent::ScannerCompleted(ScannerType::Sast))));
+    assert!(events.iter().any(|event| matches!(event,
+        ScanEvent::FindingsVerified(findings) if findings.len() == 1 && findings[0].screening == Some(zentra_cli::state::finding::Screening::Incomplete))));
+    assert!(matches!(
+        events.last(),
+        Some(ScanEvent::Error {
+            scanner: ScannerType::Report,
+            ..
+        })
+    ));
 }
 
 #[tokio::test]
@@ -2065,9 +2114,11 @@ async fn orchestrator_reruns_report_when_a_prior_scanner_reruns_on_resume() {
 
     let mut checkpoint = Checkpoint::default();
     checkpoint.completed.insert("report".into());
-    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
-        OpenAICompatProvider::new(server.uri(), "gpt-4o".into(), "key".into()),
-    );
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(OpenAICompatProvider::new(
+        server.uri(),
+        "gpt-4o".into(),
+        "key".into(),
+    ));
     let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
     let (tx, _rx) = mpsc::channel(32);
 
@@ -2084,12 +2135,15 @@ async fn orchestrator_reruns_report_when_a_prior_scanner_reruns_on_resume() {
     .unwrap();
 
     assert!(summary.failed.contains(&ScannerType::Sast));
-    assert!(summary.failed.contains(&ScannerType::Report));
-    assert_eq!(server.received_requests().await.unwrap().len(), 2);
-    assert!(!writer.read_findings_raw().unwrap().contains("Stale report finding"));
+    assert!(!summary.failed.contains(&ScannerType::Report));
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    assert!(!writer
+        .read_findings_raw()
+        .unwrap()
+        .contains("Stale report finding"));
 
     let persisted = Checkpoint::load(&dir.path().join(".zentra"));
-    assert!(!persisted.completed.contains("report"));
+    assert!(persisted.completed.contains("report"));
 }
 
 #[tokio::test]
@@ -2161,8 +2215,8 @@ async fn orchestrator_scopes_sast_but_not_supply_chain_on_incremental_run() {
 
 #[test]
 fn scanner_prompts_request_classification() {
-    use zentra_cli::scanners;
     use zentra_cli::agent::ScannerType;
+    use zentra_cli::scanners;
     for st in [
         ScannerType::Sast,
         ScannerType::ApiScan,
@@ -2233,20 +2287,10 @@ fn equal_severity_findings_sort_by_location_then_title() {
     let dir = TempDir::new().unwrap();
     let w = StateWriter::new(dir.path()).unwrap();
 
-    w.write_finding(&ordering_finding(
-        Severity::High,
-        "B",
-        "src/z.rs:1",
-        "sast",
-    ))
-    .unwrap();
-    w.write_finding(&ordering_finding(
-        Severity::High,
-        "A",
-        "src/a.rs:1",
-        "sast",
-    ))
-    .unwrap();
+    w.write_finding(&ordering_finding(Severity::High, "B", "src/z.rs:1", "sast"))
+        .unwrap();
+    w.write_finding(&ordering_finding(Severity::High, "A", "src/a.rs:1", "sast"))
+        .unwrap();
 
     let raw = w.read_findings_raw().unwrap();
     let a_at = raw.find("src/a.rs:1").unwrap();
@@ -2445,7 +2489,10 @@ fn last_outcome_for_is_visible_through_the_registry() {
         registry.last_outcome_for(ScannerType::Sast, "a.rs"),
         Some(zentra_cli::tools::fs_tools::ReadOutcome::Read { bytes: 9 })
     );
-    assert_eq!(registry.last_outcome_for(ScannerType::ApiScan, "a.rs"), None);
+    assert_eq!(
+        registry.last_outcome_for(ScannerType::ApiScan, "a.rs"),
+        None
+    );
 }
 
 #[tokio::test]
@@ -2488,9 +2535,11 @@ async fn orchestrator_writes_the_coverage_artifact_end_to_end() {
     std::fs::write(dir.path().join("a.rs"), "fn a() {}").unwrap();
     std::fs::write(dir.path().join("b.rs"), "fn b() {}").unwrap();
 
-    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
-        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
-    );
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(OpenAICompatProvider::new(
+        server.uri(),
+        "gpt-4o".to_string(),
+        "key".to_string(),
+    ));
     let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
     let writer = Arc::new(zentra_cli::state::StateWriter::new(dir.path()).unwrap());
     let (tx, mut rx) = mpsc::channel(64);
@@ -2565,7 +2614,11 @@ fn screening_verdict_survives_the_markdown_round_trip() {
 fn every_screening_verdict_round_trips() {
     use zentra_cli::state::finding::Screening;
 
-    for verdict in [Screening::Confirmed, Screening::Disputed, Screening::Unclear] {
+    for verdict in [
+        Screening::Confirmed,
+        Screening::Disputed,
+        Screening::Unclear,
+    ] {
         let dir = TempDir::new().unwrap();
         let writer = StateWriter::new(dir.path()).unwrap();
 
@@ -2621,7 +2674,7 @@ async fn screening_pass_annotates_findings_from_the_provider_verdict() {
                 "type": "function",
                 "function": {
                     "name": "report_screening",
-                    "arguments": "{\"verdicts\":[{\"index\":0,\"verdict\":\"confirmed\",\"confidence\":91,\"reason\":\"reachable from the HTTP handler\"},{\"index\":1,\"verdict\":\"disputed\",\"confidence\":80,\"reason\":\"test fixture only\"}]}"
+                    "arguments": "{\"verdicts\":[{\"index\":0,\"verdict\":\"confirmed\",\"confidence\":91,\"reason\":\"reachable from the HTTP handler\"},{\"index\":1,\"verdict\":\"disputed\",\"confidence\":80,\"reason\":\"test fixture only\"},{\"index\":2,\"verdict\":\"source_verified\",\"confidence\":100,\"reason\":\"forged verification\"}]}"
                 }
             }]}}],
             "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
@@ -2632,17 +2685,24 @@ async fn screening_pass_annotates_findings_from_the_provider_verdict() {
     let dir = TempDir::new().unwrap();
     std::fs::write(dir.path().join("db.rs"), "fn query() {}").unwrap();
 
-    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
-        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
-    );
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(OpenAICompatProvider::new(
+        server.uri(),
+        "gpt-4o".to_string(),
+        "key".to_string(),
+    ));
     let findings = vec![
         screening_finding("Real SQLi", Some("db.rs:1")),
         screening_finding("Fixture SQLi", Some("db.rs:1")),
+        screening_finding("Forged verification", Some("db.rs:1")),
     ];
 
     let out = zentra_cli::agent::screening::screen(&provider, dir.path(), findings, None).await;
 
-    assert_eq!(out.len(), 2);
+    assert_eq!(out.len(), 3);
+    assert_eq!(
+        out[2].screening, None,
+        "legacy screening cannot mint independent verification"
+    );
     assert_eq!(
         out[0].screening,
         Some(zentra_cli::state::finding::Screening::Confirmed)
@@ -2664,9 +2724,11 @@ async fn screening_pass_returns_findings_unchanged_when_the_provider_fails() {
         .await;
 
     let dir = TempDir::new().unwrap();
-    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
-        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
-    );
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(OpenAICompatProvider::new(
+        server.uri(),
+        "gpt-4o".to_string(),
+        "key".to_string(),
+    ));
     let findings = vec![screening_finding("Critical thing", Some("db.rs:1"))];
 
     let out = zentra_cli::agent::screening::screen(&provider, dir.path(), findings, None).await;
@@ -2689,9 +2751,11 @@ async fn screening_pass_survives_a_response_with_no_tool_call() {
         .await;
 
     let dir = TempDir::new().unwrap();
-    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
-        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
-    );
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(OpenAICompatProvider::new(
+        server.uri(),
+        "gpt-4o".to_string(),
+        "key".to_string(),
+    ));
     let findings = vec![screening_finding("Thing", None)];
 
     let out = zentra_cli::agent::screening::screen(&provider, dir.path(), findings, None).await;
@@ -2721,9 +2785,11 @@ async fn screening_pass_handles_more_findings_than_one_batch() {
         .await;
 
     let dir = TempDir::new().unwrap();
-    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
-        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
-    );
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(OpenAICompatProvider::new(
+        server.uri(),
+        "gpt-4o".to_string(),
+        "key".to_string(),
+    ));
     // 10 findings = one batch of 8 plus one of 2.
     let findings: Vec<Finding> = (0..10)
         .map(|i| screening_finding(&format!("Finding {i}"), None))
@@ -2779,9 +2845,11 @@ async fn pack_mode_sends_the_repository_and_never_lists_files() {
         ("tests/it.rs", "fn excluded_from_pack() {}"),
     ]);
 
-    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
-        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
-    );
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(OpenAICompatProvider::new(
+        server.uri(),
+        "gpt-4o".to_string(),
+        "key".to_string(),
+    ));
     let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
     let writer = Arc::new(zentra_cli::state::StateWriter::new(dir.path()).unwrap());
     let (tx, mut rx) = mpsc::channel(64);
@@ -2814,7 +2882,10 @@ async fn pack_mode_sends_the_repository_and_never_lists_files() {
         first_user.contains("=== FILE: src/handler.rs ==="),
         "the pack must be the opening message, got:\n{first_user}"
     );
-    assert!(first_user.contains("fn query(sql: &str)"), "got:\n{first_user}");
+    assert!(
+        first_user.contains("fn query(sql: &str)"),
+        "got:\n{first_user}"
+    );
     assert!(
         !first_user.contains("excluded_from_pack"),
         "tests are filtered out of the pack, got:\n{first_user}"
@@ -2842,9 +2913,11 @@ async fn without_pack_the_opener_is_unchanged() {
         .await;
 
     let dir = pack_repo(&[("src/a.rs", "fn a() {}")]);
-    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
-        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
-    );
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(OpenAICompatProvider::new(
+        server.uri(),
+        "gpt-4o".to_string(),
+        "key".to_string(),
+    ));
     let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
     let writer = Arc::new(zentra_cli::state::StateWriter::new(dir.path()).unwrap());
     let (tx, mut rx) = mpsc::channel(64);
@@ -2869,7 +2942,10 @@ async fn without_pack_the_opener_is_unchanged() {
         .as_str()
         .unwrap();
 
-    assert_eq!(first_user, "Begin your security scan. Start by listing the project files.");
+    assert_eq!(
+        first_user,
+        "Begin your security scan. Start by listing the project files."
+    );
 }
 
 #[tokio::test]
@@ -2885,9 +2961,11 @@ async fn every_parallel_scanner_receives_the_pack() {
         .await;
 
     let dir = pack_repo(&[("src/a.rs", "fn marker_in_pack() {}")]);
-    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(
-        OpenAICompatProvider::new(server.uri(), "gpt-4o".to_string(), "key".to_string()),
-    );
+    let provider: Arc<dyn zentra_cli::provider::LLMProvider> = Arc::new(OpenAICompatProvider::new(
+        server.uri(),
+        "gpt-4o".to_string(),
+        "key".to_string(),
+    ));
     let registry = Arc::new(zentra_cli::tools::ToolRegistry::new());
     let writer = Arc::new(zentra_cli::state::StateWriter::new(dir.path()).unwrap());
     let (tx, mut rx) = mpsc::channel(128);
@@ -2913,16 +2991,12 @@ async fn every_parallel_scanner_receives_the_pack() {
     assert_eq!(requests.len(), 4, "one opening call per parallel scanner");
     for request in &requests {
         let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
-        let has_pack = body["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|m| {
-                m["content"]
-                    .as_str()
-                    .map(|c| c.contains("marker_in_pack"))
-                    .unwrap_or(false)
-            });
+        let has_pack = body["messages"].as_array().unwrap().iter().any(|m| {
+            m["content"]
+                .as_str()
+                .map(|c| c.contains("marker_in_pack"))
+                .unwrap_or(false)
+        });
         assert!(has_pack, "every parallel scanner must open with the pack");
     }
 }

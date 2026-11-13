@@ -1,4 +1,5 @@
-//! Finding screening — the precision pass.
+//! Legacy finding screening — retained for API compatibility. Production scans
+//! use `agent::verification`; these best-effort annotations cannot gate CI.
 //!
 //! Discovery is generous by design: each `ScannerType` hunts its own class of
 //! issue and reports what it sees. Nothing then challenges a finding that one
@@ -55,7 +56,9 @@ pub async fn screen(
     let mut verdicts: BTreeMap<usize, (Screening, Option<u8>, Option<String>)> = BTreeMap::new();
     for (batch_index, batch) in findings.chunks(BATCH_SIZE).enumerate() {
         let offset = batch_index * BATCH_SIZE;
-        if let Some(batch_verdicts) = screen_batch(provider, project_root, batch, cancel_token).await {
+        if let Some(batch_verdicts) =
+            screen_batch(provider, project_root, batch, cancel_token).await
+        {
             for (local_index, verdict) in batch_verdicts {
                 if local_index < batch.len() {
                     verdicts.insert(offset + local_index, verdict);
@@ -155,7 +158,13 @@ async fn screen_batch(
     let messages = vec![AgentMessage::User(user)];
 
     let response = match provider
-        .complete_with_tools(SYSTEM_PROMPT, &messages, std::slice::from_ref(&tool), 2048, cancel_token)
+        .complete_with_tools(
+            SYSTEM_PROMPT,
+            &messages,
+            std::slice::from_ref(&tool),
+            2048,
+            cancel_token,
+        )
         .await
     {
         Ok(response) => response,
@@ -180,6 +189,12 @@ async fn screen_batch(
             .filter_map(|entry| {
                 let index = entry.get("index")?.as_u64()? as usize;
                 let verdict = Screening::parse(entry.get("verdict")?.as_str()?)?;
+                if !matches!(
+                    verdict,
+                    Screening::Confirmed | Screening::Disputed | Screening::Unclear
+                ) {
+                    return None;
+                }
                 let confidence = entry
                     .get("confidence")
                     .and_then(|c| c.as_u64())
@@ -333,10 +348,7 @@ mod tests {
             split_location("src/db.rs:42"),
             ("src/db.rs".to_string(), Some(42))
         );
-        assert_eq!(
-            split_location("src/db.rs"),
-            ("src/db.rs".to_string(), None)
-        );
+        assert_eq!(split_location("src/db.rs"), ("src/db.rs".to_string(), None));
     }
 
     #[test]
@@ -354,7 +366,10 @@ mod tests {
 
         let excerpt = source_excerpt(dir.path(), Some("big.rs:100")).unwrap();
         assert!(excerpt.contains("line100"), "got: {excerpt}");
-        assert!(!excerpt.contains("line1\n"), "window is centered: {excerpt}");
+        assert!(
+            !excerpt.contains("line1\n"),
+            "window is centered: {excerpt}"
+        );
     }
 
     #[test]
@@ -417,7 +432,10 @@ mod tests {
     fn apply_verdicts_sets_only_the_findings_it_judged() {
         let findings = vec![finding("A", Some("a.rs:1")), finding("B", Some("b.rs:1"))];
         let mut verdicts = BTreeMap::new();
-        verdicts.insert(0, (Screening::Confirmed, Some(90), Some("reachable".into())));
+        verdicts.insert(
+            0,
+            (Screening::Confirmed, Some(90), Some("reachable".into())),
+        );
 
         let out = apply_verdicts(findings, &verdicts);
 
@@ -459,7 +477,10 @@ mod tests {
             "confidence": 90,
             "reason": "  reachable from the HTTP handler  "
         });
-        assert_eq!(parse_evidence(&entry).as_deref(), Some("reachable from the HTTP handler"));
+        assert_eq!(
+            parse_evidence(&entry).as_deref(),
+            Some("reachable from the HTTP handler")
+        );
     }
 
     #[test]

@@ -1,3 +1,23 @@
+# Executable specifications
+
+## Independent finding verification
+
+`finding_verification.qnt` models a candidate's source-review lifecycle: initial
+review, independent final review, one material replacement, stale evidence,
+operational failure, persistence, and publication. `safety` forbids publication
+without saved, current evidence and a different final reviewer;
+`incompleteNeverGates` prevents failed candidates from being published.
+
+See [the contract, implementation mapping, and checks](finding-verification.md).
+
+## Independent DAST verification
+
+`dast_verification.qnt` reuses the independent review lifecycle and requires a
+captured runtime observation before a `runtime_verified` verdict. Its scenarios
+cover reproduction, unresolved/rejected dispositions, replacement re-review,
+changed evidence, and operational/persistence failure. See
+[the DAST contract, mapping, and checks](dast-verification.md).
+
 # Cargo audit execution contract
 
 `cargo_audit.qnt` models one invocation of `src/tools/audit.rs`. One state record
