@@ -21,6 +21,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/target/release/zentra /usr/local/bin/zentra
+COPY LICENSE NOTICE /usr/local/share/doc/zentra/
+COPY LICENSES/ /usr/local/share/doc/zentra/LICENSES/
 
 # Run as a non-root user (CWE-250 defense-in-depth: a process compromised inside
 # the container no longer has root). UID 1001 matches the GitHub Actions runner
