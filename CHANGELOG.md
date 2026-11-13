@@ -34,5 +34,12 @@
   of `confirmed`/`evidence_path`; `VerificationCompleted` replaces the boolean
   `ValidationCompleted` event.
 
+### Release hardening
+
+- Update transitive `openssl` to 0.10.80 and `rustix` to 1.1.6 to address
+  RUSTSEC-2026-0474, RUSTSEC-2026-0476, RUSTSEC-2026-0477, and
+  RUSTSEC-2026-0486. Update the required `openssl-sys` binding to 0.9.118.
+- Include third-party notices and licenses in platform archives and Docker images.
+
 See [static verification](specs/finding-verification.md) and
 [DAST verification](specs/dast-verification.md) for contracts, limits, and evidence.
